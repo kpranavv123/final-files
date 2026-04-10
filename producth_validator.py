@@ -13,10 +13,10 @@ import os
 
 
 # ─────────────────────────────────────────────
-#  FILE PATHS  –  update these
+#  FILE PATHS
 # ─────────────────────────────────────────────
-INPUT_FILE  = r"C:\Users\SW526XH\Downloads\Data Quality Check\PRDHIERARCHY(FG).xlsx"
-OUTPUT_FILE = r"C:\Users\SW526XH\Downloads\Data Quality Check\Output_Files\PH.xlsx"
+INPUT_FILE  = r"D:\SEM-8\Track1\final-files\PRDHIERARCHY(FG).xlsx"
+OUTPUT_FILE = r"D:\SEM-8\Track1\final-files\Validated_ProductHierarchy.xlsx"
 
 
 # ─────────────────────────────────────────────
@@ -36,10 +36,6 @@ NOT_BLANK_FIELDS = [
     "SUPPLY_FAMILY",
 ]
 
-# ─────────────────────────────────────────────
-#  Rules content — used for Rule_Set sheet
-#  (same merged-cell template as Part & Site)
-# ─────────────────────────────────────────────
 RULES_CONTENT = {
     **{f: ["Must not be blank for FERT/HAWA material types."] for f in NOT_BLANK_FIELDS},
     "MATERIALTYPE": [
@@ -53,7 +49,7 @@ RULES_CONTENT = {
 }
 
 # ─────────────────────────────────────────────
-#  Colours  (aligned with Part & Site scripts)
+#  Colours
 # ─────────────────────────────────────────────
 RED_FILL       = PatternFill("solid", start_color="FF0000", end_color="FF0000")
 ROW_ERROR_FILL = PatternFill("solid", start_color="FFF2CC", end_color="FFF2CC")
@@ -176,29 +172,26 @@ class ProductHierarchyValidator:
         df.columns = df.columns.str.strip().str.upper()
 
         error_list        = []
-        error_fields_list = []   # list of sets — which fields errored per row
-        error_detail_list = []   # list of dicts — { field: reason } per row
+        error_fields_list = []
+        error_detail_list = []
 
         for _, row in df.iterrows():
             row_errors = self.validate_row(row)
-
-            # Full pipe-separated string for ERROR_COLUMNS in main sheet
             error_list.append(" | ".join(row_errors) if row_errors else "")
 
             fields_in_error = set()
-            field_reason    = {}   # { field_name: reason_string }
+            field_reason    = {}
             for e in row_errors:
                 field = e.split(":")[0].strip()
                 fields_in_error.add(field)
-                field_reason[field] = e   # full reason string keyed by field
+                field_reason[field] = e
 
             error_fields_list.append(fields_in_error)
             error_detail_list.append(field_reason)
 
-        # ERROR_COLUMNS replaces VALIDATION_ERRORS
         df["ERROR_COLUMNS"] = error_list
-        df["_ERROR_FIELDS"] = error_fields_list    # internal — removed before writing
-        df["_ERROR_DETAIL"] = error_detail_list    # internal — removed before writing
+        df["_ERROR_FIELDS"] = error_fields_list
+        df["_ERROR_DETAIL"] = error_detail_list
         return df
 
 
@@ -216,17 +209,12 @@ class ExcelReportBuilder:
 
         self.error_df     = df_validated[df_validated["ERROR_COLUMNS"] != ""].copy()
         self.error_fields = df_validated["_ERROR_FIELDS"]
-        self.error_detail = df_validated["_ERROR_DETAIL"]   # { field: reason } per row
+        self.error_detail = df_validated["_ERROR_DETAIL"]
 
     # ── public entry point ──────────────────────────────
 
     def build(self):
         self._write_main_sheet()
-        # ════════════════════════════════════════
-        # All_Errors sheet (COMMENTED OUT)
-        # ════════════════════════════════════════
-        # self._write_all_errors_sheet()
-        # ════════════════════════════════════════
         self._write_summary_sheet()
         self._write_ruleset_sheet()
         self._write_per_field_error_sheets()
@@ -237,7 +225,6 @@ class ExcelReportBuilder:
 
     def _write_main_sheet(self):
         ws         = self.wb.create_sheet("PRODUCTHIERARCHY_FG")
-        # Drop both internal columns before display
         display_df = self.df.drop(columns=["_ERROR_FIELDS", "_ERROR_DETAIL"])
         headers    = list(display_df.columns)
 
@@ -266,35 +253,9 @@ class ExcelReportBuilder:
         auto_width(ws)
         ws.row_dimensions[1].height = 30
 
-    # ════════════════════════════════════════
-    # All_Errors sheet (COMMENTED OUT)
-    # ════════════════════════════════════════
-    # def _write_all_errors_sheet(self):
-    #     ws         = self.wb.create_sheet("All_Errors")
-    #     display_df = self.error_df.drop(columns=["_ERROR_FIELDS", "_ERROR_DETAIL"])
-    #     if display_df.empty:
-    #         ws.append(["No errors found"])
-    #         return
-    #     headers = list(display_df.columns)
-    #     ws.append(headers)
-    #     style_header_row(ws, 1, len(headers))
-    #     ws.freeze_panes = "A2"
-    #     for r_idx, (_, row) in enumerate(display_df.iterrows(), start=2):
-    #         errored_fields = self.error_fields.loc[row.name]
-    #         for c_idx, col in enumerate(headers, start=1):
-    #             cell = ws.cell(row=r_idx, column=c_idx, value=row[col])
-    #             cell.border = THIN_BORDER
-    #             cell.font   = BODY_FONT
-    #             cell.alignment = Alignment(vertical="center")
-    #             if col in errored_fields:
-    #                 cell.fill = RED_FILL
-    #                 cell.font = ERR_FONT
-    #             else:
-    #                 cell.fill = ROW_ERROR_FILL
-    #     auto_width(ws)
-    # ════════════════════════════════════════
-
-    # ── Summary sheet ───────────────────────────────────
+    # ══════════════════════════════════════════
+    #  Summary sheet  ← UPDATED
+    # ══════════════════════════════════════════
 
     def _write_summary_sheet(self):
         ws = self.wb.create_sheet("Summary")
@@ -308,95 +269,103 @@ class ExcelReportBuilder:
             for f in fields_set:
                 field_counts[f] += 1
 
-        # ── Title ──
+        # ── Title — spans all 7 columns ──
+        ws.merge_cells("A1:G1")
         title_cell           = ws.cell(row=1, column=1, value="ProductHierarchy FG Validation Summary")
         title_cell.font      = Font(name="Arial", bold=True, size=14)
         title_cell.fill      = TITLE_FILL
         title_cell.alignment = Alignment(horizontal="left", vertical="center")
-        ws.merge_cells("A1:D1")
         ws.row_dimensions[1].height = 24
 
-        # ── Column headers — % of Total Records COMMENTED OUT ──
-        headers = [
-            "#",
-            "Field Name",
-            "Error Count",
-            # "% of Total Records",   # <-- COMMENTED OUT
-        ]
+        # ── Column headers ──
+        headers = ["#", "Field Name", "Error Count", "Record Count", "% Health", "% of Error", "Reason"]
         for c_idx, h in enumerate(headers, start=1):
-            cell           = ws.cell(row=3, column=c_idx, value=h)
+            cell           = ws.cell(row=2, column=c_idx, value=h)
             cell.fill      = TITLE_FILL
             cell.font      = Font(name="Arial", bold=True)
             cell.border    = THIN_BORDER
             cell.alignment = Alignment(horizontal="center", vertical="center")
 
-        # ── Per-field rows ──
-        row_num = 4
+        # ── Per-field data rows ──
+        row_num = 3
         for field_num, (col_name, count) in enumerate(sorted(field_counts.items()), start=1):
-            # pct = f"{(count / total_rows * 100):.2f}%"   # COMMENTED OUT
+            pct_error  = round((count / total_rows) * 100, 2) if total_rows else 0
+            pct_health = round(100 - pct_error, 2)
 
-            ws.cell(row=row_num, column=1, value=field_num).font = BODY_FONT
-            ws.cell(row=row_num, column=2, value=col_name).font  = BODY_FONT
-            ws.cell(row=row_num, column=3, value=count).font     = BODY_FONT
-            # ws.cell(row=row_num, column=4, value=pct).font     = BODY_FONT   # COMMENTED OUT
+            ws.cell(row=row_num, column=1, value=field_num)
+            ws.cell(row=row_num, column=2, value=col_name)
+            ws.cell(row=row_num, column=3, value=count)
+            ws.cell(row=row_num, column=4, value=total_rows)
+            ws.cell(row=row_num, column=5, value=f"{pct_health}%")
+            ws.cell(row=row_num, column=6, value=f"{pct_error}%")
+            ws.cell(row=row_num, column=7, value="")   # Reason col
 
-            for c in range(1, 4):   # was range(1, 5)
+            for c in range(1, 8):
+                ws.cell(row=row_num, column=c).font      = BODY_FONT
                 ws.cell(row=row_num, column=c).border    = THIN_BORDER
                 ws.cell(row=row_num, column=c).alignment = Alignment(horizontal="center")
 
             row_num += 1
 
         # ── TOTAL row ──
-        total_errors = sum(field_counts.values())
-        # total_pct  = f"{(total_errors / total_rows * 100):.2f}%"   # COMMENTED OUT
+        total_errors       = sum(field_counts.values())
+        total_record_count = total_rows * len(field_counts)   # N rows × num fields
+        total_pct_error    = round((total_errors / total_record_count) * 100, 2) if total_record_count else 0
+        total_pct_health   = round(100 - total_pct_error, 2)
 
-        ws.cell(row=row_num, column=2, value="TOTAL").font      = Font(name="Arial", bold=True)
-        ws.cell(row=row_num, column=3, value=total_errors).font = Font(name="Arial", bold=True)
-        # ws.cell(row=row_num, column=4, value=total_pct).font  = Font(name="Arial", bold=True)   # COMMENTED OUT
-        for c in range(1, 4):   # was range(1, 5)
+        ws.cell(row=row_num, column=1, value="")
+        ws.cell(row=row_num, column=2, value="TOTAL")
+        ws.cell(row=row_num, column=3, value=total_errors)
+        ws.cell(row=row_num, column=4, value=total_record_count)
+        ws.cell(row=row_num, column=5, value=f"{total_pct_health}%")
+        ws.cell(row=row_num, column=6, value=f"{total_pct_error}%")
+        ws.cell(row=row_num, column=7, value="")
+
+        for c in range(1, 8):
+            ws.cell(row=row_num, column=c).font      = Font(name="Arial", bold=True)
             ws.cell(row=row_num, column=c).fill      = TOTAL_FILL
             ws.cell(row=row_num, column=c).border    = THIN_BORDER
             ws.cell(row=row_num, column=c).alignment = Alignment(horizontal="center")
 
-        # ── Spacer then stats block ──
-        row_num += 2
+        row_num += 2   # blank spacer
 
-        STATS_LABEL_FILL = PatternFill("solid", start_color="EDEDED", end_color="EDEDED")
+        # ── Quick-glance stats block ──
         for label, value in [
             ("Total Records:",       total_rows),
             ("Records with Errors:", records_with_errors),
             ("Records Passing:",     records_passing),
         ]:
+            ws.merge_cells(start_row=row_num, start_column=1, end_row=row_num, end_column=2)
             label_cell           = ws.cell(row=row_num, column=1, value=label)
             label_cell.font      = Font(name="Arial", bold=True, size=10)
-            label_cell.fill      = STATS_LABEL_FILL
+            label_cell.fill      = STATS_FILL
             label_cell.border    = THIN_BORDER
             label_cell.alignment = Alignment(horizontal="left", vertical="center")
-            ws.merge_cells(start_row=row_num, start_column=1, end_row=row_num, end_column=2)
 
             value_cell           = ws.cell(row=row_num, column=3, value=value)
             value_cell.font      = BODY_FONT
             value_cell.border    = THIN_BORDER
             value_cell.alignment = Alignment(horizontal="center", vertical="center")
+
             row_num += 1
 
-        for c_idx, width in enumerate([6, 34, 16], start=1):
+        # ── Column widths ──
+        col_widths = [6, 34, 14, 16, 12, 12, 50]
+        for c_idx, width in enumerate(col_widths, start=1):
             ws.column_dimensions[get_column_letter(c_idx)].width = width
 
-    # ── Rule_Set sheet (same template as Part & Site) ────
+    # ── Rule_Set sheet ───────────────────────────────────
 
     def _write_ruleset_sheet(self):
         ws = self.wb.create_sheet("Rule_Set")
 
-        # ── Title row (same as Part/Site) ──
+        ws.merge_cells("A1:C1")
         title_cell           = ws.cell(row=1, column=1, value="ProductHierarchy FG – Validation Rules")
         title_cell.font      = Font(name="Arial", bold=True, size=13)
         title_cell.fill      = TITLE_FILL
         title_cell.alignment = Alignment(horizontal="center")
-        ws.merge_cells("A1:C1")
         ws.row_dimensions[1].height = 22
 
-        # ── Column headers ──
         for c_idx, h in enumerate(["#", "Field", "Rule Description"], start=1):
             cell           = ws.cell(row=3, column=c_idx, value=h)
             cell.fill      = HDR_FILL
@@ -411,21 +380,18 @@ class ExcelReportBuilder:
             num_rules = len(rules_list)
 
             for r_idx, rule_text in enumerate(rules_list):
-                # Rule number cell
                 num_cell           = ws.cell(row=current_row, column=1, value=rule_num if r_idx == 0 else "")
                 num_cell.font      = Font(name="Arial", size=10, bold=(r_idx == 0))
                 num_cell.fill      = RULE_FILL
                 num_cell.border    = THIN_BORDER
                 num_cell.alignment = Alignment(horizontal="center", vertical="center")
 
-                # Field name cell
                 field_cell           = ws.cell(row=current_row, column=2, value=field if r_idx == 0 else "")
                 field_cell.font      = Font(name="Arial", size=10, bold=(r_idx == 0))
                 field_cell.fill      = RULE_FILL
                 field_cell.border    = THIN_BORDER
                 field_cell.alignment = Alignment(vertical="center")
 
-                # Rule description cell
                 desc_cell           = ws.cell(row=current_row, column=3, value=rule_text)
                 desc_cell.font      = BODY_FONT
                 desc_cell.border    = THIN_BORDER
@@ -433,7 +399,6 @@ class ExcelReportBuilder:
 
                 current_row += 1
 
-            # Merge # and Field cells vertically for multi-rule fields
             if num_rules > 1:
                 s = current_row - num_rules
                 e = current_row - 1
@@ -457,7 +422,6 @@ class ExcelReportBuilder:
             for field in self.error_fields.loc[idx]:
                 field_rows[field].append(idx)
 
-        # Display columns — drop both internal cols
         display_cols = [c for c in self.df.columns if c not in ("_ERROR_FIELDS", "_ERROR_DETAIL")]
 
         for field, row_indices in sorted(field_rows.items()):
@@ -471,10 +435,7 @@ class ExcelReportBuilder:
 
             ws = self.wb.create_sheet(sheet_name)
 
-            # Build subset with only rows that failed THIS specific field
             subset = self.df.loc[row_indices, display_cols].copy()
-
-            # Override ERROR_COLUMNS — show ONLY this field's specific reason
             subset["ERROR_COLUMNS"] = subset.index.map(
                 lambda i, f=field: self.error_detail.loc[i].get(f, "")
             )
@@ -487,21 +448,18 @@ class ExcelReportBuilder:
             col_idx_map = {col: i for i, col in enumerate(final_cols, start=1)}
 
             for r_idx, (orig_idx, row) in enumerate(subset.iterrows(), start=2):
-                # Step 1: whole row yellow
                 for c_idx, col in enumerate(final_cols, start=1):
                     cell           = ws.cell(row=r_idx, column=c_idx, value=row[col])
                     cell.font      = BODY_FONT
                     cell.border    = THIN_BORDER
                     cell.alignment = Alignment(vertical="center")
-                    cell.fill      = ROW_ERROR_FILL   # whole row yellow
+                    cell.fill      = ROW_ERROR_FILL
 
-                # Step 2: only THIS field's cell goes red
                 if field in col_idx_map:
                     target_cell      = ws.cell(row=r_idx, column=col_idx_map[field])
                     target_cell.fill = RED_FILL
                     target_cell.font = ERR_FONT
 
-            # Row count note at bottom
             note_row = len(row_indices) + 3
             ws.cell(
                 row=note_row, column=1,

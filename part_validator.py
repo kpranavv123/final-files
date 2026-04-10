@@ -7,9 +7,8 @@ from openpyxl.utils import get_column_letter
 # ─────────────────────────────────────────────
 #  FILE PATHS
 # ─────────────────────────────────────────────
-INPUT_FILE  = r"C:\Users\SW526XH\Downloads\Data Quality Check\Excel_Files\Part.xlsx"
-OUTPUT_FILE = r"C:\Users\SW526XH\Downloads\Data Quality Check\Output_Files\Part2.xlsx"
-
+INPUT_FILE  = r"D:\SEM-8\Track1\final-files\Part.xlsx"
+OUTPUT_FILE = r"D:\SEM-8\Track1\final-files\Validated_Part.xlsx"
 
 # ─────────────────────────────────────────────
 #  CONSOLIDATED PL LIST
