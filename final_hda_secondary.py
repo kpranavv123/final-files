@@ -169,12 +169,13 @@ with pd.ExcelWriter(OUTPUT_EXCEL, engine="openpyxl") as writer:
             state["row"] += len(attr_rows)
 
     # ====================================================
-    # SUMMARY SHEET (ONLY ONCE)
+    # SUMMARY SHEET
     # ====================================================
     ws = writer.book.create_sheet("Summary")
 
     title_fill = PatternFill("solid", fgColor="BDD7EE")
     header_fill = PatternFill("solid", fgColor="D9E1F2")
+    total_fill = PatternFill("solid", fgColor="F2F2F2")
     bold = Font(bold=True)
     center = Alignment(horizontal="center")
     border = Border(
@@ -184,43 +185,63 @@ with pd.ExcelWriter(OUTPUT_EXCEL, engine="openpyxl") as writer:
         bottom=Side(style="thin"),
     )
 
-    ws.merge_cells("A1:D1")
+    # Title — spans all 7 columns
+    ws.merge_cells("A1:G1")
     ws["A1"] = "HDA Secondary Validation Summary"
     ws["A1"].font = Font(bold=True, size=14)
     ws["A1"].alignment = center
     ws["A1"].fill = title_fill
 
-    ws.append(["#", "Field Name", "Error Count", "Reason"])
-
-    for col in range(1, 5):
+    # Header row
+    ws.append(["#", "Field Name", "Error Count", "Record Count", "% Health", "% of Error", "Reason"])
+    for col in range(1, 8):
         cell = ws.cell(row=2, column=col)
         cell.font = bold
         cell.fill = header_fill
         cell.border = border
         cell.alignment = center
 
+    # Data rows
     row_num = 3
-    total_errors = 0
-
     for idx, (field, _, reason) in enumerate(SUMMARY_RULES, start=1):
         cnt = error_counts[field]
-        total_errors += cnt
-        ws.append([idx, field, cnt, reason])
-        for col in range(1, 5):
+        pct_error = round((cnt / total_records) * 100, 2) if total_records else 0
+        pct_health = round(100 - pct_error, 2)
+        ws.append([idx, field, cnt, total_records, f"{pct_health}%", f"{pct_error}%", reason])
+        for col in range(1, 8):
             ws.cell(row=row_num, column=col).border = border
         row_num += 1
 
-    ws.append(["", "TOTAL", total_errors, ""])
-    for col in range(1, 5):
-        ws.cell(row=row_num, column=col).font = bold
-        ws.cell(row=row_num, column=col).border = border
+    # TOTAL row
+    total_errors = sum(error_counts[field] for field, _, _ in SUMMARY_RULES)
+    total_record_count = total_records * len(SUMMARY_RULES)   # e.g. 60239 × 3
+    total_pct_error = round((total_errors / total_record_count) * 100, 2) if total_record_count else 0
+    total_pct_health = round(100 - total_pct_error, 2)
 
-    row_num += 2
+    ws.append(["", "TOTAL", total_errors, total_record_count,
+               f"{total_pct_health}%", f"{total_pct_error}%", ""])
+    for col in range(1, 8):
+        c = ws.cell(row=row_num, column=col)
+        c.font = bold
+        c.fill = total_fill
+        c.border = border
+    row_num += 1
 
-    ws.append(["Total Records:", total_records])
-    ws.append(["Records with Errors:", records_with_errors])
-    ws.append(["Records Passing:", total_records - records_with_errors])
+    # Quick-glance block below the table
+    row_num += 1
+    ws.cell(row=row_num, column=1).value = "Total Records:"
+    ws.cell(row=row_num, column=2).value = total_records
+    ws.cell(row=row_num, column=1).font = bold
+    row_num += 1
+    ws.cell(row=row_num, column=1).value = "Records with Errors:"
+    ws.cell(row=row_num, column=2).value = records_with_errors
+    ws.cell(row=row_num, column=1).font = bold
+    row_num += 1
+    ws.cell(row=row_num, column=1).value = "Records Passing:"
+    ws.cell(row=row_num, column=2).value = total_records - records_with_errors
+    ws.cell(row=row_num, column=1).font = bold
 
+    # Autofit columns
     for col_idx, col_cells in enumerate(ws.columns, start=1):
         ws.column_dimensions[get_column_letter(col_idx)].width = (
             max(len(str(c.value)) if c.value else 0 for c in col_cells) + 3
