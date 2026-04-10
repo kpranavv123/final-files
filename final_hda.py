@@ -19,12 +19,12 @@ OUTPUT_EXCEL = r"C:\Users\SW526XH\Downloads\Data Quality Check\Output_Files\Vali
 # ======================================================
 # Load master/reference data
 # ======================================================
-part_set = set(pd.read_excel(PART_FILE, dtype=str)["MATERIALNUMBER_PLANT"].dropna().str.strip())
+part_set     = set(pd.read_excel(PART_FILE,     dtype=str)["MATERIALNUMBER_PLANT"].dropna().str.strip())
 customer_set = set(pd.read_excel(CUSTOMER_FILE, dtype=str)["SUPPLYINGPLANT_CUSTOMER"].dropna().str.strip())
-site_set = set(pd.read_excel(SITE_FILE, dtype=str)["PLANT"].dropna().str.strip())
+site_set     = set(pd.read_excel(SITE_FILE,     dtype=str)["PLANT"].dropna().str.strip())
 
 # ======================================================
-# Validation rules  — updated reason strings (change #2)
+# Validation rules
 # ======================================================
 rules = [
     ("PLANT",             "ERROR_PLANT",             "Plant is not present in site master."),
@@ -33,7 +33,7 @@ rules = [
     ("PLANT_SOLDTOPARTY", "ERROR_PLANT_SOLDTOPARTY",  "Plant-SoldToParty combination is not present in customer master."),
 ]
 
-ERROR_MESSAGES = {col: reason for field, col, reason in rules}   # col → reason
+ERROR_MESSAGES = {col: reason for field, col, reason in rules}
 
 ERROR_SHEETS = {
     "ERROR_PLANT":             ("PLANT",             ERROR_MESSAGES["ERROR_PLANT"]),
@@ -45,9 +45,9 @@ ERROR_SHEETS = {
 # ======================================================
 # Constants
 # ======================================================
-CHUNK_SIZE   = 500_000
+CHUNK_SIZE     = 500_000
 EXCEL_MAX_ROWS = 1_048_576
-date_pattern = re.compile(r"^\d{8}$")
+date_pattern   = re.compile(r"^\d{8}$")
 
 sheet_tracker = {
     sheet: {"sheet_no": 1, "current_row": 0}
@@ -79,7 +79,6 @@ with pd.ExcelWriter(OUTPUT_EXCEL, engine="openpyxl") as writer:
             if error_rows.empty:
                 continue
 
-            # ERROR_COLUMNS now carries the updated reason string
             error_rows["ERROR_COLUMNS"] = error_msg
             tracker = sheet_tracker[base_sheet]
             start = 0
@@ -125,37 +124,36 @@ for chunk in pd.read_csv(SUMMARY_HDA_FILE, sep="\t", dtype=str, chunksize=CHUNK_
 records_passing = total_records - records_with_errors
 
 # ======================================================
-# STYLING HELPERS
+# LOAD WORKBOOK FOR STYLING
 # ======================================================
 wb = load_workbook(OUTPUT_EXCEL)
 
-bold       = Font(bold=True)
-center     = Alignment(horizontal="center")
-thin_side  = Side(style="thin")
-border     = Border(left=thin_side, right=thin_side, top=thin_side, bottom=thin_side)
-title_fill  = PatternFill("solid", fgColor="BDD7EE")
-header_fill = PatternFill("solid", fgColor="D9E1F2")
-green_fill  = PatternFill("solid", fgColor="E2EFDA")
-total_fill  = PatternFill("solid", fgColor="F2F2F2")
-
-# Change #1 — fills for error sheets
+bold            = Font(bold=True)
+center          = Alignment(horizontal="center")
+thin_side       = Side(style="thin")
+border          = Border(left=thin_side, right=thin_side, top=thin_side, bottom=thin_side)
+title_fill      = PatternFill("solid", fgColor="BDD7EE")
+header_fill     = PatternFill("solid", fgColor="D9E1F2")
+green_fill      = PatternFill("solid", fgColor="E2EFDA")
+total_fill      = PatternFill("solid", fgColor="F2F2F2")
 pale_yellow_fill = PatternFill("solid", fgColor="FFF2CC")
 red_fill         = PatternFill("solid", fgColor="FF0000")
+blue_header_fill = PatternFill("solid", fgColor="BDD7EE")
 
 # ======================================================
-# APPLY PALE-YELLOW + RED-COLUMN STYLING TO ERROR SHEETS
+# APPLY STYLING TO ERROR SHEETS
+# Sort by base_sheet name length descending so "PLANT_SOLDTOPARTY"
+# is always matched before "PLANT" — fixes wrong-column-red bug
 # ======================================================
+sorted_error_sheets = sorted(
+    ERROR_SHEETS.items(),
+    key=lambda x: len(x[1][0]),
+    reverse=True
+)
 
-# Build a lookup: sheet_name → name of the "key" column that caused the error
-#   e.g. "PLANT" sheet uses column "PLANT", "MATERIAL_PLANT" sheet uses "MATERIAL_PLANT", …
-error_sheet_key_col = {}
-for error_col, (base_sheet, _) in ERROR_SHEETS.items():
-    # base_sheet is the column name used as sheet name (PLANT, BILLING_WEEK_START, …)
-    error_sheet_key_col[base_sheet] = base_sheet   # same string
-
-# Collect all sheet names that belong to error output (including overflow sheets like PLANT_2 …)
+# Collect all error sheet names present in workbook
 all_error_sheet_names = set()
-for error_col, (base_sheet, _) in ERROR_SHEETS.items():
+for error_col, (base_sheet, _) in sorted_error_sheets:
     for sname in wb.sheetnames:
         if sname == base_sheet or sname.startswith(base_sheet + "_"):
             all_error_sheet_names.add(sname)
@@ -163,19 +161,18 @@ for error_col, (base_sheet, _) in ERROR_SHEETS.items():
 for sheet_name in all_error_sheet_names:
     ws = wb[sheet_name]
 
-    # Identify which "base_sheet" this belongs to
+    # Match to base_sheet using longest-first sorted list
     matched_base = None
-    for error_col, (base_sheet, _) in ERROR_SHEETS.items():
+    for error_col, (base_sheet, _) in sorted_error_sheets:
         if sheet_name == base_sheet or sheet_name.startswith(base_sheet + "_"):
             matched_base = base_sheet
             break
     if matched_base is None:
         continue
 
-    # Find the column index of the error-highlighted column (header row = row 1)
+    # Find the column index of the error-highlighted column from header row
     highlight_col_idx = None
-    header_row = list(ws.iter_rows(min_row=1, max_row=1))
-    for cell in header_row[0]:
+    for cell in list(ws.iter_rows(min_row=1, max_row=1))[0]:
         if cell.value == matched_base:
             highlight_col_idx = cell.column
             break
@@ -187,13 +184,16 @@ for sheet_name in all_error_sheet_names:
         for col_idx in range(1, max_col + 1):
             cell = ws.cell(row=row_idx, column=col_idx)
             if row_idx == 1:
-                # Header row: keep existing header style, just skip re-filling
-                continue
-            # Data rows: pale yellow everywhere, red on the highlighted column
-            if highlight_col_idx is not None and col_idx == highlight_col_idx:
-                cell.fill = red_fill
+                # Header row → blue fill + bold + centered
+                cell.fill      = blue_header_fill
+                cell.font      = Font(bold=True)
+                cell.alignment = Alignment(horizontal="center")
             else:
-                cell.fill = pale_yellow_fill
+                # Data rows → pale yellow; red on the error column
+                if highlight_col_idx is not None and col_idx == highlight_col_idx:
+                    cell.fill = red_fill
+                else:
+                    cell.fill = pale_yellow_fill
 
 # ======================================================
 # SUMMARY SHEET
@@ -201,22 +201,22 @@ for sheet_name in all_error_sheet_names:
 ws = wb.create_sheet("Summary")
 
 ws.merge_cells("A1:G1")
-ws["A1"] = "HDA Validation Summary"
-ws["A1"].font = Font(bold=True, size=14)
-ws["A1"].fill = title_fill
+ws["A1"]           = "HDA Validation Summary"
+ws["A1"].font      = Font(bold=True, size=14)
+ws["A1"].fill      = title_fill
 ws["A1"].alignment = center
 
 ws.append(["#", "Field Name", "Error Count", "Record Count", "% Health", "% of Error", "Reason"])
 for col in range(1, 8):
-    c = ws.cell(row=2, column=col)
-    c.font  = bold
-    c.fill  = header_fill
-    c.border = border
-    c.alignment = center
+    c            = ws.cell(row=2, column=col)
+    c.font       = bold
+    c.fill       = header_fill
+    c.border     = border
+    c.alignment  = center
 
 row = 3
 for idx, (field, _, reason) in enumerate(rules, start=1):
-    cnt       = error_counts[field]
+    cnt        = error_counts[field]
     pct_error  = round((cnt / total_records) * 100, 2) if total_records else 0
     pct_health = round(100 - pct_error, 2)
     ws.append([idx, field, cnt, total_records, f"{pct_health}%", f"{pct_error}%", reason])
@@ -232,33 +232,39 @@ total_pct_health   = round(100 - total_pct_error, 2)
 ws.append(["", "TOTAL", total_errors, total_record_count,
            f"{total_pct_health}%", f"{total_pct_error}%", ""])
 for col in range(1, 8):
-    c = ws.cell(row=row, column=col)
+    c        = ws.cell(row=row, column=col)
     c.font   = bold
     c.fill   = total_fill
     c.border = border
 row += 1
 
 row += 1
-ws.cell(row=row, column=1).value = "Total Records";          ws.cell(row=row, column=2).value = total_records;          ws.cell(row=row, column=1).font = bold; row += 1
-ws.cell(row=row, column=1).value = "Records with Errors";    ws.cell(row=row, column=2).value = records_with_errors;    ws.cell(row=row, column=1).font = bold; row += 1
-ws.cell(row=row, column=1).value = "Records Passing";        ws.cell(row=row, column=2).value = records_passing;        ws.cell(row=row, column=1).font = bold
+for label, value in [
+    ("Total Records",        total_records),
+    ("Records with Errors",  records_with_errors),
+    ("Records Passing",      records_passing),
+]:
+    ws.cell(row=row, column=1).value = label
+    ws.cell(row=row, column=1).font  = bold
+    ws.cell(row=row, column=2).value = value
+    row += 1
 
 # ======================================================
-# RULESETS SHEET  — unchanged (change #3)
+# RULESETS SHEET
 # ======================================================
-wsr = wb.create_sheet("Rulesets")
+wsr                = wb.create_sheet("Rulesets")
 wsr.merge_cells("A1:C1")
-wsr["A1"] = "HDA – Validation Rules"
-wsr["A1"].font = Font(bold=True, size=14)
-wsr["A1"].fill = title_fill
+wsr["A1"]           = "HDA – Validation Rules"
+wsr["A1"].font      = Font(bold=True, size=14)
+wsr["A1"].fill      = title_fill
 wsr["A1"].alignment = center
 
 wsr.append(["#", "Field", "Rule Description"])
 for col in range(1, 4):
-    c = wsr.cell(row=2, column=col)
-    c.font  = bold
-    c.fill  = header_fill
-    c.border = border
+    c           = wsr.cell(row=2, column=col)
+    c.font      = bold
+    c.fill      = header_fill
+    c.border    = border
     c.alignment = center
 
 row = 3
