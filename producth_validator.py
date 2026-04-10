@@ -49,6 +49,16 @@ RULES_CONTENT = {
 }
 
 # ─────────────────────────────────────────────
+#  Change 3: Centralised reason messages
+#  (matches what summary Reason column shows)
+# ─────────────────────────────────────────────
+FIELD_REASON_MAP = {
+    **{f: f"{f}: is blank for FERT/HAWA material types." for f in NOT_BLANK_FIELDS},
+    "MATERIALTYPE": "MATERIALTYPE: Field must not be blank or must be FERT or HAWA.",
+    "IBPSTATUS":    "IBPSTATUS: Invalid value – must be 'IBP' or blank.",
+}
+
+# ─────────────────────────────────────────────
 #  Colours
 # ─────────────────────────────────────────────
 RED_FILL       = PatternFill("solid", start_color="FF0000", end_color="FF0000")
@@ -91,10 +101,11 @@ def style_header_row(ws, row: int, num_cols: int):
         cell.border    = THIN_BORDER
 
 
-def auto_width(ws, min_w=10, max_w=50):
+def auto_width(ws, min_w=10, max_w=60):
+    """Change 2: auto-fit column width based on content length."""
     for col in ws.columns:
         length = max((len(str(c.value)) if c.value else 0) for c in col)
-        ws.column_dimensions[get_column_letter(col[0].column)].width = min(max(length + 2, min_w), max_w)
+        ws.column_dimensions[get_column_letter(col[0].column)].width = min(max(length + 3, min_w), max_w)
 
 
 # ─────────────────────────────────────────────
@@ -117,7 +128,8 @@ class NotBlankValidator(FieldValidator):
             return None
         value = row.get(self.field)
         if is_blank(value):
-            return f"{self.field}: Must not be blank for FERT/HAWA materials"
+            # Change 3: use FIELD_REASON_MAP message so ERROR_COLUMNS matches summary Reason
+            return FIELD_REASON_MAP.get(self.field, f"{self.field}: is blank for FERT/HAWA material types.")
         return None
 
 
@@ -125,9 +137,9 @@ class MaterialTypeValidator(FieldValidator):
     def validate(self, row: pd.Series) -> Optional[str]:
         value = str(row.get("MATERIALTYPE", "")).strip().upper()
         if is_blank(value):
-            return "MATERIALTYPE: Field must not be blank"
+            return FIELD_REASON_MAP["MATERIALTYPE"]
         if value not in VALID_MATERIAL_TYPES:
-            return f"MATERIALTYPE: Invalid value '{value}' – must be FERT or HAWA"
+            return FIELD_REASON_MAP["MATERIALTYPE"]
         return None
 
 
@@ -136,7 +148,7 @@ class IBPStatusValidator(FieldValidator):
         raw   = row.get("IBPSTATUS", "")
         value = "" if is_blank(raw) else str(raw).strip()
         if value not in VALID_IBP_STATUSES and value.upper() not in VALID_IBP_STATUSES:
-            return f"IBPSTATUS: Invalid value '{value}' – must be 'IBP' or blank"
+            return FIELD_REASON_MAP["IBPSTATUS"]
         return None
 
 
@@ -211,8 +223,6 @@ class ExcelReportBuilder:
         self.error_fields = df_validated["_ERROR_FIELDS"]
         self.error_detail = df_validated["_ERROR_DETAIL"]
 
-    # ── public entry point ──────────────────────────────
-
     def build(self):
         self._write_main_sheet()
         self._write_summary_sheet()
@@ -240,7 +250,8 @@ class ExcelReportBuilder:
                 cell           = ws.cell(row=r_idx, column=c_idx, value=row[col])
                 cell.font      = BODY_FONT
                 cell.border    = THIN_BORDER
-                cell.alignment = Alignment(vertical="center")
+                # Change 5: centralise all text
+                cell.alignment = Alignment(horizontal="center", vertical="center")
 
                 if col in errored_fields:
                     cell.fill = RED_FILL
@@ -253,9 +264,7 @@ class ExcelReportBuilder:
         auto_width(ws)
         ws.row_dimensions[1].height = 30
 
-    # ══════════════════════════════════════════
-    #  Summary sheet  ← UPDATED
-    # ══════════════════════════════════════════
+    # ── Summary sheet ────────────────────────────────────
 
     def _write_summary_sheet(self):
         ws = self.wb.create_sheet("Summary")
@@ -269,12 +278,13 @@ class ExcelReportBuilder:
             for f in fields_set:
                 field_counts[f] += 1
 
-        # ── Title — spans all 7 columns ──
+        # ── Title ──
         ws.merge_cells("A1:G1")
         title_cell           = ws.cell(row=1, column=1, value="ProductHierarchy FG Validation Summary")
         title_cell.font      = Font(name="Arial", bold=True, size=14)
         title_cell.fill      = TITLE_FILL
-        title_cell.alignment = Alignment(horizontal="left", vertical="center")
+        # Change 5: centre title
+        title_cell.alignment = Alignment(horizontal="center", vertical="center")
         ws.row_dimensions[1].height = 24
 
         # ── Column headers ──
@@ -292,24 +302,31 @@ class ExcelReportBuilder:
             pct_error  = round((count / total_rows) * 100, 2) if total_rows else 0
             pct_health = round(100 - pct_error, 2)
 
+            # Change 1: populate Reason column from FIELD_REASON_MAP
+            reason = FIELD_REASON_MAP.get(col_name, f"{col_name}: is blank for FERT/HAWA material types.")
+
             ws.cell(row=row_num, column=1, value=field_num)
             ws.cell(row=row_num, column=2, value=col_name)
             ws.cell(row=row_num, column=3, value=count)
             ws.cell(row=row_num, column=4, value=total_rows)
             ws.cell(row=row_num, column=5, value=f"{pct_health}%")
             ws.cell(row=row_num, column=6, value=f"{pct_error}%")
-            ws.cell(row=row_num, column=7, value="")   # Reason col
+            ws.cell(row=row_num, column=7, value=reason)   # Change 1
 
             for c in range(1, 8):
                 ws.cell(row=row_num, column=c).font      = BODY_FONT
                 ws.cell(row=row_num, column=c).border    = THIN_BORDER
-                ws.cell(row=row_num, column=c).alignment = Alignment(horizontal="center")
+                # Change 5: centre, but wrap Reason column
+                align = Alignment(horizontal="center", vertical="center")
+                if c == 7:
+                    align = Alignment(horizontal="left", vertical="center", wrap_text=True)
+                ws.cell(row=row_num, column=c).alignment = align
 
             row_num += 1
 
         # ── TOTAL row ──
         total_errors       = sum(field_counts.values())
-        total_record_count = total_rows * len(field_counts)   # N rows × num fields
+        total_record_count = total_rows * len(field_counts)
         total_pct_error    = round((total_errors / total_record_count) * 100, 2) if total_record_count else 0
         total_pct_health   = round(100 - total_pct_error, 2)
 
@@ -325,11 +342,11 @@ class ExcelReportBuilder:
             ws.cell(row=row_num, column=c).font      = Font(name="Arial", bold=True)
             ws.cell(row=row_num, column=c).fill      = TOTAL_FILL
             ws.cell(row=row_num, column=c).border    = THIN_BORDER
-            ws.cell(row=row_num, column=c).alignment = Alignment(horizontal="center")
+            ws.cell(row=row_num, column=c).alignment = Alignment(horizontal="center", vertical="center")
 
-        row_num += 2   # blank spacer
+        row_num += 2
 
-        # ── Quick-glance stats block ──
+        # ── Stats block ──
         for label, value in [
             ("Total Records:",       total_rows),
             ("Records with Errors:", records_with_errors),
@@ -349,10 +366,8 @@ class ExcelReportBuilder:
 
             row_num += 1
 
-        # ── Column widths ──
-        col_widths = [6, 34, 14, 16, 12, 12, 50]
-        for c_idx, width in enumerate(col_widths, start=1):
-            ws.column_dimensions[get_column_letter(c_idx)].width = width
+        # Change 2: auto-fit all columns in summary based on content
+        auto_width(ws, min_w=8, max_w=70)
 
     # ── Rule_Set sheet ───────────────────────────────────
 
@@ -390,12 +405,12 @@ class ExcelReportBuilder:
                 field_cell.font      = Font(name="Arial", size=10, bold=(r_idx == 0))
                 field_cell.fill      = RULE_FILL
                 field_cell.border    = THIN_BORDER
-                field_cell.alignment = Alignment(vertical="center")
+                field_cell.alignment = Alignment(horizontal="center", vertical="center")
 
                 desc_cell           = ws.cell(row=current_row, column=3, value=rule_text)
                 desc_cell.font      = BODY_FONT
                 desc_cell.border    = THIN_BORDER
-                desc_cell.alignment = Alignment(wrap_text=True, vertical="center")
+                desc_cell.alignment = Alignment(wrap_text=True, vertical="center", horizontal="center")
 
                 current_row += 1
 
@@ -425,19 +440,22 @@ class ExcelReportBuilder:
         display_cols = [c for c in self.df.columns if c not in ("_ERROR_FIELDS", "_ERROR_DETAIL")]
 
         for field, row_indices in sorted(field_rows.items()):
-            sheet_name = field[:28] + "_ERR" if len(field) > 28 else field + "_ERR"
+            # Change 4: sheet name is just the field name, no _ERR suffix
+            sheet_name = field[:31]
             existing   = [s.title for s in self.wb.worksheets]
             counter    = 1
             base_name  = sheet_name
             while sheet_name in existing:
-                sheet_name = f"{base_name[:25]}_{counter}"
+                sheet_name = f"{base_name[:28]}_{counter}"
                 counter   += 1
 
             ws = self.wb.create_sheet(sheet_name)
 
             subset = self.df.loc[row_indices, display_cols].copy()
-            subset["ERROR_COLUMNS"] = subset.index.map(
-                lambda i, f=field: self.error_detail.loc[i].get(f, "")
+
+            # Change 3: ERROR_COLUMNS uses FIELD_REASON_MAP — same as summary Reason column
+            subset["ERROR_COLUMNS"] = FIELD_REASON_MAP.get(
+                field, f"{field}: is blank for FERT/HAWA material types."
             )
 
             final_cols = list(subset.columns)
@@ -452,7 +470,8 @@ class ExcelReportBuilder:
                     cell           = ws.cell(row=r_idx, column=c_idx, value=row[col])
                     cell.font      = BODY_FONT
                     cell.border    = THIN_BORDER
-                    cell.alignment = Alignment(vertical="center")
+                    # Change 5: centralise text
+                    cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
                     cell.fill      = ROW_ERROR_FILL
 
                 if field in col_idx_map:
@@ -466,7 +485,8 @@ class ExcelReportBuilder:
                 value=f"Total error rows for '{field}': {len(row_indices)}",
             ).font = Font(name="Arial", italic=True, size=9, bold=True)
 
-            auto_width(ws)
+            # Change 2: auto-fit columns based on content
+            auto_width(ws, min_w=10, max_w=60)
 
 
 # ─────────────────────────────────────────────
