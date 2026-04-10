@@ -49,25 +49,22 @@ CHUNK_SIZE = 500_000
 EXCEL_MAX_ROWS = 1_048_576
 date_pattern = re.compile(r"^\d{8}$")
 
-# Track rows and sheet numbers per error
 sheet_tracker = {
     sheet: {"sheet_no": 1, "current_row": 0}
     for sheet, _ in ERROR_SHEETS.values()
 }
 
 # ======================================================
-# WRITE ERROR DATA (SAFE, ALL FEATURES)
+# WRITE ERROR DATA
 # ======================================================
 with pd.ExcelWriter(OUTPUT_EXCEL, engine="openpyxl") as writer:
 
     for chunk in pd.read_csv(HDA_FILE, sep="\t", dtype=str, chunksize=CHUNK_SIZE):
         chunk = chunk.apply(lambda x: x.str.strip())
 
-        # Derived columns
         chunk["MATERIAL"] = chunk["MATERIAL_PLANT"].str.split("_", n=1).str[0]
         chunk["SOLDTOPARTY"] = chunk["PLANT_SOLDTOPARTY"].str.split("_", n=1).str[1]
 
-        # Validations
         chunk["ERROR_PLANT"] = chunk["PLANT"].apply(lambda x: "Yes" if pd.isna(x) or x not in site_set else "")
         chunk["ERROR_BILLING_WEEK_START"] = chunk["BILLING_WEEK_START"].apply(
             lambda x: "Yes" if pd.isna(x) or not date_pattern.match(x) else "")
@@ -76,7 +73,6 @@ with pd.ExcelWriter(OUTPUT_EXCEL, engine="openpyxl") as writer:
         chunk["ERROR_PLANT_SOLDTOPARTY"] = chunk["PLANT_SOLDTOPARTY"].apply(
             lambda x: "Yes" if pd.isna(x) or x not in customer_set else "")
 
-        # Write per error sheet (Excel-safe)
         for error_col, (base_sheet, error_msg) in ERROR_SHEETS.items():
             error_rows = chunk[chunk[error_col] == "Yes"].copy()
             if error_rows.empty:
@@ -133,43 +129,78 @@ wb = load_workbook(OUTPUT_EXCEL)
 
 bold = Font(bold=True)
 center = Alignment(horizontal="center")
-border = Border(*(Side(style="thin") for _ in range(4)))
+thin_side = Side(style="thin")
+border = Border(left=thin_side, right=thin_side, top=thin_side, bottom=thin_side)
 title_fill = PatternFill("solid", fgColor="BDD7EE")
 header_fill = PatternFill("solid", fgColor="D9E1F2")
 green_fill = PatternFill("solid", fgColor="E2EFDA")
+total_fill = PatternFill("solid", fgColor="F2F2F2")
 
-# ---------- SUMMARY ----------
+# ======================================================
+# ---------- SUMMARY SHEET ----------
+# ======================================================
 ws = wb.create_sheet("Summary")
-ws.merge_cells("A1:E1")
+
+# Title — spans all 7 columns now
+ws.merge_cells("A1:G1")
 ws["A1"] = "HDA Validation Summary"
 ws["A1"].font = Font(bold=True, size=14)
 ws["A1"].fill = title_fill
 ws["A1"].alignment = center
 
-ws.append(["#", "Field Name", "Error Count", "Error %", "Reason"])
-
-for col in range(1, 6):
+# Header row
+ws.append(["#", "Field Name", "Error Count", "Record Count", "% Health", "% of Error", "Reason"])
+for col in range(1, 8):
     c = ws.cell(row=2, column=col)
     c.font = bold
     c.fill = header_fill
     c.border = border
     c.alignment = center
 
+# Data rows — one per rule
 row = 3
 for idx, (field, _, reason) in enumerate(rules, start=1):
     cnt = error_counts[field]
-    pct = round((cnt / total_records) * 100, 2) if total_records else 0
-    ws.append([idx, field, cnt, f"{pct}%", reason])
-    for col in range(1, 6):
-        ws.cell(row=row, column=col).border = border
+    pct_error = round((cnt / total_records) * 100, 2) if total_records else 0
+    pct_health = round(100 - pct_error, 2)
+    ws.append([idx, field, cnt, total_records, f"{pct_health}%", f"{pct_error}%", reason])
+    for col in range(1, 8):
+        c = ws.cell(row=row, column=col)
+        c.border = border
     row += 1
 
-row += 1
-ws.append(["Total Records", total_records])
-ws.append(["Records with Errors", records_with_errors])
-ws.append(["Records Passing", records_passing])
+# TOTAL row
+total_errors = sum(error_counts[field] for field, _, _ in rules)
+total_record_count = total_records * len(rules)   # e.g. 60239 × 4 = 240956
+total_pct_error = round((total_errors / total_record_count) * 100, 2) if total_record_count else 0
+total_pct_health = round(100 - total_pct_error, 2)
 
-# ---------- RULESETS ----------
+ws.append(["", "TOTAL", total_errors, total_record_count,
+           f"{total_pct_health}%", f"{total_pct_error}%", ""])
+for col in range(1, 8):
+    c = ws.cell(row=row, column=col)
+    c.font = bold
+    c.fill = total_fill
+    c.border = border
+row += 1
+
+# Quick-glance block below the table
+row += 1
+ws.cell(row=row, column=1).value = "Total Records"
+ws.cell(row=row, column=2).value = total_records
+ws.cell(row=row, column=1).font = bold
+row += 1
+ws.cell(row=row, column=1).value = "Records with Errors"
+ws.cell(row=row, column=2).value = records_with_errors
+ws.cell(row=row, column=1).font = bold
+row += 1
+ws.cell(row=row, column=1).value = "Records Passing"
+ws.cell(row=row, column=2).value = records_passing
+ws.cell(row=row, column=1).font = bold
+
+# ======================================================
+# ---------- RULESETS SHEET ----------
+# ======================================================
 wsr = wb.create_sheet("Rulesets")
 wsr.merge_cells("A1:C1")
 wsr["A1"] = "HDA – Validation Rules"
@@ -178,7 +209,6 @@ wsr["A1"].fill = title_fill
 wsr["A1"].alignment = center
 
 wsr.append(["#", "Field", "Rule Description"])
-
 for col in range(1, 4):
     c = wsr.cell(row=2, column=col)
     c.font = bold
@@ -194,7 +224,9 @@ for idx, (field, _, reason) in enumerate(rules, start=1):
         wsr.cell(row=row, column=col).border = border
     row += 1
 
-# ---------- Autofit ----------
+# ======================================================
+# ---------- Autofit all sheets ----------
+# ======================================================
 for sheet in wb.sheetnames:
     wsx = wb[sheet]
     for col_idx, col_cells in enumerate(wsx.columns, start=1):
@@ -203,5 +235,4 @@ for sheet in wb.sheetnames:
         )
 
 wb.save(OUTPUT_EXCEL)
-
 print("✅ ALL FEATURES INCLUDED — script completed successfully")
