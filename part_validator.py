@@ -1,3 +1,4 @@
+
 import pandas as pd
 from openpyxl import Workbook
 from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
@@ -8,7 +9,7 @@ from openpyxl.utils import get_column_letter
 #  FILE PATHS
 # ─────────────────────────────────────────────
 INPUT_FILE  = r"D:\SEM-8\Track1\final-files\Part.xlsx"
-OUTPUT_FILE = r"D:\SEM-8\Track1\final-files\Validated_Part.xlsx"
+OUTPUT_FILE = r"D:\SEM-8\Track1\final-files\Validated_Part2.xlsx"
 
 # ─────────────────────────────────────────────
 #  CONSOLIDATED PL LIST
@@ -346,7 +347,13 @@ class ReportWriter:
         for bad_cols in error_map.values():
             for col in bad_cols:
                 col_error_counts[col] = col_error_counts.get(col, 0) + 1
-
+                
+        REASON_MAP = {
+        "PROCUREMENTTYPE": "Field is blank",
+        "MRPTYPE": "Field is blank",
+        "PLANT": "Value is not in the Consolidated PL list",
+        "ABCINDICATOR": "Field is blank",
+}
         # ── Per-field data rows ──
         row_num = 3
         for field_num, (col_name, count) in enumerate(col_error_counts.items(), start=1):
@@ -359,7 +366,8 @@ class ReportWriter:
             ws.cell(row=row_num, column=4, value=total_rows)
             ws.cell(row=row_num, column=5, value=f"{pct_health}%")
             ws.cell(row=row_num, column=6, value=f"{pct_error}%")
-            ws.cell(row=row_num, column=7, value="")   # Reason — extend if needed
+            reason_text = REASON_MAP.get(col_name, "Validation rule failed")
+            ws.cell(row=row_num, column=7, value=reason_text)   # Reason — extend if needed
 
             for c in range(1, 8):
                 ws.cell(row=row_num, column=c).font      = BODY_FONT
