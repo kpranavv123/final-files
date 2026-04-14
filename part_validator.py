@@ -574,22 +574,10 @@
 #     processor.run()
 
 
-import io
 import pandas as pd
 from openpyxl import Workbook
 from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
-
-# ─────────────────────────────────────────────
-#  SHAREPOINT CREDENTIALS & CONFIG
-# ─────────────────────────────────────────────
-SHAREPOINT_URL      = "https://<your-tenant>.sharepoint.com"          # ← update
-SHAREPOINT_SITE     = "/sites/<your-site>"                             # ← update
-SHAREPOINT_FILE_PATH = "Shared Documents/<folder>/ConsolidatedPL.xlsx" # ← update relative path on SharePoint
-SHAREPOINT_EMAIL    = "your.email@company.com"                         # ← update
-SHAREPOINT_PASSWORD = "your_password"                                  # ← update
-SHAREPOINT_SHEET    = "March 2006"                                     # subsheet name
-SHAREPOINT_COL      = "Plant code"                                     # column name in that sheet
 
 # ─────────────────────────────────────────────
 #  FILE PATHS
@@ -598,64 +586,33 @@ INPUT_FILE  = r"C:\Users\M sD\Downloads\Data_rulesets_check\Excel_Files\Part_sit
 OUTPUT_FILE = r"C:\Users\M sD\Downloads\Data_rulesets_check\Output_Files\Validated_Part.xlsx"
 
 # ─────────────────────────────────────────────
-#  LOAD VALID PLANTS FROM SHAREPOINT
+#  CONSOLIDATED PL LIST  (hardcoded)
 # ─────────────────────────────────────────────
-def load_valid_plants_from_sharepoint(
-    sharepoint_url: str,
-    sharepoint_site: str,
-    file_path: str,
-    email: str,
-    password: str,
-    sheet_name: str,
-    column_name: str,
-) -> set:
-    """
-    Connects to SharePoint with email/password credentials,
-    downloads the Excel file, reads the given sheet, and returns
-    a set of plant codes from the specified column.
-
-    Requirements:
-        pip install Office365-REST-Python-Client openpyxl
-    """
-    try:
-        from office365.sharepoint.client_context import ClientContext
-        from office365.runtime.auth.user_credential import UserCredential
-    except ImportError:
-        raise ImportError(
-            "Office365-REST-Python-Client is not installed.\n"
-            "Run: pip install Office365-REST-Python-Client"
-        )
-
-    print(f"🔐  Connecting to SharePoint as {email} …")
-    ctx = ClientContext(sharepoint_url + sharepoint_site).with_credentials(
-        UserCredential(email, password)
-    )
-
-    # Download file bytes
-    file_url = f"{sharepoint_site}/{file_path}"
-    response = ctx.web.get_file_by_server_relative_url(file_url).download().execute_query()
-
-    print(f"📥  Downloading plant list from SharePoint …")
-    # response.value holds the raw bytes of the file
-    file_bytes = response.value
-
-    df = pd.read_excel(io.BytesIO(file_bytes), sheet_name=sheet_name, dtype=str)
-    df.columns = [c.strip() for c in df.columns]
-
-    if column_name not in df.columns:
-        raise ValueError(
-            f"Column '{column_name}' not found in sheet '{sheet_name}'.\n"
-            f"Available columns: {list(df.columns)}"
-        )
-
-    plants = set(
-        str(v).strip().upper()
-        for v in df[column_name].dropna()
-        if str(v).strip() != ""
-    )
-    print(f"✅  Loaded {len(plants)} plant codes from SharePoint.")
-    return plants
-
+VALID_PLANTS = {
+    "1127", "1100", "1105", "1146", "1156", "1107", "1157", "1158", "1166", "1180",
+    "1184", "1186", "1197", "1203", "1204", "1211", "1213", "1214", "1218", "1223",
+    "1110", "1225", "1226", "1229", "1233", "1234", "1240", "1113", "1248", "1253",
+    "1257", "1258", "1265", "1114", "1145", "1275", "1279", "1416", "1421", "1423",
+    "1425", "1426", "1428", "1429", "1430", "1432", "1433", "1436", "1437", "1438",
+    "1439", "1440", "1442", "1445", "1449", "1451", "1452", "1455", "1463",
+    "1471", "1473", "1475", "1476", "1477", "1478", "1480", "1481", "1483", "1484",
+    "1485", "1487", "1488", "1491", "1495", "1500", "1501", "1505",
+    "1506", "1507", "1508", "1509", "1521", "1525", "1563", "1578", "1650",
+    "1651", "1652", "1654", "1656", "1657", "1658", "1659", "1661", "1579", "1627",
+    "1589", "1623", "1646", "1647", "1640", "1112", "5011637", "5123296",
+    "5123742", "4007430", "1722", "1724", "1725", "1726", "1731", "1732",
+    "1733", "1734", "1738", "1739", "1740", "1742", "1754", "1757", "1758", "1771",
+    "1774", "1780", "1784", "1785", "1788", "1511", "1512", "1448", "4011702",
+    "5013796", "5018849", "5011407", "5015073", "5011308", "5123531", "1642", "1638",
+    "1104", "1104A", "1643", "1106", "1109", "1645",
+    "1111", "1648", "1649", "1653", "1801", "1802",
+    "2082", "2091", "2088", "2089", "2083", "2084", "2085", "2090", "2081",
+    "2086", "2087", "1554", "1520", "1472", "1571", "1298", "1295", "1196",
+    "1292", "1176", "1441", "1522", "1494", "1489", "1518", "1249", "1296",
+    "1137", "1208", "1155", "1569", "1235", "1281", "1503", "1482", "1135",
+    "1205", "1241", "1499", "1462", "1555", "1559", "1575", "2092", "1558",
+    "1601", "1125", "1256", "1568",
+}
 
 # ─────────────────────────────────────────────
 #  STYLING CONSTANTS
@@ -678,8 +635,8 @@ THIN_BORDER = Border(
 )
 
 # ─────────────────────────────────────────────
-#  Columns shown in error sheets
-#  (must match keys in RULES_CONTENT exactly)
+#  FEATURE 2: Only these columns shown in error sheets
+#  (mirrors the Rules sheet fields exactly)
 # ─────────────────────────────────────────────
 RULES_FIELDS_ORDERED = [
     "MATERIALNUMBER",
@@ -694,7 +651,9 @@ RULES_FIELDS_ORDERED = [
     "XPLANTMATSTATUS",
 ]
 
-# Priority order for error sub-sheets (change 2 → sheets for these 4 first)
+# ─────────────────────────────────────────────
+#  FEATURE 3: Error sub-sheet creation order
+# ─────────────────────────────────────────────
 ERROR_SHEET_PRIORITY = [
     "PLANT",
     "PROCUREMENTTYPE",
@@ -735,7 +694,7 @@ class RuleEngine:
         valstr = str(raw).strip()
         if not valstr.isdigit():
             return False, self.M_NUMBER_REASON
-        val = int(valstr)
+        val      = int(valstr)
         mat_type = str(row.get("PRODUCTTYPE", "")).strip().upper()
         if mat_type == "FERT" and 14000000000000 <= val <= 14999999999999:
             return True, ""
@@ -862,7 +821,7 @@ class ReportWriter:
         ],
         "PLANT": [
             "Must not be blank.",
-            "Must be present in the Consolidated PL list (loaded from SharePoint).",
+            "Must be present in the Consolidated PL list (hardcoded in script).",
         ],
         "PRODUCTDESCRIPTION": ["Must not be blank."],
         "PRODUCTTYPE": [
@@ -906,7 +865,9 @@ class ReportWriter:
     def _auto_width(self, ws, min_w=10, max_w=60):
         for col in ws.columns:
             length = max((len(str(c.value)) if c.value else 0) for c in col)
-            ws.column_dimensions[get_column_letter(col[0].column)].width = min(max(length + 3, min_w), max_w)
+            ws.column_dimensions[get_column_letter(col[0].column)].width = min(
+                max(length + 3, min_w), max_w
+            )
 
     # ── Summary sheet ────────────────────────
     def _write_summary_sheet(self, wb, error_map: dict, total_rows: int):
@@ -949,9 +910,9 @@ class ReportWriter:
 
         row_num = 3
         for field_num, col_name in enumerate(RULES_FIELDS_ORDERED, start=1):
-            count      = col_error_counts.get(col_name, 0)
-            pct_error  = round((count / total_rows) * 100, 2) if total_rows else 0
-            pct_health = round(100 - pct_error, 2)
+            count       = col_error_counts.get(col_name, 0)
+            pct_error   = round((count / total_rows) * 100, 2) if total_rows else 0
+            pct_health  = round(100 - pct_error, 2)
             reason_text = REASON_MAP.get(col_name, "") if count > 0 else ""
 
             ws.cell(row=row_num, column=1, value=field_num)
@@ -965,7 +926,9 @@ class ReportWriter:
             for c in range(1, 8):
                 ws.cell(row=row_num, column=c).font      = BODY_FONT
                 ws.cell(row=row_num, column=c).border    = THIN_BORDER
-                align = Alignment(horizontal="left" if c == 7 else "center", vertical="center")
+                align = Alignment(
+                    horizontal="left" if c == 7 else "center", vertical="center"
+                )
                 ws.cell(row=row_num, column=c).alignment = align
             row_num += 1
 
@@ -976,7 +939,8 @@ class ReportWriter:
         total_pct_health   = round(100 - total_pct_error, 2)
 
         for c_idx, val in enumerate(
-            ["", "TOTAL", total_errors, total_record_count, f"{total_pct_health}%", f"{total_pct_error}%", ""],
+            ["", "TOTAL", total_errors, total_record_count,
+             f"{total_pct_health}%", f"{total_pct_error}%", ""],
             start=1,
         ):
             cell           = ws.cell(row=row_num, column=c_idx, value=val)
@@ -1034,23 +998,25 @@ class ReportWriter:
         for field, rules_list in self.RULES_CONTENT.items():
             num_rules = len(rules_list)
             for r_idx, rule_text in enumerate(rules_list):
-                ws.cell(row=current_row, column=1,
-                        value=rule_num if r_idx == 0 else "").fill = RULE_FILL
-                ws.cell(row=current_row, column=1).font      = Font(name="Arial", size=10, bold=(r_idx == 0))
-                ws.cell(row=current_row, column=1).border    = THIN_BORDER
-                ws.cell(row=current_row, column=1).alignment = Alignment(horizontal="center", vertical="center")
+                num_cell           = ws.cell(row=current_row, column=1,
+                                             value=rule_num if r_idx == 0 else "")
+                num_cell.fill      = RULE_FILL
+                num_cell.font      = Font(name="Arial", size=10, bold=(r_idx == 0))
+                num_cell.border    = THIN_BORDER
+                num_cell.alignment = Alignment(horizontal="center", vertical="center")
 
-                ws.cell(row=current_row, column=2,
-                        value=field if r_idx == 0 else "").fill = RULE_FILL
-                ws.cell(row=current_row, column=2).font      = Font(name="Arial", size=10, bold=(r_idx == 0))
-                ws.cell(row=current_row, column=2).border    = THIN_BORDER
-                ws.cell(row=current_row, column=2).alignment = Alignment(horizontal="center", vertical="center")
+                fld_cell           = ws.cell(row=current_row, column=2,
+                                             value=field if r_idx == 0 else "")
+                fld_cell.fill      = RULE_FILL
+                fld_cell.font      = Font(name="Arial", size=10, bold=(r_idx == 0))
+                fld_cell.border    = THIN_BORDER
+                fld_cell.alignment = Alignment(horizontal="center", vertical="center")
 
                 desc_cell           = ws.cell(row=current_row, column=3, value=rule_text)
                 desc_cell.font      = BODY_FONT
                 desc_cell.border    = THIN_BORDER
-                desc_cell.alignment = Alignment(wrap_text=True, vertical="center", horizontal="center")
-
+                desc_cell.alignment = Alignment(wrap_text=True, vertical="center",
+                                                horizontal="center")
                 current_row += 1
 
             if num_rules > 1:
@@ -1068,24 +1034,21 @@ class ReportWriter:
     # ── Field Error Sheets ───────────────────
     def _write_field_error_sheets(self, wb, df: pd.DataFrame):
         """
-        Creates one error sub-sheet per failing field.
-
-        Changes vs original:
-        1. Only columns defined in RULES_CONTENT (+ ERROR_COLUMNS) are shown.
-        2. Sheet creation order: ERROR_SHEET_PRIORITY first, then remaining fields.
-        3. ABCINDICATOR sheet still skipped (force-fail rule, not a per-row sheet).
+        FEATURE 2: Only columns present in RULES_FIELDS_ORDERED are shown per sheet.
+        FEATURE 3: Sheet order = ERROR_SHEET_PRIORITY first, then remaining fields.
+        ABCINDICATOR sheet is always skipped (force-fail, summary-only rule).
         """
         v = self.validator
 
-        # Columns that may appear in error sheets = only those in rules sheet
+        # Only keep columns that exist in both the source data AND the rules list
         rules_cols_in_data = [c for c in RULES_FIELDS_ORDERED if c in df.columns]
 
-        all_error_fields = set()
+        # Collect all fields that have at least one error row
+        all_error_fields: set = set()
         for bad_cols in v.error_map.values():
             all_error_fields.update(bad_cols.keys())
 
-        # Build the sheet creation order:
-        # priority fields first (only if they have errors), then remaining alphabetically
+        # Build ordered list: priority fields first, then the rest alphabetically
         ordered_fields = []
         for f in ERROR_SHEET_PRIORITY:
             if f in all_error_fields and f != "ABCINDICATOR":
@@ -1095,19 +1058,19 @@ class ReportWriter:
                 ordered_fields.append(f)
 
         for field_name in ordered_fields:
-            row_indices = [idx for idx, errdict in v.error_map.items() if field_name in errdict]
+            row_indices = [
+                idx for idx, errdict in v.error_map.items() if field_name in errdict
+            ]
             if not row_indices:
                 continue
 
-            # ── Only keep columns that appear in the Rules sheet ──
-            display_cols = [c for c in rules_cols_in_data]   # ordered subset
-            subset = df.loc[row_indices, display_cols].copy()
-
+            # Subset: only rules-sheet columns + appended error reason column
+            subset = df.loc[row_indices, rules_cols_in_data].copy()
             subset["ERROR_COLUMNS"] = subset.index.map(
                 lambda i: v.error_map.get(i, {}).get(field_name, "")
             )
 
-            # Sheet name (Excel limit: 31 chars)
+            # Safe sheet name (Excel max 31 chars)
             sheet_name = field_name[:31]
             existing   = [s.title for s in wb.worksheets]
             counter    = 1
@@ -1122,14 +1085,18 @@ class ReportWriter:
             col_idx_map = {col: i for i, col in enumerate(subset.columns, start=1)}
 
             for r_idx, (orig_idx, row_data) in enumerate(subset.iterrows(), start=2):
-                for c_idx, (col, value) in enumerate(zip(subset.columns, row_data), start=1):
+                for c_idx, (col, value) in enumerate(
+                    zip(subset.columns, row_data), start=1
+                ):
                     cell           = ws.cell(row=r_idx, column=c_idx, value=value)
                     cell.font      = BODY_FONT
                     cell.border    = THIN_BORDER
-                    cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
-                    cell.fill      = ROW_FILL
+                    cell.alignment = Alignment(
+                        horizontal="center", vertical="center", wrap_text=True
+                    )
+                    cell.fill = ROW_FILL
 
-                # Highlight the erroring column in red
+                # Highlight the failing column in red
                 if field_name in col_idx_map:
                     target_cell      = ws.cell(row=r_idx, column=col_idx_map[field_name])
                     target_cell.fill = RED_FILL
@@ -1169,17 +1136,7 @@ class ReportWriter:
 class PartTableProcessor:
 
     def __init__(self, input_path: str, output_path: str):
-        # Load plant codes live from SharePoint
-        valid_plants = load_valid_plants_from_sharepoint(
-            sharepoint_url  = SHAREPOINT_URL,
-            sharepoint_site = SHAREPOINT_SITE,
-            file_path       = SHAREPOINT_FILE_PATH,
-            email           = SHAREPOINT_EMAIL,
-            password        = SHAREPOINT_PASSWORD,
-            sheet_name      = SHAREPOINT_SHEET,
-            column_name     = SHAREPOINT_COL,
-        )
-        self.validator = PartTableValidator(input_path, valid_plants)
+        self.validator = PartTableValidator(input_path, VALID_PLANTS)
         self.writer    = ReportWriter(self.validator, output_path)
 
     def run(self):
