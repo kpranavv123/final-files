@@ -7,21 +7,43 @@ from openpyxl.utils import get_column_letter
 # ======================================================
 # File paths
 # ======================================================
-HDA_FILE = r"C:\Users\SW526XH\Downloads\Data Quality Check\tabfiles\HDA_updated_2.tab"
-SUMMARY_HDA_FILE = r"C:\Users\SW526XH\Downloads\Data Quality Check\Output_Files\HDA_VALIDATED_2.tab"
+HDA_FILE         = r"C:\Users\SW526XH\Downloads\Go Live-1\HDA\HistoricalDemandActuals.tab"
+SUMMARY_HDA_FILE = r"C:\Users\SW526XH\Downloads\Go Live-1\HDA\HDA_Validated.tab"
 
-PART_FILE = r"C:\Users\SW526XH\Downloads\Data Quality Check\Excel_Files\Part.xlsx"
-CUSTOMER_FILE = r"C:\Users\SW526XH\Downloads\Data Quality Check\Excel_Files\Customer.xlsx"
-SITE_FILE = r"C:\Users\SW526XH\Downloads\Data Quality Check\Excel_Files\Site_2026-04-09-1058.csv.xlsx"
+PART_FILE     = r"C:\Users\SW526XH\Downloads\Go Live-1\HDA\Part_site_FG 10.04.2026.csv"
+CUSTOMER_FILE = r"C:\Users\SW526XH\Downloads\Go Live-1\HDA\Customer_2026-04-10-1807.xlsx"
+SITE_FILE     = r"C:\Users\SW526XH\Downloads\Go Live-1\HDA\Site_2026-04-09-1058.csv.xlsx"
 
-OUTPUT_EXCEL = r"C:\Users\SW526XH\Downloads\Data Quality Check\Output_Files\Validated_HDA2.xlsx"
+OUTPUT_EXCEL = r"C:\Users\SW526XH\Downloads\Go Live-1\HDA\Validated_HDA.xlsx"
+
+# ======================================================
+# Helper: Universal loader
+# ======================================================
+def read_input(path: str) -> pd.DataFrame:
+    if path.lower().endswith('.csv'):
+        return pd.read_csv(path, dtype=str)
+    return pd.read_excel(path, dtype=str)
 
 # ======================================================
 # Load master/reference data
 # ======================================================
-part_set     = set(pd.read_excel(PART_FILE,     dtype=str)["MATERIALNUMBER_PLANT"].dropna().str.strip())
-customer_set = set(pd.read_excel(CUSTOMER_FILE, dtype=str)["SUPPLYINGPLANT_CUSTOMER"].dropna().str.strip())
-site_set     = set(pd.read_excel(SITE_FILE,     dtype=str)["PLANT"].dropna().str.strip())
+print("📂 Loading reference files...")
+
+part_df = read_input(PART_FILE)
+part_df.columns = part_df.columns.str.strip().str.upper()
+if "MATERIALNUMBER_PLANT" not in part_df.columns:
+    part_df["MATERIALNUMBER_PLANT"] = part_df["MATERIALNUMBER"].astype(str).str.strip() + "_" + part_df["PLANT"].astype(str).str.strip()
+part_set = set(part_df["MATERIALNUMBER_PLANT"].dropna().str.strip())
+
+customer_df = read_input(CUSTOMER_FILE)
+customer_df.columns = customer_df.columns.str.strip().str.upper()
+if "SUPPLYINGPLANT_CUSTOMER" not in customer_df.columns:
+    customer_df["SUPPLYINGPLANT_CUSTOMER"] = customer_df["SUPPLYINGPLANT"].astype(str).str.strip() + "_" + customer_df["CUSTOMER"].astype(str).str.strip()
+customer_set = set(customer_df["SUPPLYINGPLANT_CUSTOMER"].dropna().str.strip())
+
+site_df = read_input(SITE_FILE)
+site_df.columns = site_df.columns.str.strip().str.upper()
+site_set = set(site_df["PLANT"].dropna().str.strip())
 
 # ======================================================
 # Validation rules
@@ -29,7 +51,7 @@ site_set     = set(pd.read_excel(SITE_FILE,     dtype=str)["PLANT"].dropna().str
 rules = [
     ("PLANT",             "ERROR_PLANT",             "Plant is not present in site master."),
     ("BILLING_WEEK_START","ERROR_BILLING_WEEK_START", "Must not be blank and must be in YYYYMMDD format."),
-    ("MATERIAL_PLANT",    "ERROR_MATERIAL_PLANT",     "Material-Part combination not present in the Part master."),
+    ("MATERIAL_PLANT",    "ERROR_MATERIAL_PLANT",     "Material-Plant combination not present in the Part master."),
     ("PLANT_SOLDTOPARTY", "ERROR_PLANT_SOLDTOPARTY",  "Plant-SoldToParty combination is not present in customer master."),
 ]
 
@@ -54,16 +76,28 @@ sheet_tracker = {
     for sheet, _ in ERROR_SHEETS.values()
 }
 
+error_counts = {field: 0 for field, _, _ in rules}
+total_records = 0
+records_with_errors = 0
+
 # ======================================================
 # WRITE ERROR DATA
 # ======================================================
+print("🔍 Validating HDA via streaming chunk ingestion...")
 with pd.ExcelWriter(OUTPUT_EXCEL, engine="openpyxl") as writer:
+    # Guard: write a placeholder so the workbook is never empty
+    pd.DataFrame({"_": ["placeholder"]}).to_excel(writer, sheet_name="_placeholder", index=False)
 
     for chunk in pd.read_csv(HDA_FILE, sep="\t", dtype=str, chunksize=CHUNK_SIZE):
         chunk = chunk.apply(lambda x: x.str.strip())
+        chunk.columns = chunk.columns.str.strip().str.upper()
+        total_records += len(chunk)
 
-        chunk["MATERIAL"]    = chunk["MATERIAL_PLANT"].str.split("_", n=1).str[0]
-        chunk["SOLDTOPARTY"] = chunk["PLANT_SOLDTOPARTY"].str.split("_", n=1).str[1]
+        # Build composite keys if they don't already exist in the .tab
+        if "MATERIAL_PLANT" not in chunk.columns:
+            chunk["MATERIAL_PLANT"] = chunk["MATERIAL"].astype(str).str.strip() + "_" + chunk["PLANT"].astype(str).str.strip()
+        if "PLANT_SOLDTOPARTY" not in chunk.columns:
+            chunk["PLANT_SOLDTOPARTY"] = chunk["PLANT"].astype(str).str.strip() + "_" + chunk["SOLDTOPARTY"].astype(str).str.strip()
 
         chunk["ERROR_PLANT"] = chunk["PLANT"].apply(
             lambda x: "Yes" if pd.isna(x) or x not in site_set else "")
@@ -73,6 +107,13 @@ with pd.ExcelWriter(OUTPUT_EXCEL, engine="openpyxl") as writer:
             lambda x: "Yes" if pd.isna(x) or x not in part_set else "")
         chunk["ERROR_PLANT_SOLDTOPARTY"] = chunk["PLANT_SOLDTOPARTY"].apply(
             lambda x: "Yes" if pd.isna(x) or x not in customer_set else "")
+
+        row_has_error = False
+        for field, col, _ in rules:
+            cnt = (chunk[col] == "Yes").sum()
+            error_counts[field] += cnt
+            row_has_error = row_has_error | (chunk[col] == "Yes")
+        records_with_errors += row_has_error.sum()
 
         for error_col, (base_sheet, error_msg) in ERROR_SHEETS.items():
             error_rows = chunk[chunk[error_col] == "Yes"].copy()
@@ -103,30 +144,20 @@ with pd.ExcelWriter(OUTPUT_EXCEL, engine="openpyxl") as writer:
                     tracker["sheet_no"] += 1
                     tracker["current_row"] = 0
 
-# ======================================================
-# SUMMARY CALCULATION (CHUNK SAFE)
-# ======================================================
-error_counts = {field: 0 for field, _, _ in rules}
-total_records = 0
-records_with_errors = 0
-
-for chunk in pd.read_csv(SUMMARY_HDA_FILE, sep="\t", dtype=str, chunksize=CHUNK_SIZE):
-    total_records += len(chunk)
-    row_has_error  = False
-
-    for field, col, _ in rules:
-        s = (chunk[col] == "Yes")
-        error_counts[field] += s.sum()
-        row_has_error |= s
-
-    records_with_errors += row_has_error.sum()
-
 records_passing = total_records - records_with_errors
+
+print("📝 Generating standardized reports...")
 
 # ======================================================
 # LOAD WORKBOOK FOR STYLING
 # ======================================================
 wb = load_workbook(OUTPUT_EXCEL)
+
+# Remove placeholder sheet
+if "_placeholder" in wb.sheetnames:
+    del wb["_placeholder"]
+if "Sheet" in wb.sheetnames:
+    del wb["Sheet"]
 
 bold            = Font(bold=True)
 center          = Alignment(horizontal="center")
@@ -184,12 +215,12 @@ for sheet_name in all_error_sheet_names:
         for col_idx in range(1, max_col + 1):
             cell = ws.cell(row=row_idx, column=col_idx)
             if row_idx == 1:
-                # Header row → blue fill + bold + centered
                 cell.fill      = blue_header_fill
                 cell.font      = Font(bold=True)
                 cell.alignment = Alignment(horizontal="center")
+                cell.border    = border
             else:
-                # Data rows → pale yellow; red on the error column
+                cell.border = border
                 if highlight_col_idx is not None and col_idx == highlight_col_idx:
                     cell.fill = red_fill
                 else:
@@ -219,7 +250,8 @@ for idx, (field, _, reason) in enumerate(rules, start=1):
     cnt        = error_counts[field]
     pct_error  = round((cnt / total_records) * 100, 2) if total_records else 0
     pct_health = round(100 - pct_error, 2)
-    ws.append([idx, field, cnt, total_records, f"{pct_health}%", f"{pct_error}%", reason])
+    display_reason = reason if cnt > 0 else ""
+    ws.append([idx, field, cnt, total_records, f"{pct_health}%", f"{pct_error}%", display_reason])
     for col in range(1, 8):
         ws.cell(row=row, column=col).border = border
     row += 1
@@ -286,4 +318,4 @@ for sheet in wb.sheetnames:
         )
 
 wb.save(OUTPUT_EXCEL)
-print("✅ ALL FEATURES INCLUDED — script completed successfully")
+print(f"✅ ALL FEATURES INCLUDED — script completed successfully → {OUTPUT_EXCEL}")
