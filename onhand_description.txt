@@ -1,0 +1,33 @@
+1)MATERIALNUMBER:
+"1. Material should range between 14000000000000 and 14999999999999.
+OR
+ Material should range between 15000000000000 and 15999999999999.
+2. Field should not be blank"
+
+2)MATERIALTYPE:
+
+3)BATCHNUMBER:Field should not be blank
+
+4)PLANT:" 1. To be present in the Site master 
+2. Field should not be blank"
+
+5)STORAGELOCATION:Field should not be blank
+
+6)WAREHOUSENUMBER:Field should not be blank
+
+7)DATEOFLASTGOODSRECEIPT:Field should not be blank
+
+8)SHELFLIFEEXPIRATION and DATEOFMANUFACTURE:Field should not be blank.
+
+9)TYPE:"1. Field should not be blank
+2. One of the following must be mentioned 
+"VALUATEDUNRESTRICTEDUSESTOCK, STOCKINTRANSFER, QUALITYINSPECTION,RESTRICTEDBATCHES,BLOCKEDSTOCK, BLOCKEDSTOCKRETURNS, SCHEDULEDFORDELIVERY"
+
+10)QTY:Field should not be blank
+
+11)STANDARDPRICE:Field should not be blank
+
+
+
+
+
