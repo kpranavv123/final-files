@@ -9,36 +9,37 @@ from openpyxl.utils import get_column_letter
 # ─────────────────────────────────────────────
 SITE_INPUT_FILE  = r"C:\Users\SW526XH\Downloads\Go Live-1\Site\Site_2026-04-09-1058.csv.xlsx"
 PART_INPUT_FILE  = r"C:\Users\SW526XH\Downloads\Go Live-1\Part\Part_site_FG 10.04.2026.csv"
-OUTPUT_FILE      = r"C:\Users\SW526XH\Downloads\Go Live-1\Site\Validated_Site.xlsx"
+OUTPUT_FILE      = r"C:\Users\SW526XH\Downloads\Go Live-1\Site\Validated_Site2.xlsx"
 
 
 # ─────────────────────────────────────────────
 #  CONSOLIDATED PL LIST
 # ─────────────────────────────────────────────
 VALID_PLANTS = [
-    "1127", "1100", "1105", "1146", "1156", "1107", "1157", "1158", "1166", "1180",
-    "1184", "1186", "1197", "1203", "1204", "1211", "1213", "1214", "1218", "1223",
-    "1110", "1225", "1226", "1229", "1233", "1234", "1240", "1113", "1248", "1253",
-    "1257", "1258", "1265", "1114", "1145", "1275", "1279", "1416", "1421", "1423",
-    "1425", "1426", "1428", "1429", "1430", "1432", "1433", "1436", "1437", "1438",
-    "1439", "1440", "1442", "1445", "1445", "1449", "1451", "1452", "1455", "1463",
-    "1471", "1473", "1475", "1476", "1477", "1478", "1480", "1481", "1483", "1484",
-    "1485", "1487", "1488", "1233", "1491", "1495", "1500", "1501", "1505", "1233",
-    "1506", "1507", "1421", "1508", "1509", "1521", "1525", "1563", "1578", "1650",
-    "1651", "1652", "1654", "1656", "1657", "1658", "1659", "1661", "1579", "1627",
-    "1589", "1623", "1509", "1646", "1647", "1640", "1112", "5011637", "5123296",
-    "5123742", "4007430", "1623", "1722", "1724", "1725", "1726", "1731", "1732",
-    "1733", "1734", "1738", "1739", "1740", "1742", "1754", "1757", "1758", "1771",
-    "1774", "1780", "1784", "1785", "1788", "1511", "1512", "1448", "4011702",
-    "5013796", "5018849", "5011407", "5015073", "5011308", "5123531", "1642", "1638",
-    "1104", "1104A", "1643", "1642", "1106", "1647", "1643", "1109", "1645",
-    "1645", "1111", "1648", "1648", "1649", "1649", "1653", "1653", "1801", "1802",
-    "2082", "2091", "2088", "2089", "2083", "2084", "2085", "2090", "2081",
-    "2086", "2087", "1554", "1520", "1472", "1571", "1298", "1295", "1196",
-    "1292", "1176", "1441", "1522", "1494", "1489", "1518", "1249", "1296",
-    "1137", "1208", "1155", "1569", "1235", "1281", "1503", "1482", "1135",
-    "1205", "1241", "1499", "1462", "1555", "1559", "1575", "2092", "1558",
-    "1601", "1125", "1256", "1568"
+  "1127","1100","1105","1146","1156","1107","1157","1158","1166","1180",
+  "1184","1186","1197","1203","1204","1211","1213","1214","1218","1223",
+  "1110","1225","1226","1229","1233","1234","1240","1113","1248","1253",
+  "1257","1258","1265","1114","1145","1275","1279","1416","1421","1423",
+  "1425","1426","1428","1429","1430","1432","1433","1436","1437","1438",
+  "1439","1440","1442","1445","1445","1449","1451","1452","1455","1463",
+  "1471","1473","1475","1476","1477","1478","1480","1481","1483","1484",
+  "1485","1487","1488","1233","1491","1495","1500","1501","1505","1233",
+  "1506","1507","1421","1508","1509","1521","1525","1563","1578","1650",
+  "1651","1652","1654","1656","1657","1658","1659","1661","1579","1627",
+  "1589","1623","1509","1646","1647","1640","1112","5011637","5123296",
+  "5123742","4007430","1623","1722","1724","1725","1726","1731","1732",
+  "1733","1734","1738","1739","1740","1742","1754","1757","1758","1771",
+  "1774","1780","1784","1785","1788","1511","1512","1448","4011702",
+  "5013796","5018849","5011407","5015073","5011308","5123531","1642",
+  "1638","1104","1104A","1643","1642","1106","1647","1643","1109","1645",
+  "1645","1111","1648","1648","1649","1649","1653","1653","1801","1802",
+  "2082","2091","2088","2089","2083","2084","2085","2090","2081","2086",
+  "2087","1554","1520","1472","1571","1298","1295","1196","1292","1176",
+  "1441","1522","1494","1489","1518","1249","1296","1137","1208","1155",
+  "1569","1235","1281","1503","1482","1135","1205","1241","1499","1462",
+  "1555","1559","1575","2092","1558","1601","1125","1256","1568","1948",
+  "1118",
+
 ]
 
 VALID_COMPANY_CODES = {"1001", "1006", "1009"}
@@ -59,9 +60,9 @@ STATS_FILL      = PatternFill("solid", start_color="EDEDED",  end_color="EDEDED"
 PLANT_SUB_FILL  = PatternFill("solid", start_color="FFFFFF",  end_color="FFFFFF")   # sub-rows (white, italic)
 
 # Summary header row uses the same blue as the screenshot
-SUMM_HDR_FILL   = PatternFill("solid", start_color="D9E1F2",  end_color="D9E1F2")
+SUMM_HDR_FILL   = PatternFill("solid", start_color="BDD7EE",  end_color="BDD7EE")
 # Summary title (row 1) — white background, no fill
-SUMM_TITLE_FILL = PatternFill("solid", start_color="FFFFFF",  end_color="FFFFFF")
+SUMM_TITLE_FILL = PatternFill("solid", start_color="BDD7EE",  end_color="BDD7EE")
 
 HDR_FONT    = Font(bold=True, name="Arial")
 BODY_FONT   = Font(name="Arial", size=10)
@@ -106,7 +107,7 @@ class SiteRuleEngine:
         if val not in self.valid_plants:
             return f"PLANT: '{val}' is not present in the Consolidated PL list"
         if val not in self.part_plants:
-            return f"PLANT: '{val}' has no active Part-Site combination in the Part master table"
+            return f"PLANT: '{val}' has no active Material-Plant combination in the Part master table"
         return ""
 
     def validate_name(self, row) -> str:
@@ -160,7 +161,7 @@ class SiteTableValidator:
         self.df = pd.read_excel(self.site_path, dtype=str)
         self.df.columns = [c.strip().upper() for c in self.df.columns]
 
-        part_df = pd.read_excel(self.part_path, dtype=str)
+        part_df = pd.read_csv(self.part_path, dtype=str)
         part_df.columns = [c.strip().upper() for c in part_df.columns]
 
         if "PLANT" not in part_df.columns:
@@ -223,7 +224,7 @@ class SiteTableValidator:
                 counts["blank"] += 1
             elif "consolidated pl list" in reason.lower():
                 counts["not_in_pl"] += 1
-            elif "part-site combination" in reason.lower():
+            elif "Material-Plant combination" in reason.lower():
                 counts["no_part_site"] += 1
         return counts
 
@@ -239,8 +240,8 @@ class SiteReportWriter:
     RULES_CONTENT = {
         "PLANT": [
             "Must not be blank.",
-            "Must be present in the Consolidated PL list (hardcoded in the script).",
-            "Must have an active Part-Site combination in the Part master table (PLANT column).",
+            "Must be present in the Consolidated PL list",
+            "Must have an active Material-Plant combination in the Part master table (PLANT column).",
         ],
         "NAME":           ["Must not be blank."],
         "ADDRESS":        ["Must not be blank."],
@@ -365,9 +366,9 @@ class SiteReportWriter:
                         "PLANT: is not present in the Consolidated PL list",
                     ),
                     (
-                        "  ↳ No Part-Site Combination",
+                        "  ↳ No Material-Plant Combination",
                         plant_subcounts["no_part_site"],
-                        "PLANT: has no active Part-Site combination in the Part master table",
+                        "PLANT: has no active Material-Plant combination in the Part master table",
                     ),
                 ]
 
