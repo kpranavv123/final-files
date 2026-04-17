@@ -7,9 +7,9 @@ from openpyxl.utils import get_column_letter
 # ─────────────────────────────────────────────
 #  FILE PATHS
 # ─────────────────────────────────────────────
-ONHAND_INPUT_FILE = r"C:\Users\SW526XH\Downloads\Go Live-1\Onhand\Onhand.xlsx"
-SITE_INPUT_FILE   = r"C:\Users\SW526XH\Downloads\Go Live-1\Site\Site_master.xlsx"
-OUTPUT_FILE       = r"C:\Users\SW526XH\Downloads\Go Live-1\Onhand\Validated_Onhand.xlsx"
+ONHAND_INPUT_FILE = r"C:\Users\SW526XH\Downloads\Go Live-2\OnHand\Onhand_updated.tab"
+SITE_INPUT_FILE   = r"C:\Users\SW526XH\Downloads\Go Live-2\OnHand\Site_2026-04-09-1058.xlsx"
+OUTPUT_FILE       = r"C:\Users\SW526XH\Downloads\Go Live-2\Onhand\Validated_Onhand.xlsx"
 
 
 # ─────────────────────────────────────────────
@@ -73,16 +73,16 @@ FIELDS_WITH_SUB_ROWS = {"MATERIALNUMBER", "PLANT"}
 # ─────────────────────────────────────────────
 FIELD_REASON = {
     "MATERIALNUMBER":                        "",   # sub-rows carry reasons
-    "MATERIALTYPE":                          "",   # no validation rules
-    "BATCHNUMBER":                           "BATCHNUMBER: Field is blank — batch number is mandatory",
+    # "MATERIALTYPE":                          "",   # no validation rules
+    "BATCHNUMBER":                           "BATCHNUMBER: Field is blank ",
     "PLANT":                                 "",   # sub-rows carry reasons
-    "STORAGELOCATION":                       "STORAGELOCATION: Field is blank — storage location is mandatory",
-    "WAREHOUSENUMBER":                       "WAREHOUSENUMBER: Field is blank — warehouse number is mandatory",
-    "DATEOFLASTGOODSRECEIPT":               "DATEOFLASTGOODSRECEIPT: Field is blank — date of last goods receipt is mandatory",
-    "SHELFLIFEEXPIRATION_DATEOFMANUFACTURE": "SHELFLIFEEXPIRATION_DATEOFMANUFACTURE: Field is blank — shelf life / manufacture date is mandatory",
+    "STORAGELOCATION":                       "STORAGELOCATION: Field is blank",
+    "WAREHOUSENUMBER":                       "WAREHOUSENUMBER: Field is blank ",
+    "DATEOFLASTGOODSRECEIPT":               "DATEOFLASTGOODSRECEIPT: Field is blank",
+    "SHELFLIFEEXPIRATION_DATEOFMANUFACTURE": "SHELFLIFEEXPIRATION_DATEOFMANUFACTURE: Field is blank",
     "TYPE":                                  "TYPE: Field is blank or not one of the 7 valid stock type values",
-    "QTY":                                   "QTY: Field is blank — quantity is mandatory",
-    "STANDARDPRICE":                         "STANDARDPRICE: Field is blank — standard price is mandatory",
+    "QTY":                                   "QTY: Field is blank",
+    "STANDARDPRICE":                         "STANDARDPRICE: Field is blank",
 }
 
 
@@ -115,9 +115,9 @@ class OnhandRuleEngine:
             "(must be 14000000000000–14999999999999 OR 15000000000000–15999999999999)"
         )
 
-    def validate_materialtype(self, row) -> str:
-        # No validation rules defined for this field
-        return ""
+    # def validate_materialtype(self, row) -> str:
+    #     # No validation rules defined for this field
+    #     return ""
 
     def validate_batchnumber(self, row) -> str:
         if self._is_blank(row.get("BATCHNUMBER")):
@@ -177,7 +177,7 @@ class OnhandRuleEngine:
     def get_rules(self) -> dict:
         return {
             "MATERIALNUMBER":                        self.validate_materialnumber,
-            "MATERIALTYPE":                          self.validate_materialtype,
+            # "MATERIALTYPE":                          self.validate_materialtype,
             "BATCHNUMBER":                           self.validate_batchnumber,
             "PLANT":                                 self.validate_plant,
             "STORAGELOCATION":                       self.validate_storagelocation,
@@ -204,7 +204,7 @@ class OnhandTableValidator:
         self.reason_map  = {}
 
     def load(self):
-        self.df = pd.read_excel(self.onhand_path, dtype=str)
+        self.df = pd.read_csv(self.onhand_path, sep="\t", dtype=str)
         self.df.columns = [c.strip().upper() for c in self.df.columns]
 
         site_df = pd.read_excel(self.site_path, dtype=str)
@@ -296,11 +296,11 @@ class OnhandReportWriter:
     RULES_CONTENT = {
         "MATERIALNUMBER": [
             "Must not be blank.",
-            "Must be in range 14000000000000–14999999999999 OR 15000000000000–15999999999999.",
+            "Must be in range 14000000000000-14999999999999 OR 15000000000000-15999999999999.",
         ],
-        "MATERIALTYPE": [
-            "No specific validation rules defined for this field.",
-        ],
+        # "MATERIALTYPE": [
+        #     "No specific validation rules defined for this field.",
+        # ],
         "BATCHNUMBER": [
             "Must not be blank.",
         ],
