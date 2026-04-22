@@ -101,7 +101,7 @@ class OnhandRuleEngine:
     def validate_materialnumber(self, row) -> str:
         val = row.get("MATERIALNUMBER", "")
         if self._is_blank(val):
-            return "MATERIALNUMBER: Field is blank — material number is mandatory"
+            return "MATERIALNUMBER: Field is blank"
         try:
             num = int(str(val).strip())
         except ValueError:
@@ -121,41 +121,41 @@ class OnhandRuleEngine:
 
     def validate_batchnumber(self, row) -> str:
         if self._is_blank(row.get("BATCHNUMBER")):
-            return "BATCHNUMBER: Field is blank — batch number is mandatory"
+            return "BATCHNUMBER: Field is blank"
         return ""
 
     def validate_plant(self, row) -> str:
         val = str(row.get("PLANT", "")).strip()
         if not val or val == "nan":
-            return "PLANT: Field is blank — plant code is mandatory"
+            return "PLANT: Field is blank"
         if val not in self.site_plants:
             return f"PLANT: '{val}' is not present in the Site master"
         return ""
 
     def validate_storagelocation(self, row) -> str:
         if self._is_blank(row.get("STORAGELOCATION")):
-            return "STORAGELOCATION: Field is blank — storage location is mandatory"
+            return "STORAGELOCATION: Field is blank"
         return ""
 
     def validate_warehousenumber(self, row) -> str:
         if self._is_blank(row.get("WAREHOUSENUMBER")):
-            return "WAREHOUSENUMBER: Field is blank — warehouse number is mandatory"
+            return "WAREHOUSENUMBER: Field is blank"
         return ""
 
     def validate_dateoflastgoodsreceipt(self, row) -> str:
         if self._is_blank(row.get("DATEOFLASTGOODSRECEIPT")):
-            return "DATEOFLASTGOODSRECEIPT: Field is blank — date of last goods receipt is mandatory"
+            return "DATEOFLASTGOODSRECEIPT: Field is blank "
         return ""
 
     def validate_shelflife(self, row) -> str:
         if self._is_blank(row.get("SHELFLIFEEXPIRATION_DATEOFMANUFACTURE")):
-            return "SHELFLIFEEXPIRATION_DATEOFMANUFACTURE: Field is blank — shelf life / manufacture date is mandatory"
+            return "SHELFLIFEEXPIRATION_DATEOFMANUFACTURE: Field is blank"
         return ""
 
     def validate_type(self, row) -> str:
         val = row.get("TYPE", "")
         if self._is_blank(val):
-            return "TYPE: Field is blank — stock type is mandatory"
+            return "TYPE: Field is blank"
         if str(val).strip().upper() not in VALID_TYPE_VALUES:
             return (
                 f"TYPE: '{str(val).strip()}' is invalid — must be one of: "
@@ -166,12 +166,12 @@ class OnhandRuleEngine:
 
     def validate_qty(self, row) -> str:
         if self._is_blank(row.get("QTY")):
-            return "QTY: Field is blank — quantity is mandatory"
+            return "QTY: Field is blank"
         return ""
 
     def validate_standardprice(self, row) -> str:
         if self._is_blank(row.get("STANDARDPRICE")):
-            return "STANDARDPRICE: Field is blank — standard price is mandatory"
+            return "STANDARDPRICE: Field is blank"
         return ""
 
     def get_rules(self) -> dict:
@@ -207,7 +207,7 @@ class OnhandTableValidator:
         self.df = pd.read_csv(self.onhand_path, sep="\t", dtype=str)
         self.df.columns = [c.strip().upper() for c in self.df.columns]
 
-        site_df = pd.read_excel(self.site_path, dtype=str)
+        site_df = pd.read_excel(self.site_path, dtype=str,engine="openpyxl")
         site_df.columns = [c.strip().upper() for c in site_df.columns]
 
         if "PLANT" not in site_df.columns:
@@ -438,7 +438,7 @@ class OnhandReportWriter:
                     (
                         "  ↳ Blank Material Number",
                         mat_subcounts["blank"],
-                        "MATERIALNUMBER: Field is blank — material number is mandatory",
+                        "MATERIALNUMBER: Field is blank",
                     ),
                     (
                         "  ↳ Out of Valid Range (14x / 15x trillion)",
@@ -474,7 +474,7 @@ class OnhandReportWriter:
                     (
                         "  ↳ Blank Plant Code",
                         plant_subcounts["blank"],
-                        "PLANT: Field is blank — plant code is mandatory",
+                        "PLANT: Field is blank",
                     ),
                     (
                         "  ↳ Not in Site Master",
