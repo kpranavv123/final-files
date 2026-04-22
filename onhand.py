@@ -1,3 +1,4 @@
+import re
 import pandas as pd
 from openpyxl import Workbook
 from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
@@ -25,10 +26,19 @@ VALID_TYPE_VALUES = {
     "SCHEDULEDFORDELIVERY",
 }
 
-MATERIAL_RANGE_1_MIN = 14_000_000_000_000
-MATERIAL_RANGE_1_MAX = 14_999_999_999_999
-MATERIAL_RANGE_2_MIN = 15_000_000_000_000
-MATERIAL_RANGE_2_MAX = 15_999_999_999_999
+# ── MATERIALNUMBER valid ranges ───────────────
+# Numeric ranges: each tuple is (min_inclusive, max_inclusive)
+MATERIAL_NUMERIC_RANGES = [
+    (14_000_000_000_000, 14_999_999_999_999),
+    (15_000_000_000_000, 15_999_999_999_999),
+    (16_000_000_000_000, 16_999_999_999_999),
+    (19_000_000_000_000, 19_999_999_999_999),
+    (20_000_000_000_000, 20_999_999_999_999),
+]
+
+# Alphanumeric range: 0000A0000000000000 – 0000ZZZZZZZZZZZZZZ
+# 18 characters: "0000" + one uppercase letter (A-Z) + 13 uppercase alphanumeric chars
+MATERIAL_ALPHA_PATTERN = re.compile(r'^0000[A-Z][0-9A-Z]{13}$')
 
 KEEP_COLS = [
     "MATERIALNUMBER", "MATERIALTYPE", "BATCHNUMBER", "PLANT",
@@ -102,17 +112,31 @@ class OnhandRuleEngine:
         val = row.get("MATERIALNUMBER", "")
         if self._is_blank(val):
             return "MATERIALNUMBER: Field is blank"
+
+        val_str = str(val).strip().upper()
+
+        # ── Try numeric ranges first ──
         try:
-            num = int(str(val).strip())
+            num = int(val_str)
+            for rmin, rmax in MATERIAL_NUMERIC_RANGES:
+                if rmin <= num <= rmax:
+                    return ""
+            return (
+                f"MATERIALNUMBER: '{val_str}' is out of valid range "
+                "(must be 14x / 15x / 16x / 19x / 20x trillion, "
+                "or alphanumeric 0000A0000000000000–0000ZZZZZZZZZZZZZZ)"
+            )
         except ValueError:
-            return f"MATERIALNUMBER: '{str(val).strip()}' is not a valid numeric material number"
-        in_range1 = MATERIAL_RANGE_1_MIN <= num <= MATERIAL_RANGE_1_MAX
-        in_range2 = MATERIAL_RANGE_2_MIN <= num <= MATERIAL_RANGE_2_MAX
-        if in_range1 or in_range2:
+            pass
+
+        # ── Try alphanumeric pattern: 0000A0000000000000 – 0000ZZZZZZZZZZZZZZ ──
+        if MATERIAL_ALPHA_PATTERN.match(val_str):
             return ""
+
         return (
-            f"MATERIALNUMBER: '{str(val).strip()}' is out of valid range "
-            "(must be 14000000000000–14999999999999 OR 15000000000000–15999999999999)"
+            f"MATERIALNUMBER: '{val_str}' is not a valid material number "
+            "(must be in numeric ranges 14x / 15x / 16x / 19x / 20x trillion, "
+            "or alphanumeric range 0000A0000000000000–0000ZZZZZZZZZZZZZZ)"
         )
 
     # def validate_materialtype(self, row) -> str:
@@ -296,7 +320,15 @@ class OnhandReportWriter:
     RULES_CONTENT = {
         "MATERIALNUMBER": [
             "Must not be blank.",
-            "Must be in range 14000000000000-14999999999999 OR 15000000000000-15999999999999.",
+            "Must be in one of the following numeric ranges: "
+            "14000000000000–14999999999999, "
+            "15000000000000–15999999999999, "
+            "16000000000000–16999999999999, "
+            "19000000000000–19999999999999, "
+            "20000000000000–20999999999999.",
+            "OR must match alphanumeric range: "
+            "0000A0000000000000–0000ZZZZZZZZZZZZZZ "
+            "(18 characters: '0000' + A–Z + 13 uppercase alphanumeric characters).",
         ],
         # "MATERIALTYPE": [
         #     "No specific validation rules defined for this field.",
@@ -441,10 +473,11 @@ class OnhandReportWriter:
                         "MATERIALNUMBER: Field is blank",
                     ),
                     (
-                        "  ↳ Out of Valid Range (14x / 15x trillion)",
+                        "  ↳ Out of Valid Range",
                         mat_subcounts["out_of_range"],
-                        "MATERIALNUMBER: Not in range 14000000000000–14999999999999 "
-                        "OR 15000000000000–15999999999999",
+                        "MATERIALNUMBER: Not in numeric ranges "
+                        "(14x / 15x / 16x / 19x / 20x trillion) "
+                        "or alphanumeric range 0000A0000000000000–0000ZZZZZZZZZZZZZZ",
                     ),
                 ]
                 for sub_label, sub_count, sub_reason in sub_definitions:
