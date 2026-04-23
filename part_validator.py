@@ -66,6 +66,7 @@ THIN_BORDER = Border(
 # ─────────────────────────────────────────────
 #  FEATURE 2: Only these columns shown in error sheets
 #  (mirrors the Rules sheet fields exactly)
+#  ABCINDICATOR removed entirely
 # ─────────────────────────────────────────────
 RULES_FIELDS_ORDERED = [
     "MATERIALNUMBER",
@@ -76,7 +77,6 @@ RULES_FIELDS_ORDERED = [
     "BASEUNIT",
     "MRPTYPE",
     "PROCUREMENTTYPE",
-    "ABCINDICATOR",
     "IBPSTATUS",
     "XPLANTMATSTATUS",
 ]
@@ -114,7 +114,6 @@ class RuleEngine:
     BASEUNIT_REASON = "BASEUNIT: Field is blank"
     MRPTYPE_REASON  = "MRPTYPE: Field is blank"
     PROC_REASON     = "PROCUREMENTTYPE: Field is blank"
-    ABC_REASON      = "ABCINDICATOR: Field is blank — defaulting to 100% error"
     IBP_REASON      = "IBPSTATUS: Must be 'IBP' or blank — unexpected value found"
     XPLANT_REASON   = "XPLANTMATSTATUS: Must be '2' or blank — unexpected value found"
 
@@ -154,13 +153,11 @@ class RuleEngine:
         if self._is_blank(row.get("PRODUCTHIERARCHY")):
             return False, self.PRODHIER_REASON
         return True, ""
-    
-    
+
     def validate_base_unit(self, row) -> tuple[bool, str]:
         if self._is_blank(row.get("BASEUNIT")):
             return False, self.BASEUNIT_REASON
         return True, ""
-
 
     def validate_mrp_type(self, row) -> tuple[bool, str]:
         val = str(row.get("MRPTYPE", "")).strip().upper()
@@ -172,10 +169,6 @@ class RuleEngine:
         if self._is_blank(row.get("PROCUREMENTTYPE")):
             return False, self.PROC_REASON
         return True, ""
-
-    def validate_abc_indicator(self, row) -> tuple[bool, str]:
-        # Force 100% error as requested
-        return False, self.ABC_REASON
 
     def validate_ibp_status(self, row) -> tuple[bool, str]:
         raw = row.get("IBPSTATUS")
@@ -203,7 +196,6 @@ class RuleEngine:
             "BASEUNIT":           self.validate_base_unit,
             "MRPTYPE":            self.validate_mrp_type,
             "PROCUREMENTTYPE":    self.validate_procurement_type,
-            "ABCINDICATOR":       self.validate_abc_indicator,
             "IBPSTATUS":          self.validate_ibp_status,
             "XPLANTMATSTATUS":    self.validate_xplant_mat_status,
         }
@@ -221,31 +213,31 @@ class PartTableValidator:
         self.error_map    = {}
 
     def load(self):
-     path = self.filepath.lower()
+        path = self.filepath.lower()
 
-     if path.endswith(".csv"):
-        self.df = pd.read_csv(self.filepath, dtype=str)
+        if path.endswith(".csv"):
+            self.df = pd.read_csv(self.filepath, dtype=str)
 
-     elif path.endswith(".tab") or path.endswith(".tsv"):
-        self.df = pd.read_csv(
-            self.filepath,
-            sep="\t",
-            dtype=str,
-            encoding="utf-8",
-            engine="python"
-        )
+        elif path.endswith(".tab") or path.endswith(".tsv"):
+            self.df = pd.read_csv(
+                self.filepath,
+                sep="\t",
+                dtype=str,
+                encoding="utf-8",
+                engine="python"
+            )
 
-     elif path.endswith(".xlsx") or path.endswith(".xls"):
-        self.df = pd.read_excel(
-            self.filepath,
-            dtype=str,
-            engine="openpyxl"
-        )
+        elif path.endswith(".xlsx") or path.endswith(".xls"):
+            self.df = pd.read_excel(
+                self.filepath,
+                dtype=str,
+                engine="openpyxl"
+            )
 
-     else:
-        raise ValueError(f"Unsupported file format: {self.filepath}")
+        else:
+            raise ValueError(f"Unsupported file format: {self.filepath}")
 
-     self.df.columns = [c.strip().upper() for c in self.df.columns]
+        self.df.columns = [c.strip().upper() for c in self.df.columns]
 
     def validate(self):
         engine = RuleEngine(self.valid_plants)
@@ -288,20 +280,14 @@ class ReportWriter:
             "Value must be either FERT or HAWA.",
         ],
         "PRODUCTHIERARCHY": ["Must not be blank."],
-        
         "BASEUNIT": [
             "Must not be blank.",
         ],
-
         "MRPTYPE": [
             "Must not be blank.",
             "Value must be either ND or PD.",
         ],
         "PROCUREMENTTYPE": ["Must not be blank."],
-        "ABCINDICATOR": [
-            "Must not be blank.",
-            "NOTE: Column is fully blank in source data – defaulting to 100% error.",
-        ],
         "IBPSTATUS": [
             "Allowed values: IBP or blank.",
             "Any other value is treated as an error.",
@@ -349,10 +335,9 @@ class ReportWriter:
             "PRODUCTDESCRIPTION": "PRODUCTDESCRIPTION: Field is blank",
             "PRODUCTTYPE":        "PRODUCTTYPE: Must be FERT or HAWA — invalid or blank value found",
             "PRODUCTHIERARCHY":   "PRODUCTHIERARCHY: Field is blank",
-            "BASEUNIT": "BASEUNIT: Field is blank",
+            "BASEUNIT":           "BASEUNIT: Field is blank",
             "MRPTYPE":            "MRPTYPE: Field is blank",
             "PROCUREMENTTYPE":    "PROCUREMENTTYPE: Field is blank",
-            "ABCINDICATOR":       "ABCINDICATOR: Field is blank",
             "IBPSTATUS":          "IBPSTATUS: Must be 'IBP' or blank — unexpected value found",
             "XPLANTMATSTATUS":    "XPLANTMATSTATUS: Must be '2' or blank — unexpected value found",
         }
@@ -501,7 +486,7 @@ class ReportWriter:
         """
         FEATURE 2: Only columns present in RULES_FIELDS_ORDERED are shown per sheet.
         FEATURE 3: Sheet order = ERROR_SHEET_PRIORITY first, then remaining fields.
-        ABCINDICATOR sheet is always skipped (force-fail, summary-only rule).
+        ABCINDICATOR has been fully removed from all processing.
         """
         v = self.validator
 
@@ -516,10 +501,10 @@ class ReportWriter:
         # Build ordered list: priority fields first, then the rest alphabetically
         ordered_fields = []
         for f in ERROR_SHEET_PRIORITY:
-            if f in all_error_fields and f != "ABCINDICATOR":
+            if f in all_error_fields:
                 ordered_fields.append(f)
         for f in sorted(all_error_fields):
-            if f not in ordered_fields and f != "ABCINDICATOR":
+            if f not in ordered_fields:
                 ordered_fields.append(f)
 
         for field_name in ordered_fields:
