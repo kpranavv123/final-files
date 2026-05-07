@@ -13,11 +13,10 @@ import os
 
 
 # ─────────────────────────────────────────────
-#  FILE PATHS
+#  FILE PATHS  –  update these
 # ─────────────────────────────────────────────
-INPUT_FILE  = r"D:\SEM-8\Track1\final-files\PRDHIERARCHY(FG).xlsx"
-OUTPUT_FILE = r"D:\SEM-8\Track1\final-files\Validated_ProductHierarchy.xlsx"
-
+INPUT_FILE  = r"C:\Users\SW526XH\Downloads\Go Live-1\ProductH\ProductHierarchy_2026-05-06-1313.tab"
+OUTPUT_FILE = r"C:\Users\SW526XH\Downloads\Go Live-1\ProductH\Validated_Product Hierarchy2.xlsx"
 
 # ─────────────────────────────────────────────
 #  CONSTANTS & CONFIGURATION
@@ -54,7 +53,7 @@ RULES_CONTENT = {
 # ─────────────────────────────────────────────
 FIELD_REASON_MAP = {
     **{f: f"{f}: is blank for FERT/HAWA material types." for f in NOT_BLANK_FIELDS},
-    "MATERIALTYPE": "MATERIALTYPE: Field must not be blank or must be FERT or HAWA.",
+    "MATERIALTYPE": "MATERIALTYPE: is blank for FERT/HAWA material types",
     "IBPSTATUS":    "IBPSTATUS: Invalid value – must be 'IBP' or blank.",
 }
 
@@ -518,8 +517,19 @@ class ValidationPipeline:
         ext = os.path.splitext(self.input_path)[1].lower()
         if ext in (".xlsx", ".xlsm", ".xls"):
             return pd.read_excel(self.input_path, dtype=str)
-        elif ext == ".csv":
-            return pd.read_csv(self.input_path, dtype=str)
+        
+        elif ext in (".csv", ".tab"):
+          
+          return pd.read_csv(
+          
+         self.input_path,
+         dtype=str,
+         sep="\t",
+         encoding="latin-1"
+
+)
+
+
         else:
             raise ValueError(f"Unsupported file type: {ext}")
 
