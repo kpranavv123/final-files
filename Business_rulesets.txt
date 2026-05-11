@@ -9,10 +9,12 @@ Site:
 2)REGION_DESCRIPTION:Field should not be blank
 
 HDA:
-1)BILLINGQUANTITY:No negative values
-2)NETAMOUNT:No negative values
-3)BILLINGDOCUMENTDATE:No future-dated transactions 
+1)TOTAL_BILLINGQUANTITYINBASEUNIT:No negative values
+2)BILLING_DATE:No future-dated transactions 
 
+HDA(SEcondary)
+1)INVOICE_QTY_IN_BU:No negative values
+2)INVOICE_DATE:No future-dated transactions 
 
 
 
