@@ -111,12 +111,27 @@ class HDABusinessRuleEngine:
         return True, ""
 
     # ── Rule 2: No future-dated transactions ──
+    @staticmethod
+    def _parse_date(raw: str):
+        """
+        Try YYYYMMDD first (e.g. 20260504), then fall back to
+        pandas general parsing for other formats (dd-mm-yyyy, yyyy-mm-dd, etc.).
+        Returns a datetime.date or raises ValueError.
+        """
+        s = raw.strip()
+        # YYYYMMDD — exactly 8 digits
+        if len(s) == 8 and s.isdigit():
+            from datetime import datetime
+            return datetime.strptime(s, "%Y%m%d").date()
+        # General fallback
+        return pd.to_datetime(s, dayfirst=False, errors="raise").date()
+
     def validate_billing_date(self, row) -> tuple[bool, str]:
         val = row.get(RULE2_KEY)
         if self._is_blank(val):
             return False, REASON_MAP[RULE2_KEY]
         try:
-            parsed = pd.to_datetime(str(val).strip(), dayfirst=False, errors="raise").date()
+            parsed = self._parse_date(str(val))
             if parsed > self.today:
                 return False, REASON_MAP[RULE2_KEY]
         except Exception:
