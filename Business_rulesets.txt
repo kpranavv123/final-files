@@ -1,0 +1,18 @@
+Part:
+1)There should not be any duplicates in the extract . Key - All columns
+2)MATERIALNUMBER: MATERIALNUMBER column should be mapped to single description (PRODUCTDESCRIPTION column)
+Ex: One material number should have only one product description
+
+
+Site:
+1)NODETYPESUPPLYCHAINNETWORK:Field should have valid node types - PL/TBP/3P/CFA/2P/Vending/3P Hybrid 
+2)REGION_DESCRIPTION:Field should not be blank
+
+HDA:
+1)BILLINGQUANTITY:No negative values
+2)NETAMOUNT:No negative values
+3)BILLINGDOCUMENTDATE:No future-dated transactions 
+
+
+
+
