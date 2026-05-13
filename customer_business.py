@@ -123,9 +123,15 @@ class CustomerBusinessValidator:
 
     @staticmethod
     def _clean(value) -> str:
+        """Strip whitespace and normalise to uppercase string.
+
+        Both child and parent values are normalised the same way so that
+        variations like leading/trailing spaces or mixed case cannot make
+        one logical parent value look like two distinct values.
+        """
         if pd.isna(value):
             return ""
-        return str(value).strip()
+        return str(value).strip().upper()          # ← uppercase added
 
     @staticmethod
     def _find_column(df: pd.DataFrame, candidates):
@@ -172,24 +178,53 @@ class CustomerBusinessValidator:
             sheet_name = f"{child_col}_{parent_col}"
 
             hierarchy_df = self.df[[child_col, parent_col]].copy()
-            hierarchy_df[child_col] = hierarchy_df[child_col].apply(self._clean)
+
+            # ── FIX: normalise both columns before any comparison ──────────
+            # Previously only _clean() was applied but the result was not
+            # uppercased, meaning "cs1" and "CS1" would appear as two distinct
+            # parent values, incorrectly flagging a child as multi-mapped.
+            hierarchy_df[child_col]  = hierarchy_df[child_col].apply(self._clean)
             hierarchy_df[parent_col] = hierarchy_df[parent_col].apply(self._clean)
 
+            # Drop rows where either key is blank
             hierarchy_df = hierarchy_df[
-                (hierarchy_df[child_col] != "") &
+                (hierarchy_df[child_col]  != "") &
                 (hierarchy_df[parent_col] != "")
             ]
 
-            parent_count_by_child = hierarchy_df.groupby(child_col)[parent_col].nunique(dropna=True)
-            invalid_children = set(parent_count_by_child[parent_count_by_child > 1].index)
+            # ── FIX: deduplicate (child, parent) pairs BEFORE counting ─────
+            # Without this step, repeated identical rows (not true duplicates
+            # in a logical sense) can still produce a correct nunique=1, but
+            # any accidental whitespace/case difference in a repeated row
+            # inflates the count.  Deduplication makes the mapping check
+            # purely structural: does this child value point to more than one
+            # distinct parent value?
+            unique_pairs = hierarchy_df.drop_duplicates(
+                subset=[child_col, parent_col]
+            )
+
+            parent_count_by_child = (
+                unique_pairs
+                .groupby(child_col)[parent_col]
+                .nunique()                         # now counts truly distinct parents
+            )
+
+            invalid_children = set(
+                parent_count_by_child[parent_count_by_child > 1].index
+            )
 
             for child_value in sorted(invalid_children):
                 affected_rows = self.df.index[
                     self.df[child_col].apply(self._clean) == child_value
                 ].tolist()
 
+                # Mapped parents are already normalised strings in unique_pairs
                 mapped_parents = sorted(
-                    set(hierarchy_df.loc[hierarchy_df[child_col] == child_value, parent_col]) - {""}
+                    set(
+                        unique_pairs.loc[
+                            unique_pairs[child_col] == child_value, parent_col
+                        ]
+                    ) - {""}
                 )
 
                 self.parent_child_error_rows.append({
@@ -204,7 +239,9 @@ class CustomerBusinessValidator:
                 })
 
                 for row_index in affected_rows:
-                    self.parent_child_error_detail_rows_by_sheet.setdefault(sheet_name, []).append({
+                    self.parent_child_error_detail_rows_by_sheet.setdefault(
+                        sheet_name, []
+                    ).append({
                         "row_index": row_index,
                         "ruleset": ruleset,
                         "rule": rule,
@@ -531,7 +568,9 @@ class CustomerBusinessReportWriter:
 
         row_num += 2
 
-        records_with_errors = len(set(self.validator.error_map.keys()).union(self.validator.duplicate_error_indices))
+        records_with_errors = len(
+            set(self.validator.error_map.keys()).union(self.validator.duplicate_error_indices)
+        )
         records_passing = total_rows - records_with_errors
 
         stats = [
