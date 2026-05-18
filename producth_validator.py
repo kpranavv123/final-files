@@ -265,7 +265,7 @@ class ExcelReportBuilder:
         auto_width(ws)
         ws.row_dimensions[1].height = 30
 
-    # ── Summary sheet ────────────────────────────────────
+    # ── Sheet 2: Summary ─────────────────────────────────
 
     def _write_summary_sheet(self):
         ws = self.wb.create_sheet("Summary")
@@ -297,18 +297,19 @@ class ExcelReportBuilder:
             cell.border    = THIN_BORDER
             cell.alignment = Alignment(horizontal="center", vertical="center")
 
-        # ── Per-field data rows ──
-        # Always iterate over ALL_SUMMARY_FIELDS so all 27 fields appear,
-        # even those with zero errors. Reason is only shown when count > 0.
+        # ── Per-field data rows: ALL 27 fields always written ──
         row_num = 3
         for field_num, col_name in enumerate(ALL_SUMMARY_FIELDS, start=1):
             count      = field_counts.get(col_name, 0)
             pct_error  = round((count / total_rows) * 100, 2) if total_rows else 0
             pct_health = round(100 - pct_error, 2)
 
-            # Only show Reason when there are actual errors for this field
-            reason = FIELD_REASON_MAP.get(col_name, f"{col_name}: is blank for FERT/HAWA material types.") \
-                     if count > 0 else ""
+            # Reason only populated when this field has actual errors
+            reason = (
+                FIELD_REASON_MAP.get(col_name, f"{col_name}: is blank for FERT/HAWA material types.")
+                if count > 0
+                else ""
+            )
 
             ws.cell(row=row_num, column=1, value=field_num)
             ws.cell(row=row_num, column=2, value=col_name)
@@ -322,10 +323,11 @@ class ExcelReportBuilder:
                 cell        = ws.cell(row=row_num, column=c)
                 cell.font   = BODY_FONT
                 cell.border = THIN_BORDER
-                if c == 7:
-                    cell.alignment = Alignment(horizontal="left", vertical="center", wrap_text=True)
-                else:
-                    cell.alignment = Alignment(horizontal="center", vertical="center")
+                cell.alignment = (
+                    Alignment(horizontal="left", vertical="center", wrap_text=True)
+                    if c == 7
+                    else Alignment(horizontal="center", vertical="center")
+                )
 
             row_num += 1
 
@@ -335,19 +337,16 @@ class ExcelReportBuilder:
         total_pct_error    = round((total_errors / total_record_count) * 100, 2) if total_record_count else 0
         total_pct_health   = round(100 - total_pct_error, 2)
 
-        ws.cell(row=row_num, column=1, value="")
-        ws.cell(row=row_num, column=2, value="TOTAL")
-        ws.cell(row=row_num, column=3, value=total_errors)
-        ws.cell(row=row_num, column=4, value=total_record_count)
-        ws.cell(row=row_num, column=5, value=f"{total_pct_health}%")
-        ws.cell(row=row_num, column=6, value=f"{total_pct_error}%")
-        ws.cell(row=row_num, column=7, value="")
-
-        for c in range(1, 8):
-            ws.cell(row=row_num, column=c).font      = Font(name="Arial", bold=True)
-            ws.cell(row=row_num, column=c).fill      = TOTAL_FILL
-            ws.cell(row=row_num, column=c).border    = THIN_BORDER
-            ws.cell(row=row_num, column=c).alignment = Alignment(horizontal="center", vertical="center")
+        for c_idx, val in enumerate(
+            ["", "TOTAL", total_errors, total_record_count,
+             f"{total_pct_health}%", f"{total_pct_error}%", ""],
+            start=1,
+        ):
+            cell           = ws.cell(row=row_num, column=c_idx, value=val)
+            cell.font      = Font(name="Arial", bold=True)
+            cell.fill      = TOTAL_FILL
+            cell.border    = THIN_BORDER
+            cell.alignment = Alignment(horizontal="center", vertical="center")
 
         row_num += 2
 
@@ -373,7 +372,7 @@ class ExcelReportBuilder:
 
         auto_width(ws, min_w=8, max_w=70)
 
-    # ── Rule_Set sheet ───────────────────────────────────
+    # ── Sheet 3: Rule_Set ────────────────────────────────
 
     def _write_ruleset_sheet(self):
         ws = self.wb.create_sheet("Rule_Set")
