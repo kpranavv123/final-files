@@ -1,7 +1,6 @@
 """
 PRODUCTHIERARCHY (FG) - Excel Data Validation Tool
-Validates fields based on material type rules AND parent-child mapping integrity.
-Generates a formatted Excel report.
+Validates fields based on material type rules and generates a formatted Excel report.
 """
 
 import pandas as pd
@@ -16,8 +15,8 @@ import os
 # ─────────────────────────────────────────────
 #  FILE PATHS  –  update these
 # ─────────────────────────────────────────────
-INPUT_FILE  = r"C:\Users\SW526XH\Downloads\Go Live-1\ProductH\ProductHierarchy_2026-05-06-1313.tab"
-OUTPUT_FILE = r"C:\Users\SW526XH\Downloads\Go Live-1\ProductH\Validated_Product Hierarchy2.xlsx"
+INPUT_FILE  = r"C:\Users\SW526XH\Downloads\Go Live-1\ProductH\Product Hierarchy_2026-05-14-1817.tab"
+OUTPUT_FILE = r"C:\Users\SW526XH\Downloads\Go Live-1\ProductH\Validated_Product Hierarchy_Technical2.xlsx"
 
 # ─────────────────────────────────────────────
 #  CONSTANTS & CONFIGURATION
@@ -36,48 +35,22 @@ NOT_BLANK_FIELDS = [
     "SUPPLY_FAMILY",
 ]
 
-# ── Parent-child pair definitions ────────────────────────────────────────────
-# Rule: one child value must map to exactly one unique parent value.
-# Tuple order: (parent_col, child_col)
-PARENT_CHILD_PAIRS = [
-    ("CATEGORYDESCRIPTION",  "PRODUCTDESCRIPTION"),
-    ("VARIANTDESCRIPTION",   "BRANDDESCRIPTION"),
-    ("SUBBRANDDESCRIPTION",  "BRANDVARIANTDESCRIPTION"),
-    ("PACKSIZEDESCRIPTION",  "MARKETSKUDESCRIPTION"),
-]
-
-# Human-readable reason messages for PC errors (keyed by child column)
-PC_REASON_MAP = {
-    child: (
-        f"{child}: mapped to multiple {parent} values. "
-        f"One {child} must map to exactly one {parent}."
-    )
-    for parent, child in PARENT_CHILD_PAIRS
-}
-
-# Rules to display in the Rule_Set sheet for PC pairs
-PC_RULES_CONTENT = {
-    f"{child} → {parent}": [
-        f"Each unique {child} value must map to exactly one {parent} value.",
-        f"Rows where {child} appears with more than one distinct {parent} are flagged as errors.",
-    ]
-    for parent, child in PARENT_CHILD_PAIRS
-}
-
 RULES_CONTENT = {
     **{f: ["Must not be blank for FERT/HAWA material types."] for f in NOT_BLANK_FIELDS},
     "MATERIALTYPE": [
         "Must not be blank.",
-        "Value must be either FERT or HAWA.",
+        "Validation applies only to FERT and HAWA material types.",
     ],
     "IBPSTATUS": [
         "Allowed values: IBP or blank.",
         "Any other value is treated as an error.",
     ],
-    **PC_RULES_CONTENT,
 }
 
-# Centralised reason messages for field-level errors
+# ─────────────────────────────────────────────
+#  Change 3: Centralised reason messages
+#  (matches what summary Reason column shows)
+# ─────────────────────────────────────────────
 FIELD_REASON_MAP = {
     **{f: f"{f}: is blank for FERT/HAWA material types." for f in NOT_BLANK_FIELDS},
     "MATERIALTYPE": "MATERIALTYPE: is blank for FERT/HAWA material types",
@@ -128,13 +101,14 @@ def style_header_row(ws, row: int, num_cols: int):
 
 
 def auto_width(ws, min_w=10, max_w=60):
+    """Change 2: auto-fit column width based on content length."""
     for col in ws.columns:
         length = max((len(str(c.value)) if c.value else 0) for c in col)
         ws.column_dimensions[get_column_letter(col[0].column)].width = min(max(length + 3, min_w), max_w)
 
 
 # ─────────────────────────────────────────────
-#  VALIDATION ENGINE  (field-level)
+#  VALIDATION ENGINE
 # ─────────────────────────────────────────────
 
 class FieldValidator:
@@ -153,6 +127,7 @@ class NotBlankValidator(FieldValidator):
             return None
         value = row.get(self.field)
         if is_blank(value):
+            # Change 3: use FIELD_REASON_MAP message so ERROR_COLUMNS matches summary Reason
             return FIELD_REASON_MAP.get(self.field, f"{self.field}: is blank for FERT/HAWA material types.")
         return None
 
@@ -160,8 +135,9 @@ class NotBlankValidator(FieldValidator):
 class MaterialTypeValidator(FieldValidator):
     def validate(self, row: pd.Series) -> Optional[str]:
         value = str(row.get("MATERIALTYPE", "")).strip().upper()
-        if is_blank(value) or value not in VALID_MATERIAL_TYPES:
+        if is_blank(value):
             return FIELD_REASON_MAP["MATERIALTYPE"]
+
         return None
 
 
@@ -201,72 +177,41 @@ class ProductHierarchyValidator:
                     errors.append(result)
         return errors
 
-    # ── Parent-child mapping validation (dataframe-level) ────────────────────
-    def validate_parent_child_mappings(self, df: pd.DataFrame) -> pd.Series:
-        """
-        For each PC pair, build child→set(parents) map.
-        Returns a Series (same index as df) where each element is a set of
-        (parent_col, child_col) tuples for pairs that are violated on that row.
-        Initialise with empty sets so non-error rows carry no overhead.
-        """
-        pc_errors: dict[int, set] = defaultdict(set)
-
-        for parent_col, child_col in PARENT_CHILD_PAIRS:
-            if parent_col not in df.columns or child_col not in df.columns:
-                continue
-
-            # Build child → set of unique parents (ignoring blank values)
-            child_to_parents: dict[str, set] = defaultdict(set)
-            for idx, row in df.iterrows():
-                p_val = str(row[parent_col]).strip() if not is_blank(row[parent_col]) else ""
-                c_val = str(row[child_col]).strip()  if not is_blank(row[child_col])  else ""
-                if c_val and p_val:
-                    child_to_parents[c_val].add(p_val)
-
-            # Flag rows where child has >1 unique parent
-            violating_children = {c for c, parents in child_to_parents.items() if len(parents) > 1}
-
-            for idx, row in df.iterrows():
-                c_val = str(row[child_col]).strip() if not is_blank(row[child_col]) else ""
-                if c_val in violating_children:
-                    pc_errors[idx].add((parent_col, child_col))
-
-        # Return as a Series aligned to df.index, defaulting to empty set
-        return pd.Series(
-            [pc_errors.get(idx, set()) for idx in df.index],
-            index=df.index,
-        )
-
     def validate_dataframe(self, df: pd.DataFrame) -> pd.DataFrame:
-        df = df.copy()
-        df.columns = df.columns.str.strip().str.upper()
 
-        error_list        = []
-        error_fields_list = []
-        error_detail_list = []
+     df = df.copy()
+     df.columns = df.columns.str.strip().str.upper()
 
-        for _, row in df.iterrows():
-            row_errors = self.validate_row(row)
-            error_list.append(" | ".join(row_errors) if row_errors else "")
+     # ✅ FILTER: Keep only FERT and HAWA
+     df["MATERIALTYPE"] = df["MATERIALTYPE"].str.strip().str.upper()
+     df = df[df["MATERIALTYPE"].isin(VALID_MATERIAL_TYPES)].copy()
 
-            fields_in_error = set()
-            field_reason    = {}
-            for e in row_errors:
-                field = e.split(":")[0].strip()
-                fields_in_error.add(field)
-                field_reason[field] = e
+     error_list        = []
+     error_fields_list = []
+     error_detail_list = []
 
-            error_fields_list.append(fields_in_error)
-            error_detail_list.append(field_reason)
+     # ✅ EVERYTHING inside loop
+     for _, row in df.iterrows():
+        row_errors = self.validate_row(row)
+        error_list.append(" | ".join(row_errors) if row_errors else "")
 
-        df["ERROR_COLUMNS"] = error_list
-        df["_ERROR_FIELDS"] = error_fields_list
-        df["_ERROR_DETAIL"] = error_detail_list
+        fields_in_error = set()
+        field_reason    = {}
 
-        # Parent-child errors stored separately – set of (parent_col, child_col) per row
-        df["_PC_ERROR_PAIRS"] = self.validate_parent_child_mappings(df).values
+        for e in row_errors:
+            field = e.split(":")[0].strip()
+            fields_in_error.add(field)
+            field_reason[field] = e
 
-        return df
+        error_fields_list.append(fields_in_error)
+        error_detail_list.append(field_reason)
+
+    # ✅ Assign AFTER loop
+     df["ERROR_COLUMNS"] = error_list
+     df["_ERROR_FIELDS"] = error_fields_list
+     df["_ERROR_DETAIL"] = error_detail_list
+
+     return df
 
 
 # ─────────────────────────────────────────────
@@ -284,14 +229,12 @@ class ExcelReportBuilder:
         self.error_df     = df_validated[df_validated["ERROR_COLUMNS"] != ""].copy()
         self.error_fields = df_validated["_ERROR_FIELDS"]
         self.error_detail = df_validated["_ERROR_DETAIL"]
-        self.pc_errors    = df_validated["_PC_ERROR_PAIRS"]   # Series of sets of tuples
 
     def build(self):
         self._write_main_sheet()
         self._write_summary_sheet()
         self._write_ruleset_sheet()
         self._write_per_field_error_sheets()
-        self._write_parent_child_error_sheets()
         self.wb.save(self.output)
         print(f"\n✅  Report saved → {self.output}")
 
@@ -299,42 +242,28 @@ class ExcelReportBuilder:
 
     def _write_main_sheet(self):
         ws         = self.wb.create_sheet("PRODUCTHIERARCHY_FG")
-        display_df = self.df.drop(columns=["_ERROR_FIELDS", "_ERROR_DETAIL", "_PC_ERROR_PAIRS"])
+        display_df = self.df.drop(columns=["_ERROR_FIELDS", "_ERROR_DETAIL"])
         headers    = list(display_df.columns)
 
         ws.append(headers)
         style_header_row(ws, 1, len(headers))
         ws.freeze_panes = "A2"
 
-        for r_idx, (orig_idx, row) in enumerate(display_df.iterrows(), start=2):
-            df_row_pos     = r_idx - 2
-            has_error      = bool(self.error_fields.iloc[df_row_pos])
-            errored_fields = self.error_fields.iloc[df_row_pos]
-            pc_pairs       = self.pc_errors.iloc[df_row_pos]  # set of (parent, child) tuples
-
-            # Collect all columns that are part of a PC violation on this row
-            pc_red_cols = set()
-            for parent_col, child_col in pc_pairs:
-                pc_red_cols.add(parent_col)
-                pc_red_cols.add(child_col)
-
-            has_pc_error = bool(pc_pairs)
+        for r_idx, (_, row) in enumerate(display_df.iterrows(), start=2):
+            has_error      = bool(self.error_fields.iloc[r_idx - 2])
+            errored_fields = self.error_fields.iloc[r_idx - 2]
 
             for c_idx, col in enumerate(headers, start=1):
                 cell           = ws.cell(row=r_idx, column=c_idx, value=row[col])
                 cell.font      = BODY_FONT
                 cell.border    = THIN_BORDER
+                # Change 5: centralise all text
                 cell.alignment = Alignment(horizontal="center", vertical="center")
 
                 if col in errored_fields:
-                    # Field-level error takes priority
                     cell.fill = RED_FILL
                     cell.font = ERR_FONT
-                elif col in pc_red_cols:
-                    # PC error – both parent and child cols highlighted red
-                    cell.fill = RED_FILL
-                    cell.font = ERR_FONT
-                elif has_error or has_pc_error:
+                elif has_error:
                     cell.fill = ROW_ERROR_FILL
                 else:
                     cell.fill = WHITE_FILL
@@ -349,37 +278,19 @@ class ExcelReportBuilder:
 
         total_rows          = len(self.df)
         records_with_errors = len(self.error_df)
+        records_passing     = total_rows - records_with_errors
 
-        # Also count rows with ONLY PC errors (no field errors) for the stats block
-        pc_error_only_rows = sum(
-            1 for idx in self.df.index
-            if self.pc_errors.loc[idx] and not self.error_fields.loc[idx]
-        )
-        records_with_any_error = (
-            self.df[
-                (self.df["ERROR_COLUMNS"] != "") |
-                (self.df["_PC_ERROR_PAIRS"].apply(bool))
-            ].shape[0]
-        )
-        records_passing = total_rows - records_with_any_error
-
-        # ── Field-level counts ────────────────────────────
         field_counts: dict[str, int] = defaultdict(int)
         for fields_set in self.error_fields:
             for f in fields_set:
                 field_counts[f] += 1
-
-        # ── PC-level counts (keyed by child_col) ─────────
-        pc_counts: dict[str, int] = defaultdict(int)
-        for pc_set in self.pc_errors:
-            for parent_col, child_col in pc_set:
-                pc_counts[child_col] += 1
 
         # ── Title ──
         ws.merge_cells("A1:G1")
         title_cell           = ws.cell(row=1, column=1, value="ProductHierarchy FG Validation Summary")
         title_cell.font      = Font(name="Arial", bold=True, size=14)
         title_cell.fill      = TITLE_FILL
+        # Change 5: centre title
         title_cell.alignment = Alignment(horizontal="center", vertical="center")
         ws.row_dimensions[1].height = 24
 
@@ -392,13 +303,14 @@ class ExcelReportBuilder:
             cell.border    = THIN_BORDER
             cell.alignment = Alignment(horizontal="center", vertical="center")
 
+        # ── Per-field data rows ──
         row_num = 3
-
-        # ── Per-field rows ──
         for field_num, (col_name, count) in enumerate(sorted(field_counts.items()), start=1):
             pct_error  = round((count / total_rows) * 100, 2) if total_rows else 0
             pct_health = round(100 - pct_error, 2)
-            reason     = FIELD_REASON_MAP.get(col_name, f"{col_name}: is blank for FERT/HAWA material types.")
+
+            # Change 1: populate Reason column from FIELD_REASON_MAP
+            reason = FIELD_REASON_MAP.get(col_name, f"{col_name}: is blank for FERT/HAWA material types.")
 
             ws.cell(row=row_num, column=1, value=field_num)
             ws.cell(row=row_num, column=2, value=col_name)
@@ -406,11 +318,12 @@ class ExcelReportBuilder:
             ws.cell(row=row_num, column=4, value=total_rows)
             ws.cell(row=row_num, column=5, value=f"{pct_health}%")
             ws.cell(row=row_num, column=6, value=f"{pct_error}%")
-            ws.cell(row=row_num, column=7, value=reason)
+            ws.cell(row=row_num, column=7, value=reason)   # Change 1
 
             for c in range(1, 8):
-                ws.cell(row=row_num, column=c).font   = BODY_FONT
-                ws.cell(row=row_num, column=c).border = THIN_BORDER
+                ws.cell(row=row_num, column=c).font      = BODY_FONT
+                ws.cell(row=row_num, column=c).border    = THIN_BORDER
+                # Change 5: centre, but wrap Reason column
                 align = Alignment(horizontal="center", vertical="center")
                 if c == 7:
                     align = Alignment(horizontal="left", vertical="center", wrap_text=True)
@@ -418,46 +331,11 @@ class ExcelReportBuilder:
 
             row_num += 1
 
-        # ── Per-PC-pair rows (appended after field rows) ──
-        pc_field_offset = len(field_counts)
-        for pc_num, (child_col, count) in enumerate(sorted(pc_counts.items()), start=1):
-            # Find corresponding parent
-            parent_col = next(
-                (p for p, c in PARENT_CHILD_PAIRS if c == child_col), "Unknown"
-            )
-            pct_error  = round((count / total_rows) * 100, 2) if total_rows else 0
-            pct_health = round(100 - pct_error, 2)
-            reason     = PC_REASON_MAP.get(child_col, f"{child_col}: mapped to multiple {parent_col} values.")
-
-            ws.cell(row=row_num, column=1, value=pc_field_offset + pc_num)
-            ws.cell(row=row_num, column=2, value=f"{child_col} → {parent_col}")
-            ws.cell(row=row_num, column=3, value=count)
-            ws.cell(row=row_num, column=4, value=total_rows)
-            ws.cell(row=row_num, column=5, value=f"{pct_health}%")
-            ws.cell(row=row_num, column=6, value=f"{pct_error}%")
-            ws.cell(row=row_num, column=7, value=reason)
-
-            for c in range(1, 8):
-                ws.cell(row=row_num, column=c).font   = BODY_FONT
-                ws.cell(row=row_num, column=c).border = THIN_BORDER
-                align = Alignment(horizontal="center", vertical="center")
-                if c == 7:
-                    align = Alignment(horizontal="left", vertical="center", wrap_text=True)
-                ws.cell(row=row_num, column=c).alignment = align
-
-            row_num += 1
-
-        # ── TOTAL row (field errors + PC errors combined) ──
-        total_field_errors = sum(field_counts.values())
-        total_pc_errors    = sum(pc_counts.values())
-        total_errors       = total_field_errors + total_pc_errors
-
-        total_field_record_count = total_rows * len(field_counts)
-        total_pc_record_count    = total_rows * len(pc_counts)
-        total_record_count       = total_field_record_count + total_pc_record_count
-
-        total_pct_error  = round((total_errors / total_record_count) * 100, 2) if total_record_count else 0
-        total_pct_health = round(100 - total_pct_error, 2)
+        # ── TOTAL row ──
+        total_errors       = sum(field_counts.values())
+        total_record_count = total_rows * len(field_counts)
+        total_pct_error    = round((total_errors / total_record_count) * 100, 2) if total_record_count else 0
+        total_pct_health   = round(100 - total_pct_error, 2)
 
         ws.cell(row=row_num, column=1, value="")
         ws.cell(row=row_num, column=2, value="TOTAL")
@@ -477,9 +355,9 @@ class ExcelReportBuilder:
 
         # ── Stats block ──
         for label, value in [
-            ("Total Records:",              total_rows),
-            ("Records with Errors:",        records_with_any_error),
-            ("Records Passing:",            records_passing),
+            ("Total Records:",       total_rows),
+            ("Records with Errors:", records_with_errors),
+            ("Records Passing:",     records_passing),
         ]:
             ws.merge_cells(start_row=row_num, start_column=1, end_row=row_num, end_column=2)
             label_cell           = ws.cell(row=row_num, column=1, value=label)
@@ -495,6 +373,7 @@ class ExcelReportBuilder:
 
             row_num += 1
 
+        # Change 2: auto-fit all columns in summary based on content
         auto_width(ws, min_w=8, max_w=70)
 
     # ── Rule_Set sheet ───────────────────────────────────
@@ -551,7 +430,7 @@ class ExcelReportBuilder:
             rule_num += 1
 
         ws.column_dimensions["A"].width = 6
-        ws.column_dimensions["B"].width = 38
+        ws.column_dimensions["B"].width = 30
         ws.column_dimensions["C"].width = 65
 
     # ── Per-field error sheets ───────────────────────────
@@ -565,9 +444,10 @@ class ExcelReportBuilder:
             for field in self.error_fields.loc[idx]:
                 field_rows[field].append(idx)
 
-        display_cols = [c for c in self.df.columns if c not in ("_ERROR_FIELDS", "_ERROR_DETAIL", "_PC_ERROR_PAIRS")]
+        display_cols = [c for c in self.df.columns if c not in ("_ERROR_FIELDS", "_ERROR_DETAIL")]
 
         for field, row_indices in sorted(field_rows.items()):
+            # Change 4: sheet name is just the field name, no _ERR suffix
             sheet_name = field[:31]
             existing   = [s.title for s in self.wb.worksheets]
             counter    = 1
@@ -579,6 +459,8 @@ class ExcelReportBuilder:
             ws = self.wb.create_sheet(sheet_name)
 
             subset = self.df.loc[row_indices, display_cols].copy()
+
+            # Change 3: ERROR_COLUMNS uses FIELD_REASON_MAP — same as summary Reason column
             subset["ERROR_COLUMNS"] = FIELD_REASON_MAP.get(
                 field, f"{field}: is blank for FERT/HAWA material types."
             )
@@ -595,6 +477,7 @@ class ExcelReportBuilder:
                     cell           = ws.cell(row=r_idx, column=c_idx, value=row[col])
                     cell.font      = BODY_FONT
                     cell.border    = THIN_BORDER
+                    # Change 5: centralise text
                     cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
                     cell.fill      = ROW_ERROR_FILL
 
@@ -609,77 +492,7 @@ class ExcelReportBuilder:
                 value=f"Total error rows for '{field}': {len(row_indices)}",
             ).font = Font(name="Arial", italic=True, size=9, bold=True)
 
-            auto_width(ws, min_w=10, max_w=60)
-
-    # ── Parent-child error sheets ────────────────────────
-
-    def _write_parent_child_error_sheets(self):
-        """
-        One sheet per PC pair that has violations.
-        Sheet name: PC_{child_col} (max 31 chars).
-        Both parent and child columns are highlighted red.
-        Overwrites ERROR_COLUMNS with the PC reason message.
-        """
-        display_cols = [c for c in self.df.columns if c not in ("_ERROR_FIELDS", "_ERROR_DETAIL", "_PC_ERROR_PAIRS")]
-
-        for parent_col, child_col in PARENT_CHILD_PAIRS:
-            # Collect row indices where this specific PC pair is violated
-            row_indices = [
-                idx for idx in self.df.index
-                if (parent_col, child_col) in self.pc_errors.loc[idx]
-            ]
-
-            if not row_indices:
-                continue
-
-            raw_name   = f"PC_{child_col}"
-            sheet_name = raw_name[:31]
-            existing   = [s.title for s in self.wb.worksheets]
-            counter    = 1
-            base_name  = sheet_name
-            while sheet_name in existing:
-                sheet_name = f"{base_name[:28]}_{counter}"
-                counter   += 1
-
-            ws = self.wb.create_sheet(sheet_name)
-
-            subset = self.df.loc[row_indices, display_cols].copy()
-            subset["ERROR_COLUMNS"] = PC_REASON_MAP.get(
-                child_col,
-                f"{child_col}: mapped to multiple {parent_col} values."
-            )
-
-            final_cols = list(subset.columns)
-            ws.append(final_cols)
-            style_header_row(ws, 1, len(final_cols))
-            ws.freeze_panes = "A2"
-
-            col_idx_map = {col: i for i, col in enumerate(final_cols, start=1)}
-
-            for r_idx, (orig_idx, row) in enumerate(subset.iterrows(), start=2):
-                for c_idx, col in enumerate(final_cols, start=1):
-                    cell           = ws.cell(row=r_idx, column=c_idx, value=row[col])
-                    cell.font      = BODY_FONT
-                    cell.border    = THIN_BORDER
-                    cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
-                    cell.fill      = ROW_ERROR_FILL
-
-                # Highlight both parent and child columns red
-                for highlight_col in (parent_col, child_col):
-                    if highlight_col in col_idx_map:
-                        target_cell      = ws.cell(row=r_idx, column=col_idx_map[highlight_col])
-                        target_cell.fill = RED_FILL
-                        target_cell.font = ERR_FONT
-
-            note_row = len(row_indices) + 3
-            ws.cell(
-                row=note_row, column=1,
-                value=(
-                    f"Total error rows for '{child_col} → {parent_col}' mapping violation: "
-                    f"{len(row_indices)}"
-                ),
-            ).font = Font(name="Arial", italic=True, size=9, bold=True)
-
+            # Change 2: auto-fit columns based on content
             auto_width(ws, min_w=10, max_w=60)
 
 
@@ -701,10 +514,8 @@ class ValidationPipeline:
         print(f"🔍  Validating {len(df)} rows …")
         df_validated = self.validator.validate_dataframe(df)
 
-        error_count    = (df_validated["ERROR_COLUMNS"] != "").sum()
-        pc_error_count = df_validated["_PC_ERROR_PAIRS"].apply(bool).sum()
-        print(f"⚠️   Field errors found in {error_count} row(s)")
-        print(f"⚠️   Parent-child mapping errors found in {pc_error_count} row(s)")
+        error_count = (df_validated["ERROR_COLUMNS"] != "").sum()
+        print(f"⚠️   Errors found in {error_count} row(s)")
 
         print("📝  Building Excel report …")
         builder = ExcelReportBuilder(df_validated, self.output_path)
@@ -714,13 +525,19 @@ class ValidationPipeline:
         ext = os.path.splitext(self.input_path)[1].lower()
         if ext in (".xlsx", ".xlsm", ".xls"):
             return pd.read_excel(self.input_path, dtype=str)
+        
         elif ext in (".csv", ".tab"):
-            return pd.read_csv(
-                self.input_path,
-                dtype=str,
-                sep="\t",
-                encoding="latin-1",
-            )
+          
+          return pd.read_csv(
+          
+         self.input_path,
+         dtype=str,
+         sep="\t",
+         encoding="latin-1"
+
+)
+
+
         else:
             raise ValueError(f"Unsupported file type: {ext}")
 
