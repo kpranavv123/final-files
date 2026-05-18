@@ -35,6 +35,10 @@ NOT_BLANK_FIELDS = [
     "SUPPLY_FAMILY",
 ]
 
+# Defines ALL fields that appear in the Summary (order matters).
+# MATERIALTYPE and IBPSTATUS are appended after the 25 NOT_BLANK_FIELDS.
+ALL_SUMMARY_FIELDS = NOT_BLANK_FIELDS + ["MATERIALTYPE", "IBPSTATUS"]
+
 RULES_CONTENT = {
     **{f: ["Must not be blank for FERT/HAWA material types."] for f in NOT_BLANK_FIELDS},
     "MATERIALTYPE": [
@@ -47,10 +51,7 @@ RULES_CONTENT = {
     ],
 }
 
-# ─────────────────────────────────────────────
-#  Change 3: Centralised reason messages
-#  (matches what summary Reason column shows)
-# ─────────────────────────────────────────────
+# Centralised reason messages (matches what the Summary Reason column shows)
 FIELD_REASON_MAP = {
     **{f: f"{f}: is blank for FERT/HAWA material types." for f in NOT_BLANK_FIELDS},
     "MATERIALTYPE": "MATERIALTYPE: is blank for FERT/HAWA material types",
@@ -101,7 +102,6 @@ def style_header_row(ws, row: int, num_cols: int):
 
 
 def auto_width(ws, min_w=10, max_w=60):
-    """Change 2: auto-fit column width based on content length."""
     for col in ws.columns:
         length = max((len(str(c.value)) if c.value else 0) for c in col)
         ws.column_dimensions[get_column_letter(col[0].column)].width = min(max(length + 3, min_w), max_w)
@@ -127,7 +127,6 @@ class NotBlankValidator(FieldValidator):
             return None
         value = row.get(self.field)
         if is_blank(value):
-            # Change 3: use FIELD_REASON_MAP message so ERROR_COLUMNS matches summary Reason
             return FIELD_REASON_MAP.get(self.field, f"{self.field}: is blank for FERT/HAWA material types.")
         return None
 
@@ -137,7 +136,6 @@ class MaterialTypeValidator(FieldValidator):
         value = str(row.get("MATERIALTYPE", "")).strip().upper()
         if is_blank(value):
             return FIELD_REASON_MAP["MATERIALTYPE"]
-
         return None
 
 
@@ -178,40 +176,37 @@ class ProductHierarchyValidator:
         return errors
 
     def validate_dataframe(self, df: pd.DataFrame) -> pd.DataFrame:
+        df = df.copy()
+        df.columns = df.columns.str.strip().str.upper()
 
-     df = df.copy()
-     df.columns = df.columns.str.strip().str.upper()
+        # FILTER: Keep only FERT and HAWA
+        df["MATERIALTYPE"] = df["MATERIALTYPE"].str.strip().str.upper()
+        df = df[df["MATERIALTYPE"].isin(VALID_MATERIAL_TYPES)].copy()
 
-     # ✅ FILTER: Keep only FERT and HAWA
-     df["MATERIALTYPE"] = df["MATERIALTYPE"].str.strip().str.upper()
-     df = df[df["MATERIALTYPE"].isin(VALID_MATERIAL_TYPES)].copy()
+        error_list        = []
+        error_fields_list = []
+        error_detail_list = []
 
-     error_list        = []
-     error_fields_list = []
-     error_detail_list = []
+        for _, row in df.iterrows():
+            row_errors = self.validate_row(row)
+            error_list.append(" | ".join(row_errors) if row_errors else "")
 
-     # ✅ EVERYTHING inside loop
-     for _, row in df.iterrows():
-        row_errors = self.validate_row(row)
-        error_list.append(" | ".join(row_errors) if row_errors else "")
+            fields_in_error = set()
+            field_reason    = {}
 
-        fields_in_error = set()
-        field_reason    = {}
+            for e in row_errors:
+                field = e.split(":")[0].strip()
+                fields_in_error.add(field)
+                field_reason[field] = e
 
-        for e in row_errors:
-            field = e.split(":")[0].strip()
-            fields_in_error.add(field)
-            field_reason[field] = e
+            error_fields_list.append(fields_in_error)
+            error_detail_list.append(field_reason)
 
-        error_fields_list.append(fields_in_error)
-        error_detail_list.append(field_reason)
+        df["ERROR_COLUMNS"] = error_list
+        df["_ERROR_FIELDS"] = error_fields_list
+        df["_ERROR_DETAIL"] = error_detail_list
 
-    # ✅ Assign AFTER loop
-     df["ERROR_COLUMNS"] = error_list
-     df["_ERROR_FIELDS"] = error_fields_list
-     df["_ERROR_DETAIL"] = error_detail_list
-
-     return df
+        return df
 
 
 # ─────────────────────────────────────────────
@@ -257,7 +252,6 @@ class ExcelReportBuilder:
                 cell           = ws.cell(row=r_idx, column=c_idx, value=row[col])
                 cell.font      = BODY_FONT
                 cell.border    = THIN_BORDER
-                # Change 5: centralise all text
                 cell.alignment = Alignment(horizontal="center", vertical="center")
 
                 if col in errored_fields:
@@ -280,6 +274,7 @@ class ExcelReportBuilder:
         records_with_errors = len(self.error_df)
         records_passing     = total_rows - records_with_errors
 
+        # Build per-field error counts from validated data
         field_counts: dict[str, int] = defaultdict(int)
         for fields_set in self.error_fields:
             for f in fields_set:
@@ -290,7 +285,6 @@ class ExcelReportBuilder:
         title_cell           = ws.cell(row=1, column=1, value="ProductHierarchy FG Validation Summary")
         title_cell.font      = Font(name="Arial", bold=True, size=14)
         title_cell.fill      = TITLE_FILL
-        # Change 5: centre title
         title_cell.alignment = Alignment(horizontal="center", vertical="center")
         ws.row_dimensions[1].height = 24
 
@@ -304,13 +298,17 @@ class ExcelReportBuilder:
             cell.alignment = Alignment(horizontal="center", vertical="center")
 
         # ── Per-field data rows ──
+        # Always iterate over ALL_SUMMARY_FIELDS so all 27 fields appear,
+        # even those with zero errors. Reason is only shown when count > 0.
         row_num = 3
-        for field_num, (col_name, count) in enumerate(sorted(field_counts.items()), start=1):
+        for field_num, col_name in enumerate(ALL_SUMMARY_FIELDS, start=1):
+            count      = field_counts.get(col_name, 0)
             pct_error  = round((count / total_rows) * 100, 2) if total_rows else 0
             pct_health = round(100 - pct_error, 2)
 
-            # Change 1: populate Reason column from FIELD_REASON_MAP
-            reason = FIELD_REASON_MAP.get(col_name, f"{col_name}: is blank for FERT/HAWA material types.")
+            # Only show Reason when there are actual errors for this field
+            reason = FIELD_REASON_MAP.get(col_name, f"{col_name}: is blank for FERT/HAWA material types.") \
+                     if count > 0 else ""
 
             ws.cell(row=row_num, column=1, value=field_num)
             ws.cell(row=row_num, column=2, value=col_name)
@@ -318,22 +316,22 @@ class ExcelReportBuilder:
             ws.cell(row=row_num, column=4, value=total_rows)
             ws.cell(row=row_num, column=5, value=f"{pct_health}%")
             ws.cell(row=row_num, column=6, value=f"{pct_error}%")
-            ws.cell(row=row_num, column=7, value=reason)   # Change 1
+            ws.cell(row=row_num, column=7, value=reason)
 
             for c in range(1, 8):
-                ws.cell(row=row_num, column=c).font      = BODY_FONT
-                ws.cell(row=row_num, column=c).border    = THIN_BORDER
-                # Change 5: centre, but wrap Reason column
-                align = Alignment(horizontal="center", vertical="center")
+                cell        = ws.cell(row=row_num, column=c)
+                cell.font   = BODY_FONT
+                cell.border = THIN_BORDER
                 if c == 7:
-                    align = Alignment(horizontal="left", vertical="center", wrap_text=True)
-                ws.cell(row=row_num, column=c).alignment = align
+                    cell.alignment = Alignment(horizontal="left", vertical="center", wrap_text=True)
+                else:
+                    cell.alignment = Alignment(horizontal="center", vertical="center")
 
             row_num += 1
 
         # ── TOTAL row ──
         total_errors       = sum(field_counts.values())
-        total_record_count = total_rows * len(field_counts)
+        total_record_count = total_rows * len(ALL_SUMMARY_FIELDS)
         total_pct_error    = round((total_errors / total_record_count) * 100, 2) if total_record_count else 0
         total_pct_health   = round(100 - total_pct_error, 2)
 
@@ -373,7 +371,6 @@ class ExcelReportBuilder:
 
             row_num += 1
 
-        # Change 2: auto-fit all columns in summary based on content
         auto_width(ws, min_w=8, max_w=70)
 
     # ── Rule_Set sheet ───────────────────────────────────
@@ -447,7 +444,6 @@ class ExcelReportBuilder:
         display_cols = [c for c in self.df.columns if c not in ("_ERROR_FIELDS", "_ERROR_DETAIL")]
 
         for field, row_indices in sorted(field_rows.items()):
-            # Change 4: sheet name is just the field name, no _ERR suffix
             sheet_name = field[:31]
             existing   = [s.title for s in self.wb.worksheets]
             counter    = 1
@@ -459,8 +455,6 @@ class ExcelReportBuilder:
             ws = self.wb.create_sheet(sheet_name)
 
             subset = self.df.loc[row_indices, display_cols].copy()
-
-            # Change 3: ERROR_COLUMNS uses FIELD_REASON_MAP — same as summary Reason column
             subset["ERROR_COLUMNS"] = FIELD_REASON_MAP.get(
                 field, f"{field}: is blank for FERT/HAWA material types."
             )
@@ -477,7 +471,6 @@ class ExcelReportBuilder:
                     cell           = ws.cell(row=r_idx, column=c_idx, value=row[col])
                     cell.font      = BODY_FONT
                     cell.border    = THIN_BORDER
-                    # Change 5: centralise text
                     cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
                     cell.fill      = ROW_ERROR_FILL
 
@@ -492,7 +485,6 @@ class ExcelReportBuilder:
                 value=f"Total error rows for '{field}': {len(row_indices)}",
             ).font = Font(name="Arial", italic=True, size=9, bold=True)
 
-            # Change 2: auto-fit columns based on content
             auto_width(ws, min_w=10, max_w=60)
 
 
@@ -525,19 +517,13 @@ class ValidationPipeline:
         ext = os.path.splitext(self.input_path)[1].lower()
         if ext in (".xlsx", ".xlsm", ".xls"):
             return pd.read_excel(self.input_path, dtype=str)
-        
         elif ext in (".csv", ".tab"):
-          
-          return pd.read_csv(
-          
-         self.input_path,
-         dtype=str,
-         sep="\t",
-         encoding="latin-1"
-
-)
-
-
+            return pd.read_csv(
+                self.input_path,
+                dtype=str,
+                sep="\t",
+                encoding="latin-1",
+            )
         else:
             raise ValueError(f"Unsupported file type: {ext}")
 
