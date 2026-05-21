@@ -12,35 +12,29 @@ OUTPUT_FILE = r"C:\Users\SW526XH\Downloads\Go Live-1\Part\Validated_Part_Technic
 # ─────────────────────────────────────────────
 #  CONSOLIDATED PL LIST  (hardcoded)
 # ─────────────────────────────────────────────
-
 VALID_PLANTS = {
-
-"1555","1452","1204","1292","1253","1234","1731","1508","5011637","1100",
-    "2091","2081","1436","1448","1438","1501","1248","1257","1623","1623",
-    "1601","1451","2092","1125","1649","1646","2088","1494","1137","1275",
-    "2084","1437","5018849","1554","1213","1499","1575","1104","1104A","1145",
-    "1430","1249","1509","1774","1295","1127","1146","1180","1432","1500",
-    "1742","1642","1642","1214","1426","1241","1463","1105","1423","1648",
-    "1733","1780","1428","1495","1462","1738","5123531","1233","1158","1157",
-    "1233","1233","1482","1483","1106","1485","1107","1225","1509","5123742",
-    "1481","1203","2082","1416","2087","1569","1647","1440","1645","1645",
-    "1724","1503","1651","1421","1421","1205","1563","1640","1109","1471",
-    "1648","1649","1647","1155","1110","1948","1473","1477","2089","1449",
+    "1555","1452","1204","1292","1253","1234","1731","1508","5011637","1100",
+    "2091","2081","1436","1448","1438","1501","1248","1257","1623","1601",
+    "1451","2092","1125","1649","1646","2088","1494","1137","1275","2084",
+    "1437","5018849","1554","1213","1499","1575","1104","1104A","1145","1430",
+    "1249","1509","1774","1295","1127","1146","1180","1432","1500","1742",
+    "1642","1214","1426","1241","1463","1105","1423","1648","1733","1780",
+    "1428","1495","1462","1738","5123531","1233","1158","1157","1482","1483",
+    "1106","1485","1107","1225","5123742","1481","1203","2082","1416","2087",
+    "1569","1647","1440","1645","1724","1503","1651","1421","1205","1563",
+    "1640","1109","1471","1155","1110","1948","1473","1477","2089","1449",
     "1211","1788","1726","1578","1135","1491","1226","1650","1505","1433",
-    "1739","2085","1659","1256","1653","1653","1652","1111","1757","1559",
-    "1558","1489","1657","4007430","1654","1112","1784","1579","1571","1754",
-    "2090","1522","1771","1113","1229","1235","1156","1258","1176","1197",
-    "1265","1445","1445","1475","1740","2083","1725","1484","1114","1480",
-    "1506","5011407","1520","5015073","1627","1758","1240","1478","1429",
-    "1656","1476","1298","1801","1802","1661","1785","1507","5011308","1643",
-    "1643","1638","1521","1118","5013796","1511","1487","1488","1512","1281",
-    "1166","1184","1186","1218","1223","1279","1442","1732","1472","2086",
-    "1439","1425","1208","1722","1734","4011702","1525","1236","1568","1296",
-    "1589","1658","5123296","1518","1455","1196","1441","1190","1593"
-
+    "1739","2085","1659","1256","1653","1652","1111","1757","1559","1558",
+    "1489","1657","4007430","1654","1112","1784","1579","1571","1754","2090",
+    "1522","1771","1113","1229","1235","1156","1258","1176","1197","1265",
+    "1445","1475","1740","2083","1725","1484","1114","1480","1506","5011407",
+    "1520","5015073","1627","1758","1240","1478","1429","1656","1476","1298",
+    "1801","1802","1661","1785","1507","5011308","1643","1638","1521","1118",
+    "5013796","1511","1487","1488","1512","1281","1166","1184","1186","1218",
+    "1223","1279","1442","1732","1472","2086","1439","1425","1208","1722",
+    "1734","4011702","1525","1236","1568","1296","1589","1658","5123296",
+    "1518","1455","1196","1441","1190","1593",
 }
-
-
 
 # ─────────────────────────────────────────────
 #  STYLING CONSTANTS
@@ -63,9 +57,7 @@ THIN_BORDER = Border(
 )
 
 # ─────────────────────────────────────────────
-#  FEATURE 2: Only these columns shown in error sheets
-#  (mirrors the Rules sheet fields exactly)
-#  ABCINDICATOR removed entirely
+#  Columns shown in error sheets (rules-defined order)
 # ─────────────────────────────────────────────
 RULES_FIELDS_ORDERED = [
     "MATERIALNUMBER",
@@ -81,7 +73,7 @@ RULES_FIELDS_ORDERED = [
 ]
 
 # ─────────────────────────────────────────────
-#  FEATURE 3: Error sub-sheet creation order
+#  Error sub-sheet creation order
 # ─────────────────────────────────────────────
 ERROR_SHEET_PRIORITY = [
     "PLANT",
@@ -105,15 +97,18 @@ class RuleEngine:
             return True
         return str(value).strip() == ""
 
-    M_NUMBER_REASON = "MATERIALNUMBER: Must be 14xxxxxxxxxxxxxx (FERT) or 15xxxxxxxxxxxxxx (HAWA) — invalid range or blank"
-    PLANT_REASON    = "PLANT: Value is not in the Consolidated PL list"
+    M_NUMBER_REASON = (
+        "MATERIALNUMBER: Must be 14xxxxxxxxxxxxxx (FERT) or 15xxxxxxxxxxxxxx (HAWA) "
+        "— invalid range or blank"
+    )
+    PLANT_REASON    = "PLANT: Value is not in the Consolidated PL list or field is blank"
     PRODDESC_REASON = "PRODUCTDESCRIPTION: Field is blank"
     PRODTYPE_REASON = "PRODUCTTYPE: Must be FERT or HAWA — invalid or blank value found"
-    PRODHIER_REASON = "PRODUCTHIERARCHY: Field is blank "
+    PRODHIER_REASON = "PRODUCTHIERARCHY: Field is blank"
     BASEUNIT_REASON = "BASEUNIT: Field is blank"
-    MRPTYPE_REASON  = "MRPTYPE: Field is blank"
+    MRPTYPE_REASON  = "MRPTYPE: Must be ND or PD — invalid or blank value found"
     PROC_REASON     = "PROCUREMENTTYPE: Field is blank"
-    IBP_REASON      = "IBPSTATUS: Must be 'IBP' or blank — unexpected value found"
+    IBP_REASON      = "IBPSTATUS: Must be 'IBP' — blank or unexpected value found"
     XPLANT_REASON   = "XPLANTMATSTATUS: Must be '2' or blank — unexpected value found"
 
     def validate_material_number(self, row) -> tuple[bool, str]:
@@ -132,8 +127,11 @@ class RuleEngine:
         return False, self.M_NUMBER_REASON
 
     def validate_plant(self, row) -> tuple[bool, str]:
-        val = str(row.get("PLANT", "")).strip().upper()
-        if self._is_blank(val) or val not in self.valid_plants:
+        raw = row.get("PLANT", "")
+        if self._is_blank(raw):
+            return False, self.PLANT_REASON
+        val = str(raw).strip().upper()
+        if val not in self.valid_plants:
             return False, self.PLANT_REASON
         return True, ""
 
@@ -170,14 +168,14 @@ class RuleEngine:
         return True, ""
 
     def validate_ibp_status(self, row) -> tuple[bool, str]:
+        """Only 'IBP' is a valid value — blank is now treated as an error."""
         raw = row.get("IBPSTATUS")
-        if self._is_blank(raw):
-            return True, ""
-        if str(raw).strip().upper() == "IBP":
+        if not self._is_blank(raw) and str(raw).strip().upper() == "IBP":
             return True, ""
         return False, self.IBP_REASON
 
     def validate_xplant_mat_status(self, row) -> tuple[bool, str]:
+        """Allowed values: 2 or blank."""
         raw = row.get("XPLANTMATSTATUS")
         if self._is_blank(raw):
             return True, ""
@@ -222,26 +220,27 @@ class PartTableValidator:
                 self.filepath,
                 sep="\t",
                 dtype=str,
-                # encoding="utf-8",
                 encoding="latin1",
-                engine="python"
+                engine="python",
             )
 
         elif path.endswith(".xlsx") or path.endswith(".xls"):
             self.df = pd.read_excel(
                 self.filepath,
                 dtype=str,
-                engine="openpyxl"
+                engine="openpyxl",
             )
 
         else:
             raise ValueError(f"Unsupported file format: {self.filepath}")
 
         self.df.columns = [c.strip().upper() for c in self.df.columns]
-        
-        if "PRODUCTTYPE" in self.df.columns:
-         self.df = self.df[self.df["PRODUCTTYPE"].str.strip().str.upper().isin(["FERT", "HAWA"])]
 
+        # Keep only FERT and HAWA rows — entire analysis is scoped to these types
+        if "PRODUCTTYPE" in self.df.columns:
+            self.df = self.df[
+                self.df["PRODUCTTYPE"].str.strip().str.upper().isin({"FERT", "HAWA"})
+            ].copy()
 
     def validate(self):
         engine = RuleEngine(self.valid_plants)
@@ -252,8 +251,8 @@ class PartTableValidator:
             for col, rule_fn in rules.items():
                 try:
                     passed, reason = rule_fn(row)
-                except Exception as e:
-                    passed, reason = False, f"Exception: {str(e)}"
+                except Exception as exc:
+                    passed, reason = False, f"Exception: {exc}"
                 if not passed:
                     errors[col] = reason
             if errors:
@@ -270,36 +269,58 @@ class ReportWriter:
 
     RULES_CONTENT = {
         "MATERIALNUMBER": [
-            "Must not be blank.",
+            "Must not be blank for Material Type FERT and HAWA.",
             "For FERT type: Material number must be in range 14000000000000 – 14999999999999.",
             "For HAWA type: Material number must be in range 15000000000000 – 15999999999999.",
         ],
         "PLANT": [
-            "Must not be blank.",
+            "Must not be blank for Material Type FERT and HAWA.",
             "Must be present in the Consolidated PL list.",
         ],
-        "PRODUCTDESCRIPTION": ["Must not be blank."],
+        "PRODUCTDESCRIPTION": [
+            "Must not be blank for Material Type FERT and HAWA.",
+        ],
         "PRODUCTTYPE": [
             "Must not be blank.",
             "Value must be either FERT or HAWA.",
         ],
-        "PRODUCTHIERARCHY": ["Must not be blank."],
+        "PRODUCTHIERARCHY": [
+            "Must not be blank for Material Type FERT and HAWA.",
+        ],
         "BASEUNIT": [
-            "Must not be blank.",
+            "Must not be blank for Material Type FERT and HAWA.",
         ],
         "MRPTYPE": [
-            "Must not be blank.",
+            "Must not be blank for Material Type FERT and HAWA.",
             "Value must be either ND or PD.",
         ],
-        "PROCUREMENTTYPE": ["Must not be blank."],
+        "PROCUREMENTTYPE": [
+            "Must not be blank for Material Type FERT and HAWA.",
+        ],
         "IBPSTATUS": [
-            "Allowed values: IBP or blank.",
-            "Any other value is treated as an error.",
+            "Field value must be 'IBP'.",
+            "Blank or any other value is treated as an error.",
         ],
         "XPLANTMATSTATUS": [
             "Allowed values: 2 or blank.",
             "Any other value is treated as an error.",
         ],
+    }
+
+    REASON_MAP = {
+        "MATERIALNUMBER": (
+            "MATERIALNUMBER: Must be 14xxxxxxxxxxxxxx (FERT) or 15xxxxxxxxxxxxxx (HAWA) "
+            "— invalid range or blank"
+        ),
+        "PLANT":              "PLANT: Value is not in the Consolidated PL list or field is blank",
+        "PRODUCTDESCRIPTION": "PRODUCTDESCRIPTION: Field is blank",
+        "PRODUCTTYPE":        "PRODUCTTYPE: Must be FERT or HAWA — invalid or blank value found",
+        "PRODUCTHIERARCHY":   "PRODUCTHIERARCHY: Field is blank",
+        "BASEUNIT":           "BASEUNIT: Field is blank",
+        "MRPTYPE":            "MRPTYPE: Must be ND or PD — invalid or blank value found",
+        "PROCUREMENTTYPE":    "PROCUREMENTTYPE: Field is blank",
+        "IBPSTATUS":          "IBPSTATUS: Must be 'IBP' — blank or unexpected value found",
+        "XPLANTMATSTATUS":    "XPLANTMATSTATUS: Must be '2' or blank — unexpected value found",
     }
 
     def __init__(self, validator: PartTableValidator, output_path: str):
@@ -329,22 +350,9 @@ class ReportWriter:
 
         col_error_counts = {col: 0 for col in RULES_FIELDS_ORDERED}
         for bad_cols in error_map.values():
-            for col in bad_cols.keys():
+            for col in bad_cols:
                 if col in col_error_counts:
                     col_error_counts[col] += 1
-
-        REASON_MAP = {
-            "MATERIALNUMBER":     "MATERIALNUMBER: Must be 14xxxxxxxxxxxxxx (FERT) or 15xxxxxxxxxxxxxx (HAWA) — invalid range or blank",
-            "PLANT":              "PLANT: Value is not in the Consolidated PL list",
-            "PRODUCTDESCRIPTION": "PRODUCTDESCRIPTION: Field is blank",
-            "PRODUCTTYPE":        "PRODUCTTYPE: Must be FERT or HAWA — invalid or blank value found",
-            "PRODUCTHIERARCHY":   "PRODUCTHIERARCHY: Field is blank",
-            "BASEUNIT":           "BASEUNIT: Field is blank",
-            "MRPTYPE":            "MRPTYPE: Field is blank",
-            "PROCUREMENTTYPE":    "PROCUREMENTTYPE: Field is blank",
-            "IBPSTATUS":          "IBPSTATUS: Must be 'IBP' or blank — unexpected value found",
-            "XPLANTMATSTATUS":    "XPLANTMATSTATUS: Must be '2' or blank — unexpected value found",
-        }
 
         # Title
         ws.merge_cells("A1:G1")
@@ -367,7 +375,7 @@ class ReportWriter:
             count       = col_error_counts.get(col_name, 0)
             pct_error   = round((count / total_rows) * 100, 2) if total_rows else 0
             pct_health  = round(100 - pct_error, 2)
-            reason_text = REASON_MAP.get(col_name, "") if count > 0 else ""
+            reason_text = self.REASON_MAP.get(col_name, "") if count > 0 else ""
 
             ws.cell(row=row_num, column=1, value=field_num)
             ws.cell(row=row_num, column=2, value=col_name)
@@ -380,10 +388,9 @@ class ReportWriter:
             for c in range(1, 8):
                 ws.cell(row=row_num, column=c).font      = BODY_FONT
                 ws.cell(row=row_num, column=c).border    = THIN_BORDER
-                align = Alignment(
+                ws.cell(row=row_num, column=c).alignment = Alignment(
                     horizontal="left" if c == 7 else "center", vertical="center"
                 )
-                ws.cell(row=row_num, column=c).alignment = align
             row_num += 1
 
         # TOTAL row
@@ -428,7 +435,7 @@ class ReportWriter:
 
         self._auto_width(ws, min_w=8, max_w=70)
 
-    # ── Rule_Set sheet ────────────────────────
+    # ── Rules sheet ──────────────────────────
     def _write_ruleset_sheet(self, wb):
         ws = wb.create_sheet(self.SHEET_RULES)
 
@@ -487,14 +494,9 @@ class ReportWriter:
 
     # ── Field Error Sheets ───────────────────
     def _write_field_error_sheets(self, wb, df: pd.DataFrame):
-        """
-        FEATURE 2: Only columns present in RULES_FIELDS_ORDERED are shown per sheet.
-        FEATURE 3: Sheet order = ERROR_SHEET_PRIORITY first, then remaining fields.
-        ABCINDICATOR has been fully removed from all processing.
-        """
         v = self.validator
 
-        # Only keep columns that exist in both the source data AND the rules list
+        # Only keep columns that exist in both source data and the rules list
         rules_cols_in_data = [c for c in RULES_FIELDS_ORDERED if c in df.columns]
 
         # Collect all fields that have at least one error row
@@ -502,7 +504,7 @@ class ReportWriter:
         for bad_cols in v.error_map.values():
             all_error_fields.update(bad_cols.keys())
 
-        # Build ordered list: priority fields first, then the rest alphabetically
+        # Priority fields first, then remaining fields alphabetically
         ordered_fields = []
         for f in ERROR_SHEET_PRIORITY:
             if f in all_error_fields:
@@ -518,10 +520,9 @@ class ReportWriter:
             if not row_indices:
                 continue
 
-            # Subset: only rules-sheet columns + appended error reason column
             subset = df.loc[row_indices, rules_cols_in_data].copy()
             subset["ERROR_COLUMNS"] = subset.index.map(
-                lambda i: v.error_map.get(i, {}).get(field_name, "")
+                lambda i, fn=field_name: v.error_map.get(i, {}).get(fn, "")
             )
 
             # Safe sheet name (Excel max 31 chars)
@@ -539,16 +540,13 @@ class ReportWriter:
             col_idx_map = {col: i for i, col in enumerate(subset.columns, start=1)}
 
             for r_idx, (orig_idx, row_data) in enumerate(subset.iterrows(), start=2):
-                for c_idx, (col, value) in enumerate(
-                    zip(subset.columns, row_data), start=1
-                ):
+                for c_idx, (col, value) in enumerate(zip(subset.columns, row_data), start=1):
                     cell           = ws.cell(row=r_idx, column=c_idx, value=value)
                     cell.font      = BODY_FONT
                     cell.border    = THIN_BORDER
-                    cell.alignment = Alignment(
-                        horizontal="center", vertical="center", wrap_text=True
-                    )
-                    cell.fill = ROW_FILL
+                    cell.alignment = Alignment(horizontal="center", vertical="center",
+                                               wrap_text=True)
+                    cell.fill      = ROW_FILL
 
                 # Highlight the failing column in red
                 if field_name in col_idx_map:
@@ -597,6 +595,7 @@ class PartTableProcessor:
         print("📂  Loading file …")
         self.validator.load()
         print(f"    Columns detected : {list(self.validator.df.columns)}")
+        print(f"    Rows after FERT/HAWA filter : {len(self.validator.df)}")
         print("🔍  Validating rules …")
         self.validator.validate()
         print("📝  Writing report …")
