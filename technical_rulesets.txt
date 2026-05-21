@@ -41,3 +41,51 @@
      a)Field should not be blank
   5)REGION_DESCRIPTION:
     a)Field should not be blank
+
+
+3)Product Heirarchy
+ 1)PRODUCT:
+   a)For All materials(With Material Type: FERT/HAWA) - Field should not be blank.
+ 2)PRODUCTDESCRIPTION:
+   a)For All materials(With Material Type: FERT/HAWA) - Field should not be blank
+ 3)PRODUCTGROUP:
+    a)For All materials(With Material Type: FERT/HAWA) - Field should not be blank
+  4)MATLGRPDESC:
+    a)For All materials(With Material Type: FERT/HAWA) - Field should not be blank
+  5)DIVISION:
+     a)For All materials(With Material Type: FERT/HAWA) - Field should not be blank
+  6)DIVISIONDESCRIPTION:
+      a)For All materials(With Material Type: FERT/HAWA) - Field should not be blank
+  7)CATEGORY:
+       a)For All materials(With Material Type: FERT/HAWA) - Field should not be blank
+  8)CATEGORYDESCRIPTION:
+       a)For All materials(With Material Type: FERT/HAWA) - Field should not be blank
+   9)PRODUCT:
+      a)For All materials(With Material Type: FERT/HAWA) - Field should not be blank
+   10)PRODUCTDESCRIPTION:
+      a)For All materials(With Material Type: FERT/HAWA) - Field should not be blank
+   11)VARIANT:
+      a)For All materials(With Material Type: FERT/HAWA) - Field should not be blank
+    12)VARIANTDESCRIPTION:
+        a)For All materials(With Material Type: FERT/HAWA) - Field should not be blank
+    13)BRAND:For All materials(With Material Type: FERT/HAWA) - Field should not be blank
+    14)BRANDDESCRIPTION:For All materials(With Material Type: FERT/HAWA) - Field should not be blank
+    15)SUBBRAND:For All materials(With Material Type: FERT/HAWA) - Field should not be blank
+    16)SUBBRANDDESCRIPTION:For All materials(With Material Type: FERT/HAWA) - Field should not be blank
+    17)BRANDVARIANT:For All materials(With Material Type: FERT/HAWA) - Field should not be blank
+    18)BRANDVARIANTDESCRIPTION:For All materials(With Material Type: FERT/HAWA) - Field should not be blank
+    19)PACKSIZE:For All materials(With Material Type: FERT/HAWA) - Field should not be blank
+    20)PACKSIZEDESCRIPTION:For All materials(With Material Type: FERT/HAWA) - Field should not be blank
+    21)MARKETSKU:For All materials(With Material Type: FERT/HAWA) - Field should not be blank
+    22)MARKETSKUDESCRIPTION:For All materials(With Material Type: FERT/HAWA) - Field should not be blank
+    23)SUPPLY_FAMILY:For All materials(With Material Type: FERT/HAWA) - Field should not be blank
+    24)MATERIALTYPE:
+      a)Field should be FERT/HAWA(filter only for FERT AND HAWA)
+      b)Field should not be blank
+    25)IBPSTATUS:
+       a)Field values should be either IBP/Blanks
+    26)NETWEIGHT:Field should not be blank for Material Type -FERT and HAWA
+    27)WEIGHTUNIT:Field should not be blank for Material Type -FERT and HAWA
+    28)LENGTH:Field should not be blank for Material Type -FERT and HAWA
+    29)WIDTH:Field should not be blank for Material Type -FERT and HAWA
+    30)HEIGHT:Field should not be blank for Material Type -FERT and HAWA
