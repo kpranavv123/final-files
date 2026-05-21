@@ -8,15 +8,16 @@ from openpyxl.utils import get_column_letter
 #  FILE PATHS
 # ─────────────────────────────────────────────
 SITE_INPUT_FILE  = r"C:\Users\SW526XH\Downloads\Go Live-1\Site\Site_2026-05-11-1205.tab"
-PART_INPUT_FILE  = r"C:\Users\SW526XH\Downloads\Go Live-1\Site\PartFG_2026-05-05-1948.tab"
-OUTPUT_FILE      = r"C:\Users\SW526XH\Downloads\Go Live-1\Site\Validated_Site.xlsx"
+PART_INPUT_FILE  = r"C:\Users\SW526XH\Downloads\Go Live-1\Site\Part_Site_2026-05-14-1817.tab"
+OUTPUT_FILE      = r"C:\Users\SW526XH\Downloads\Go Live-1\Site\Validated_Site_Technical.xlsx"
 
 
 # ─────────────────────────────────────────────
 #  CONSOLIDATED PL LIST
 # ─────────────────────────────────────────────
 VALID_PLANTS = [
-    "1555","1452","1204","1292","1253","1234","1731","1508","5011637","1100",
+
+"1555","1452","1204","1292","1253","1234","1731","1508","5011637","1100",
     "2091","2081","1436","1448","1438","1501","1248","1257","1623","1623",
     "1601","1451","2092","1125","1649","1646","2088","1494","1137","1275",
     "2084","1437","5018849","1554","1213","1499","1575","1104","1104A","1145",
@@ -32,17 +33,19 @@ VALID_PLANTS = [
     "1558","1489","1657","4007430","1654","1112","1784","1579","1571","1754",
     "2090","1522","1771","1113","1229","1235","1156","1258","1176","1197",
     "1265","1445","1445","1475","1740","2083","1725","1484","1114","1480",
-    "1506","5011407","1520","5015073","1627","1758","1240","1478","1429","1656",
-    "1476","1298","1801","1802","1661","1785","1507","5011308","1643","1643",
-    "1638","1521","1118","5013796","1511","1487","1488","1512","1281","1166",
-    "1184","1186","1218","1223","1279","1442","1732","1472","2086","1439",
-    "1425","1208","1722","1734","4011702","1525","1568","1296","1589","1658",
-    "5123296","1518","1455","1196","1441","1190","1593"
+    "1506","5011407","1520","5015073","1627","1758","1240","1478","1429",
+    "1656","1476","1298","1801","1802","1661","1785","1507","5011308","1643",
+    "1643","1638","1521","1118","5013796","1511","1487","1488","1512","1281",
+    "1166","1184","1186","1218","1223","1279","1442","1732","1472","2086",
+    "1439","1425","1208","1722","1734","4011702","1525","1236","1568","1296",
+    "1589","1658","5123296","1518","1455","1196","1441","1190","1593"
+
+
 ]
 
-VALID_COMPANY_CODES = {"1001", "1006", "1009"}
+# VALID_COMPANY_CODES = {"1001", "1006", "1009"}
 
-KEEP_COLS = ["PLANT", "NAME", "ADDRESS", "TCPL_PLANTTYPE", "COMPANYCODE"]
+KEEP_COLS = ["PLANT", "NAME", "ADDRESS", "TCPL_PLANTTYPE"]
 
 # ─────────────────────────────────────────────
 #  Colours / Styles  — matched to screenshot
@@ -71,7 +74,7 @@ THIN_BORDER = Border(
 )
 
 # Canonical field order
-FIELD_ORDER = ["PLANT", "NAME", "ADDRESS", "TCPL_PLANTTYPE", "COMPANYCODE"]
+FIELD_ORDER = ["PLANT", "NAME", "ADDRESS", "TCPL_PLANTTYPE"]
 
 # ─────────────────────────────────────────────
 #  Per-field single-line reason shown in summary
@@ -80,7 +83,7 @@ FIELD_REASON = {
     "NAME":           "NAME: Field is blank — site name is mandatory",
     "ADDRESS":        "ADDRESS: Field is blank — address is mandatory",
     "TCPL_PLANTTYPE": "TCPL_PLANTTYPE: Field is blank",
-    "COMPANYCODE":    "COMPANYCODE: Field is blank or invalid — must be one of 1001 / 1006 / 1009",
+    # "COMPANYCODE":    "COMPANYCODE: Field is blank or invalid — must be one of 1001 / 1006 / 1009",
 }
 # PLANT reasons are driven by sub-rows, so no single-line reason for the parent row.
 
@@ -123,13 +126,13 @@ class SiteRuleEngine:
             return "TCPL_PLANTTYPE: Field is blank"
         return ""
 
-    def validate_companycode(self, row) -> str:
-        val = row.get("COMPANYCODE", None)
-        if self._is_blank(val):
-            return "COMPANYCODE: Field is blank — company code is mandatory"
-        if str(val).strip() not in VALID_COMPANY_CODES:
-            return f"COMPANYCODE: '{str(val).strip()}' is invalid — must be one of 1001 / 1006 / 1009"
-        return ""
+    # def validate_companycode(self, row) -> str:
+    #     val = row.get("COMPANYCODE", None)
+    #     if self._is_blank(val):
+    #         return "COMPANYCODE: Field is blank — company code is mandatory"
+    #     if str(val).strip() not in VALID_COMPANY_CODES:
+    #         return f"COMPANYCODE: '{str(val).strip()}' is invalid — must be one of 1001 / 1006 / 1009"
+    #     return ""
 
     def get_rules(self) -> dict:
         return {
@@ -137,7 +140,7 @@ class SiteRuleEngine:
             "NAME":           self.validate_name,
             "ADDRESS":        self.validate_address,
             "TCPL_PLANTTYPE": self.validate_tcpl_planttype,
-            "COMPANYCODE":    self.validate_companycode,
+            # "COMPANYCODE":    self.validate_companycode,
         }
 
 
@@ -156,10 +159,10 @@ class SiteTableValidator:
         self.reason_map   = {}
 
     def load(self):
-        self.df = pd.read_csv(self.site_path, dtype=str,sep="\t",encoding="cp1252")
+        self.df = pd.read_csv(self.site_path, dtype=str,sep="\t",encoding="latin1")
         self.df.columns = [c.strip().upper() for c in self.df.columns]
 
-        part_df = pd.read_csv(self.part_path, dtype=str,sep="\t",encoding="cp1252")
+        part_df = pd.read_csv(self.part_path, dtype=str,sep="\t",encoding="latin1")
         part_df.columns = [c.strip().upper() for c in part_df.columns]
 
         if "PLANT" not in part_df.columns:
