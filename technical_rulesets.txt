@@ -24,3 +24,20 @@
     a)Field values should be "IBP"
   10)XPLANTMATSTATUS:
     a)Field values should be either 2/Blanks
+
+
+2)SITE:
+  1)PLANT:
+     a)To be present in consolidated PL list
+     b)Site should have an active part in part master
+     c)Field should not be blank
+  2)NAME:
+    a)Field should not be blank
+  3)POSTALCODE:
+    a)Field should not be blank
+  4)TCPL_PLANTTYPE
+    a)Field should not be blank
+  5)REGIONID:
+     a)Field should not be blank
+  5)REGION_DESCRIPTION:
+    a)Field should not be blank
