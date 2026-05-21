@@ -1,0 +1,26 @@
+1)PART
+  1)MATERIALNUMBER:
+      a)For FERT type: Material should range between 14000000000000 and 14999999999999.
+      b)For HAWA type: Material should range between 15000000000000 and 15999999999999.
+      c)Field should not be blank for Material Type -FERT and HAWA
+  2)PLANT:
+     a)To validate against consolidated PL list.
+     b)Field should not be blank for Material Type -FERT and HAWA
+  3)PRODUCTDESCRIPTION:
+     a)Field should not be blank for Material Type -FERT and HAWA
+  4)PRODUCTTYPE:
+     a)Field should be either FERT/HAWA
+     b)Field should not be blank for Material Type -FERT and HAWA
+  5)PRODUCTHIERARCHY:
+     a)Field must not be blank for Material Type - FERT and HAWA
+  6)BASEUNIT:
+     a)Field should not be blank for Material Type -FERT and HAWA
+  7)MRPTYPE:
+     a)Field value should be ND/PD for Material Type - FERT and HAW
+     b)Field should not be blank for Material Type - FERT and HAWA
+  8)PROCUREMENTTYPE
+     a)Field should not be blank for Material Type -FERT and HAWA
+  9)IBPSTATUS:
+    a)Field values should be "IBP"
+  10)XPLANTMATSTATUS:
+    a)Field values should be either 2/Blanks
