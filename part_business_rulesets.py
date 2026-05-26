@@ -20,6 +20,7 @@ RULE_FILL  = PatternFill("solid", fgColor="E2EFDA")
 TITLE_FILL = PatternFill("solid", fgColor="BDD7EE")
 TOTAL_FILL = PatternFill("solid", fgColor="F2F2F2")
 STATS_FILL = PatternFill("solid", fgColor="EDEDED")
+WHITE_FILL = PatternFill("solid", fgColor="FFFFFF")
 
 HDR_FONT  = Font(bold=True, name="Arial")
 BODY_FONT = Font(name="Arial", size=10)
@@ -33,20 +34,44 @@ THIN_BORDER = Border(
 # ─────────────────────────────────────────────
 #  BUSINESS RULE IDENTIFIERS
 #  Rule 1 : DUPLICATE_ROW
-#  Rule 2 : MAT_MULTI_DESC  → flags MATERIALNUMBER + PRODUCTDESCRIPTION
+#  Rule 2 : MATERIALNUMBER  → mapped to single PRODUCTDESCRIPTION
+#  Rule 3 : BASEUNIT        → consistent UOM per MATERIALNUMBER across sites
+#  Rule 4 : MINREMSHELFLIFE → not blank for FERT/HAWA; must be > 0
+#  Rule 5 : PROCUREMENTTYPE → must be E / F / X
 # ─────────────────────────────────────────────
-RULE1_KEY  = "DUPLICATE_ROW"
-RULE2_KEY  = "MATERIALNUMBER"
+RULE1_KEY = "DUPLICATE_ROW"
+RULE2_KEY = "MATERIALNUMBER"
+RULE3_KEY = "BASEUNIT"
+RULE4_KEY = "MINREMSHELFLIFE"
+RULE5_KEY = "PROCUREMENTTYPE"
+
+VALID_PROCUREMENT_TYPES = {"E", "F", "X"}
+SHELF_LIFE_MATERIAL_TYPES = {"FERT", "HAWA"}
 
 # Error-sheet creation order
-ERROR_SHEET_PRIORITY = [RULE1_KEY, RULE2_KEY]
+ERROR_SHEET_PRIORITY = [RULE1_KEY, RULE2_KEY, RULE3_KEY, RULE4_KEY, RULE5_KEY]
 
 # Summary / Rules sheet labels
-RULES_FIELDS_ORDERED = [RULE1_KEY, RULE2_KEY]
+RULES_FIELDS_ORDERED = [RULE1_KEY, RULE2_KEY, RULE3_KEY, RULE4_KEY, RULE5_KEY]
 
 REASON_MAP = {
-    RULE1_KEY: "DUPLICATE_ROW: The entire row is an exact duplicate of another row in the extract",
-    RULE2_KEY: "MATERIALNUMBER: MATERIALNUMBER is mapped to more than one PRODUCTDESCRIPTION",
+    RULE1_KEY: (
+        "DUPLICATE_ROW: The entire row is an exact duplicate of another row in the extract"
+    ),
+    RULE2_KEY: (
+        "MATERIALNUMBER: MATERIALNUMBER is mapped to more than one PRODUCTDESCRIPTION"
+    ),
+    RULE3_KEY: (
+        "BASEUNIT: BASEUNIT (Base UOM) is inconsistent for the same MATERIALNUMBER — "
+        "a single MATERIALNUMBER must have the same BASEUNIT across all sites"
+    ),
+    RULE4_KEY: (
+        "MINREMSHELFLIFE: Field is blank or ≤ 0 for material type FERT / HAWA — "
+        "must be present and greater than zero"
+    ),
+    RULE5_KEY: (
+        "PROCUREMENTTYPE: Invalid or blank value — must be one of E / F / X"
+    ),
 }
 
 RULES_CONTENT = {
@@ -56,6 +81,22 @@ RULES_CONTENT = {
     ],
     RULE2_KEY: [
         "Each MATERIALNUMBER must map to exactly one PRODUCTDESCRIPTION.",
+        "If a MATERIALNUMBER has more than one distinct PRODUCTDESCRIPTION, all such rows are flagged.",
+    ],
+    RULE3_KEY: [
+        "BASEUNIT (Base UOM) must be consistent for the same MATERIALNUMBER across all sites.",
+        "If the same MATERIALNUMBER has more than one distinct BASEUNIT value, all such rows are flagged.",
+        "Key columns considered: MATERIALNUMBER and BASEUNIT.",
+    ],
+    RULE4_KEY: [
+        "MINREMSHELFLIFE field must not be blank for material types FERT and HAWA.",
+        "MINREMSHELFLIFE value must be greater than 0 for material types FERT and HAWA.",
+        "Rows with material type other than FERT / HAWA are not evaluated by this rule.",
+    ],
+    RULE5_KEY: [
+        "PROCUREMENTTYPE field must not be blank.",
+        "Allowed values are: E, F, or X (case-insensitive).",
+        "Any other value (including free-text or typos) is treated as an error.",
     ],
 }
 
@@ -69,31 +110,94 @@ class BusinessRuleEngine:
         { row_index : { rule_key : { "reason": str, "highlight_cols": [col, ...] } } }
     """
 
+    @staticmethod
+    def _is_blank(value) -> bool:
+        return pd.isna(value) or str(value).strip() == ""
+
     def run(self, df: pd.DataFrame) -> dict:
         error_map: dict = {}
 
-        # ── Rule 1: Fully identical duplicate rows ──
+        # ── Rule 1: Fully identical duplicate rows ──────────────────────────
         dup_mask = df.duplicated(keep=False)          # marks ALL occurrences
         for idx in df[dup_mask].index:
             error_map.setdefault(idx, {})[RULE1_KEY] = {
                 "reason":         REASON_MAP[RULE1_KEY],
-                "highlight_cols": [],                  # whole row is the issue; no single column
+                "highlight_cols": [],                  # whole row is the issue
             }
 
-        # ── Rule 2: MaterialNumber → multiple descriptions ──
+        # ── Rule 2: MaterialNumber → multiple descriptions ──────────────────
         if "MATERIALNUMBER" in df.columns and "PRODUCTDESCRIPTION" in df.columns:
-            # Count distinct descriptions per material number
-            multi = (
+            multi_desc = (
                 df.groupby("MATERIALNUMBER")["PRODUCTDESCRIPTION"]
                 .nunique()
             )
-            bad_materials = set(multi[multi > 1].index)
+            bad_materials = set(multi_desc[multi_desc > 1].index)
             for idx, row in df.iterrows():
                 mat = str(row.get("MATERIALNUMBER", "")).strip()
                 if mat in bad_materials:
                     error_map.setdefault(idx, {})[RULE2_KEY] = {
                         "reason":         REASON_MAP[RULE2_KEY],
                         "highlight_cols": ["MATERIALNUMBER", "PRODUCTDESCRIPTION"],
+                    }
+
+        # ── Rule 3: BASEUNIT consistency per MATERIALNUMBER ─────────────────
+        if "MATERIALNUMBER" in df.columns and "BASEUNIT" in df.columns:
+            multi_uom = (
+                df.groupby("MATERIALNUMBER")["BASEUNIT"]
+                .nunique()
+            )
+            bad_uom_materials = set(multi_uom[multi_uom > 1].index)
+            for idx, row in df.iterrows():
+                mat = str(row.get("MATERIALNUMBER", "")).strip()
+                if mat in bad_uom_materials:
+                    error_map.setdefault(idx, {})[RULE3_KEY] = {
+                        "reason":         REASON_MAP[RULE3_KEY],
+                        "highlight_cols": ["MATERIALNUMBER", "BASEUNIT"],
+                    }
+
+        # ── Rule 4: MINREMSHELFLIFE — blank / ≤ 0 for FERT and HAWA ────────
+        if "MINREMSHELFLIFE" in df.columns and "MATERIALTYPE" in df.columns:
+            for idx, row in df.iterrows():
+                mat_type = str(row.get("MATERIALTYPE", "")).strip().upper()
+                if mat_type not in SHELF_LIFE_MATERIAL_TYPES:
+                    continue                           # rule only applies to FERT / HAWA
+
+                val = row.get("MINREMSHELFLIFE")
+
+                if self._is_blank(val):
+                    error_map.setdefault(idx, {})[RULE4_KEY] = {
+                        "reason":         REASON_MAP[RULE4_KEY],
+                        "highlight_cols": ["MINREMSHELFLIFE"],
+                    }
+                    continue
+
+                try:
+                    numeric_val = float(str(val).strip())
+                    if numeric_val <= 0:
+                        error_map.setdefault(idx, {})[RULE4_KEY] = {
+                            "reason":         REASON_MAP[RULE4_KEY],
+                            "highlight_cols": ["MINREMSHELFLIFE"],
+                        }
+                except ValueError:
+                    # Non-numeric value in the field
+                    error_map.setdefault(idx, {})[RULE4_KEY] = {
+                        "reason":         REASON_MAP[RULE4_KEY],
+                        "highlight_cols": ["MINREMSHELFLIFE"],
+                    }
+
+        # ── Rule 5: PROCUREMENTTYPE — must be E / F / X ─────────────────────
+        if "PROCUREMENTTYPE" in df.columns:
+            for idx, row in df.iterrows():
+                val = row.get("PROCUREMENTTYPE")
+                if self._is_blank(val):
+                    is_invalid = True
+                else:
+                    is_invalid = str(val).strip().upper() not in VALID_PROCUREMENT_TYPES
+
+                if is_invalid:
+                    error_map.setdefault(idx, {})[RULE5_KEY] = {
+                        "reason":         REASON_MAP[RULE5_KEY],
+                        "highlight_cols": ["PROCUREMENTTYPE"],
                     }
 
         return error_map
@@ -177,20 +281,23 @@ class BusinessReportWriter:
 
         # Title
         ws.merge_cells("A1:G1")
-        tc           = ws.cell(row=1, column=1, value="Part Master FG – Business Rules Validation Summary")
+        tc           = ws.cell(row=1, column=1,
+                               value="Part Master FG – Business Rules Validation Summary")
         tc.font      = Font(name="Arial", bold=True, size=14)
         tc.fill      = TITLE_FILL
         tc.alignment = Alignment(horizontal="left", vertical="center")
-        ws.row_dimensions[1].height = 24
+        ws.row_dimensions[1].height = 26
 
         # Header row
-        headers = ["#", "Rule Name", "Error Count", "Record Count", "% Health", "% of Error", "Reason"]
+        headers = ["#", "Rule Name", "Error Count", "Record Count",
+                   "% Health", "% of Error", "Reason"]
         for c_idx, h in enumerate(headers, start=1):
             cell           = ws.cell(row=2, column=c_idx, value=h)
             cell.fill      = TITLE_FILL
-            cell.font      = Font(name="Arial", bold=True)
+            cell.font      = Font(name="Arial", bold=True, size=10)
             cell.border    = THIN_BORDER
-            cell.alignment = Alignment(horizontal="center", vertical="center")
+            cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        ws.row_dimensions[2].height = 30
 
         row_num = 3
         for rule_num, rule_key in enumerate(RULES_FIELDS_ORDERED, start=1):
@@ -205,9 +312,11 @@ class BusinessReportWriter:
                 cell           = ws.cell(row=row_num, column=c_idx, value=val)
                 cell.font      = BODY_FONT
                 cell.border    = THIN_BORDER
+                cell.fill      = WHITE_FILL
                 cell.alignment = Alignment(
                     horizontal="left" if c_idx == 7 else "center",
                     vertical="center",
+                    wrap_text=(c_idx == 7),
                 )
             row_num += 1
 
@@ -223,7 +332,7 @@ class BusinessReportWriter:
             start=1,
         ):
             cell           = ws.cell(row=row_num, column=c_idx, value=val)
-            cell.font      = Font(name="Arial", bold=True)
+            cell.font      = Font(name="Arial", bold=True, size=10)
             cell.fill      = TOTAL_FILL
             cell.border    = THIN_BORDER
             cell.alignment = Alignment(horizontal="center", vertical="center")
@@ -252,17 +361,20 @@ class BusinessReportWriter:
             vc.alignment = Alignment(horizontal="center", vertical="center")
             row_num += 1
 
-        self._auto_width(ws, min_w=8, max_w=70)
+        col_widths = [6, 24, 14, 16, 12, 12, 70]
+        for c_idx, width in enumerate(col_widths, start=1):
+            ws.column_dimensions[get_column_letter(c_idx)].width = width
 
     # ── Rules Sheet ───────────────────────────
     def _write_ruleset_sheet(self, wb):
         ws = wb.create_sheet(self.SHEET_RULES)
 
         ws.merge_cells("A1:C1")
-        tc           = ws.cell(row=1, column=1, value="Part Master FG – Business Validation Rules")
+        tc           = ws.cell(row=1, column=1,
+                               value="Part Master FG – Business Validation Rules")
         tc.font      = Font(name="Arial", bold=True, size=13)
         tc.fill      = TITLE_FILL
-        tc.alignment = Alignment(horizontal="center")
+        tc.alignment = Alignment(horizontal="center", vertical="center")
         ws.row_dimensions[1].height = 22
 
         for c_idx, h in enumerate(["#", "Rule Name", "Rule Description"], start=1):
@@ -270,7 +382,7 @@ class BusinessReportWriter:
             cell.fill      = HDR_FILL
             cell.font      = HDR_FONT
             cell.border    = THIN_BORDER
-            cell.alignment = Alignment(horizontal="center")
+            cell.alignment = Alignment(horizontal="center", vertical="center")
 
         current_row = 4
         for rule_num, (rule_key, rules_list) in enumerate(RULES_CONTENT.items(), start=1):
@@ -288,7 +400,8 @@ class BusinessReportWriter:
                 fc.fill      = RULE_FILL
                 fc.font      = Font(name="Arial", size=10, bold=(r_idx == 0))
                 fc.border    = THIN_BORDER
-                fc.alignment = Alignment(horizontal="center", vertical="center")
+                fc.alignment = Alignment(horizontal="center", vertical="center",
+                                         wrap_text=True)
 
                 dc           = ws.cell(row=current_row, column=3, value=rule_text)
                 dc.font      = BODY_FONT
@@ -307,34 +420,36 @@ class BusinessReportWriter:
         ws.column_dimensions["B"].width = 30
         ws.column_dimensions["C"].width = 70
 
-    # ── Field Error Sheets ────────────────────
+    # ── Error Sheets ──────────────────────────
     def _write_error_sheets(self, wb):
         """
         One sheet per business rule.
-        ALL columns from the input file are shown (not restricted to a subset).
+        ALL columns from the input file are shown.
         Highlighted columns per rule:
-          DUPLICATE_ROW  → no specific column highlighted (whole row is yellow)
-          MATERIALNUMBER → MATERIALNUMBER + PRODUCTDESCRIPTION cells in red
+          DUPLICATE_ROW    → no specific column (whole row in yellow)
+          MATERIALNUMBER   → MATERIALNUMBER + PRODUCTDESCRIPTION in red
+          BASEUNIT         → MATERIALNUMBER + BASEUNIT in red
+          MINREMSHELFLIFE  → MINREMSHELFLIFE in red
+          PROCUREMENTTYPE  → PROCUREMENTTYPE in red
         """
-        v  = self.validator
-        df = v.df
-
+        v              = self.validator
+        df             = v.df
         all_input_cols = list(df.columns)
 
         for rule_key in ERROR_SHEET_PRIORITY:
             row_indices = [
-                idx for idx, rule_dict in v.error_map.items() if rule_key in rule_dict
+                idx for idx, rule_dict in v.error_map.items()
+                if rule_key in rule_dict
             ]
             if not row_indices:
                 continue
 
-            subset     = df.loc[row_indices, all_input_cols].copy()
-            error_col  = subset.index.map(
+            subset = df.loc[row_indices, all_input_cols].copy()
+            subset["ERROR_REASON"] = subset.index.map(
                 lambda i: v.error_map.get(i, {}).get(rule_key, {}).get("reason", "")
             )
-            subset["ERROR_REASON"] = error_col
 
-            # Safe sheet name
+            # Safe sheet name (Excel max 31 chars)
             sheet_name = rule_key[:31]
             existing   = [s.title for s in wb.worksheets]
             counter    = 1
@@ -348,7 +463,7 @@ class BusinessReportWriter:
 
             col_idx_map = {col: i for i, col in enumerate(subset.columns, start=1)}
 
-            # Determine which columns to highlight red for this rule
+            # Determine highlight columns for this rule from first error row
             highlight_cols: list = v.error_map[row_indices[0]][rule_key].get(
                 "highlight_cols", []
             )
@@ -362,10 +477,9 @@ class BusinessReportWriter:
                     cell.alignment = Alignment(
                         horizontal="center", vertical="center", wrap_text=True
                     )
-                    # Default: yellow row fill
                     cell.fill = ROW_FILL
 
-                # Overlay red highlight on specific columns (Rule 2)
+                # Red overlay on the specific failing column(s)
                 for h_col in highlight_cols:
                     if h_col in col_idx_map:
                         tc      = ws.cell(row=r_idx, column=col_idx_map[h_col])
@@ -383,6 +497,7 @@ class BusinessReportWriter:
 
     # ── Orchestrate ───────────────────────────
     def write(self):
+        v  = self.validator
         wb = Workbook()
         if "Sheet" in wb.sheetnames:
             del wb["Sheet"]
@@ -392,9 +507,21 @@ class BusinessReportWriter:
         self._write_error_sheets(wb)
 
         wb.save(self.output_path)
+
+        rule1_errors = sum(1 for rd in v.error_map.values() if RULE1_KEY in rd)
+        rule2_errors = sum(1 for rd in v.error_map.values() if RULE2_KEY in rd)
+        rule3_errors = sum(1 for rd in v.error_map.values() if RULE3_KEY in rd)
+        rule4_errors = sum(1 for rd in v.error_map.values() if RULE4_KEY in rd)
+        rule5_errors = sum(1 for rd in v.error_map.values() if RULE5_KEY in rd)
+
         print(f"\n✅  Output saved  → {self.output_path}")
-        print(f"   Total rows    : {len(self.validator.df)}")
-        print(f"   Error rows    : {len(self.validator.error_map)}")
+        print(f"   Total rows                        : {len(v.df)}")
+        print(f"   Rows with any error               : {len(v.error_map)}")
+        print(f"   DUPLICATE_ROW errors              : {rule1_errors}")
+        print(f"   MATERIALNUMBER errors             : {rule2_errors}")
+        print(f"   BASEUNIT errors                   : {rule3_errors}")
+        print(f"   MINREMSHELFLIFE errors            : {rule4_errors}")
+        print(f"   PROCUREMENTTYPE errors            : {rule5_errors}")
 
 
 # ══════════════════════════════════════════════
