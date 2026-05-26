@@ -13,14 +13,31 @@ OUTPUT_FILE = r"C:\Users\SW526XH\Downloads\Go Live-1\HDA\Validated_HDA_Secondary
 
 
 # ─────────────────────────────────────────────
+#  BASE DATE CONFIGURATION
+#  ► Set to a specific date to pin the cutoff for INVOICE_DATE validation.
+#  ► Set to None to always use today's date at runtime.
+#
+#  Examples:
+#    BASE_DATE = date(2026, 5, 20)   # fixed — any invoice date after this is flagged
+#    BASE_DATE = None                # dynamic — uses today's date every time you run
+# ─────────────────────────────────────────────
+BASE_DATE = None   # ← change to date(YYYY, M, D) to pin a specific date
+
+
+def _resolve_base_date() -> date:
+    """Returns BASE_DATE if set, otherwise today's date."""
+    return BASE_DATE if BASE_DATE is not None else date.today()
+
+
+# ─────────────────────────────────────────────
 #  BUSINESS RULE CONSTANTS
 # ─────────────────────────────────────────────
 RULE1_KEY = "INVOICE_QTY_IN_BU"
 RULE2_KEY = "INVOICE_DATE"
 RULE3_KEY = "UNIT_PRICE"
 
-RULES_FIELDS_ORDERED = [RULE1_KEY, RULE2_KEY,RULE3_KEY]
-ERROR_SHEET_PRIORITY = [RULE1_KEY, RULE2_KEY,RULE3_KEY]
+RULES_FIELDS_ORDERED = [RULE1_KEY, RULE2_KEY, RULE3_KEY]
+ERROR_SHEET_PRIORITY = [RULE1_KEY, RULE2_KEY, RULE3_KEY]
 
 # Columns to display in error sheets (in this exact order)
 ERROR_SHEET_COLS = [
@@ -34,9 +51,9 @@ ERROR_SHEET_COLS = [
 ]
 
 REASON_MAP = {
-    RULE1_KEY: "INVOICE_QTY_IN_BU: Negative values are not present",
-    RULE2_KEY: "INVOICE_DATE: Future-dated transactions are not allowed — date must be ≤ today's date",
-    RULE3_KEY: "UNIT_PRICE: Negative values are prsent",
+    RULE1_KEY: "INVOICE_QTY_IN_BU: Negative values are present",
+    RULE2_KEY: "INVOICE_DATE: Future-dated transactions are not allowed — date must be ≤ base date",
+    RULE3_KEY: "UNIT_PRICE: Negative values are present",
 }
 
 RULES_CONTENT = {
@@ -45,8 +62,10 @@ RULES_CONTENT = {
     ],
     RULE2_KEY: [
         "Field must not contain future-dated transactions.",
+        "A transaction is flagged if its INVOICE_DATE is later than the configured BASE_DATE.",
+        "BASE_DATE can be pinned to a fixed date or set to dynamically use today's date at runtime.",
     ],
-    RULE3_KEY:[
+    RULE3_KEY: [
         "Field must not contain negative values.",
     ],
 }
@@ -84,7 +103,8 @@ class HDASecondaryBusinessRuleEngine:
     """
 
     def __init__(self):
-        self.today = date.today()
+        # ► Resolved once at engine instantiation — consistent across all rows
+        self.base_date = _resolve_base_date()
 
     @staticmethod
     def _is_blank(value) -> bool:
@@ -98,7 +118,7 @@ class HDASecondaryBusinessRuleEngine:
             pass
         return str(value).strip() == ""
 
-    # ── Rule 1: No negative values ────────────
+    # ── Rule 1: No negative invoice qty ───────
     def validate_invoice_qty(self, row) -> tuple[bool, str]:
         val = row.get(RULE1_KEY)
         if self._is_blank(val):
@@ -110,7 +130,7 @@ class HDASecondaryBusinessRuleEngine:
             return True, ""          # non-numeric — not this rule's concern
         return True, ""
 
-    # ── Rule 2: No future-dated transactions ──
+    # ── Rule 2: No invoice date after BASE_DATE ──
     @staticmethod
     def _parse_date(raw: str):
         """
@@ -119,11 +139,9 @@ class HDASecondaryBusinessRuleEngine:
         Returns a datetime.date or raises ValueError.
         """
         s = raw.strip()
-        # YYYYMMDD — exactly 8 digits
         if len(s) == 8 and s.isdigit():
             from datetime import datetime
             return datetime.strptime(s, "%Y%m%d").date()
-        # General fallback
         return pd.to_datetime(s, dayfirst=False, errors="raise").date()
 
     def validate_invoice_date(self, row) -> tuple[bool, str]:
@@ -132,10 +150,22 @@ class HDASecondaryBusinessRuleEngine:
             return False, REASON_MAP[RULE2_KEY]
         try:
             parsed = self._parse_date(str(val))
-            if parsed > self.today:
+            if parsed > self.base_date:           # ◄ uses self.base_date, not date.today()
                 return False, REASON_MAP[RULE2_KEY]
         except Exception:
             return False, REASON_MAP[RULE2_KEY]
+        return True, ""
+
+    # ── Rule 3: No negative unit price ────────
+    def validate_unit_price(self, row) -> tuple[bool, str]:
+        val = row.get(RULE3_KEY)
+        if self._is_blank(val):
+            return True, ""          # blank not checked here
+        try:
+            if float(str(val).strip()) < 0:
+                return False, REASON_MAP[RULE3_KEY]
+        except ValueError:
+            return True, ""          # ignore non-numeric
         return True, ""
 
     def run(self, df: pd.DataFrame) -> dict:
@@ -143,7 +173,6 @@ class HDASecondaryBusinessRuleEngine:
             RULE1_KEY: self.validate_invoice_qty,
             RULE2_KEY: self.validate_invoice_date,
             RULE3_KEY: self.validate_unit_price,
-
         }
         error_map: dict = {}
 
@@ -163,17 +192,6 @@ class HDASecondaryBusinessRuleEngine:
                     }
 
         return error_map
-    
-    def validate_unit_price(self, row) -> tuple[bool, str]:
-     val = row.get(RULE3_KEY)
-     if self._is_blank(val):
-        return True, ""   # blank not checked here
-     try:
-        if float(str(val).strip()) < 0:
-            return False, REASON_MAP[RULE3_KEY]
-     except ValueError:
-        return True, ""   # ignore non-numeric
-     return True, ""
 
 
 # ══════════════════════════════════════════════
@@ -219,9 +237,11 @@ class HDASecondaryReportWriter:
     SHEET_RULES   = "Rules"
 
     def __init__(self, validator: HDASecondaryValidator, output_path: str):
-        self.validator   = validator
-        self.output_path = output_path
-        self.today_str   = date.today().strftime("%d-%b-%Y")
+        self.validator     = validator
+        self.output_path   = output_path
+        # ► Resolved once — same value used in title, console, everywhere
+        self.base_date     = _resolve_base_date()
+        self.base_date_str = self.base_date.strftime("%d-%b-%Y")
 
     # ── Helpers ──────────────────────────────
     def _write_header(self, ws, columns):
@@ -262,11 +282,13 @@ class HDASecondaryReportWriter:
                 if rule_key in col_error_counts:
                     col_error_counts[rule_key] += 1
 
-        # Title
+        # Title — shows base date so the report is self-documenting
         ws.merge_cells("A1:G1")
-        tc           = ws.cell(row=1, column=1,
-                               value=f"HDA Secondary-Business Rules Validation Summary  "
-                                     f"(Run date: {self.today_str})")
+        tc           = ws.cell(
+            row=1, column=1,
+            value=f"HDA Secondary – Business Rules Validation Summary  "
+                  f"(Base date: {self.base_date_str})",   # ◄ base_date_str
+        )
         tc.font      = Font(name="Arial", bold=True, size=14)
         tc.fill      = TITLE_FILL
         tc.alignment = Alignment(horizontal="left", vertical="center")
@@ -415,12 +437,6 @@ class HDASecondaryReportWriter:
 
     # ── Error Sheets ──────────────────────────
     def _write_error_sheets(self, wb):
-        """
-        One sheet per rule violation.
-        Only the 7 specified columns are shown (those present in the file),
-        plus the ERROR_REASON column appended at the end.
-        The failing column cell is highlighted red.
-        """
         v = self.validator
 
         for rule_key in ERROR_SHEET_PRIORITY:
@@ -432,15 +448,13 @@ class HDASecondaryReportWriter:
                 continue
 
             display_cols = [c for c in ERROR_SHEET_COLS if c in v.df.columns]
-
-            subset = v.df.loc[row_indices, display_cols].copy()
+            subset       = v.df.loc[row_indices, display_cols].copy()
             subset["ERROR_REASON"] = subset.index.map(
                 lambda i: v.error_map.get(i, {}).get(rule_key, {}).get("reason", "")
             )
 
-            sheet_name = self._safe_sheet_name(wb, rule_key[:31])
-            ws         = wb.create_sheet(sheet_name)
-
+            sheet_name  = self._safe_sheet_name(wb, rule_key[:31])
+            ws          = wb.create_sheet(sheet_name)
             all_cols    = list(subset.columns)
             col_idx_map = {col: i for i, col in enumerate(all_cols, start=1)}
 
@@ -457,7 +471,6 @@ class HDASecondaryReportWriter:
                     )
                     cell.fill = ROW_FILL
 
-                # Red on the failing column
                 if rule_key in col_idx_map:
                     tc      = ws.cell(row=r_idx, column=col_idx_map[rule_key])
                     tc.fill = RED_FILL
@@ -488,12 +501,15 @@ class HDASecondaryReportWriter:
 
         r1 = sum(1 for rd in v.error_map.values() if RULE1_KEY in rd)
         r2 = sum(1 for rd in v.error_map.values() if RULE2_KEY in rd)
+        r3 = sum(1 for rd in v.error_map.values() if RULE3_KEY in rd)
 
         print(f"\n✅  Output saved  → {self.output_path}")
+        print(f"   Base date used              : {self.base_date_str}")
         print(f"   Total rows                  : {len(v.df)}")
         print(f"   Rows with any error         : {len(v.error_map)}")
         print(f"   INVOICE_QTY_IN_BU errors    : {r1}")
         print(f"   INVOICE_DATE errors         : {r2}")
+        print(f"   UNIT_PRICE errors           : {r3}")
 
 
 # ══════════════════════════════════════════════
@@ -506,10 +522,11 @@ class HDASecondaryProcessor:
         self.writer    = HDASecondaryReportWriter(self.validator, output_path)
 
     def run(self):
+        base_date_str = _resolve_base_date().strftime("%d-%b-%Y")
         print("📂  Loading HDA Secondary file …")
         self.validator.load()
         print(f"    Columns detected : {list(self.validator.df.columns)}")
-        print(f"    Today's date     : {date.today().strftime('%d-%b-%Y')}")
+        print(f"    Base date        : {base_date_str}")   # ◄ shows what date is being used
         print("🔍  Running business rules …")
         self.validator.validate()
         print("📝  Writing report …")
