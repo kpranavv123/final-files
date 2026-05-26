@@ -6,8 +6,8 @@ from openpyxl.utils import get_column_letter
 # ─────────────────────────────────────────────
 #  FILE PATHS
 # ─────────────────────────────────────────────
-INPUT_FILE  = r"C:\Users\SW526XH\Downloads\Go Live-1\Part\Part_Site_2026-05-14-1817.tab"
-OUTPUT_FILE = r"C:\Users\SW526XH\Downloads\Go Live-1\Part\Validated_Part_Technical2.xlsx"
+INPUT_FILE  = r"C:\Users\SW526XH\Downloads\Go Live-1\Part\Part_Site_2026-05-21-1510.tab"
+OUTPUT_FILE = r"C:\Users\SW526XH\Downloads\Go Live-1\Part\Validated_Part_Technical.xlsx"
 
 # ─────────────────────────────────────────────
 #  CONSOLIDATED PL LIST  (hardcoded)
