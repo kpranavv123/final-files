@@ -7,7 +7,7 @@ from openpyxl.utils import get_column_letter
 #  FILE PATHS
 # ─────────────────────────────────────────────
 INPUT_FILE  = r"C:\Users\SW526XH\Downloads\Go Live-1\Part\PartFG_2026-05-05-1948.tab"
-OUTPUT_FILE = r"C:\Users\SW526XH\Downloads\Go Live-1\Part\Part_Business_Rules.xlsx"
+OUTPUT_FILE = r"C:\Users\SW526XH\Downloads\Go Live-1\Part\Validated_Part_Business_Rulesets.xlsx"
 
 
 # ─────────────────────────────────────────────
@@ -36,7 +36,7 @@ THIN_BORDER = Border(
 #  Rule 2 : MAT_MULTI_DESC  → flags MATERIALNUMBER + PRODUCTDESCRIPTION
 # ─────────────────────────────────────────────
 RULE1_KEY  = "DUPLICATE_ROW"
-RULE2_KEY  = "MAT_MULTI_DESC"
+RULE2_KEY  = "MATERIALNUMBER"
 
 # Error-sheet creation order
 ERROR_SHEET_PRIORITY = [RULE1_KEY, RULE2_KEY]
@@ -46,19 +46,16 @@ RULES_FIELDS_ORDERED = [RULE1_KEY, RULE2_KEY]
 
 REASON_MAP = {
     RULE1_KEY: "DUPLICATE_ROW: The entire row is an exact duplicate of another row in the extract",
-    RULE2_KEY: "MAT_MULTI_DESC: MATERIALNUMBER is mapped to more than one PRODUCTDESCRIPTION",
+    RULE2_KEY: "MATERIALNUMBER: MATERIALNUMBER is mapped to more than one PRODUCTDESCRIPTION",
 }
 
 RULES_CONTENT = {
     RULE1_KEY: [
         "No duplicate rows are allowed in the extract.",
         "A duplicate is defined as a row where ALL column values are identical to another row.",
-        "All occurrences of the duplicate group are flagged (not just the 2nd onwards).",
     ],
     RULE2_KEY: [
         "Each MATERIALNUMBER must map to exactly one PRODUCTDESCRIPTION.",
-        "If a MATERIALNUMBER has more than one distinct PRODUCTDESCRIPTION, all rows for that material are flagged.",
-        "Both the MATERIALNUMBER and PRODUCTDESCRIPTION cells are highlighted in red.",
     ],
 }
 
@@ -317,7 +314,7 @@ class BusinessReportWriter:
         ALL columns from the input file are shown (not restricted to a subset).
         Highlighted columns per rule:
           DUPLICATE_ROW  → no specific column highlighted (whole row is yellow)
-          MAT_MULTI_DESC → MATERIALNUMBER + PRODUCTDESCRIPTION cells in red
+          MATERIALNUMBER → MATERIALNUMBER + PRODUCTDESCRIPTION cells in red
         """
         v  = self.validator
         df = v.df
