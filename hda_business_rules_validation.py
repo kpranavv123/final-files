@@ -8,8 +8,8 @@ from openpyxl.utils import get_column_letter
 # ─────────────────────────────────────────────
 #  FILE PATHS
 # ─────────────────────────────────────────────
-INPUT_FILE  = r"C:\Users\SW526XH\Downloads\Go Live-1\HDA\HDA.tab"
-OUTPUT_FILE = r"C:\Users\SW526XH\Downloads\Go Live-1\HDA\HDA_Business_Rules.xlsx"
+INPUT_FILE  = r"C:\Users\SW526XH\Downloads\Go Live-1\HDA\HDA_2026-05-20-2012.tab"
+OUTPUT_FILE = r"C:\Users\SW526XH\Downloads\Go Live-1\HDA\Validated_HDA_Business.xlsx"
 
 
 # ─────────────────────────────────────────────
@@ -17,9 +17,10 @@ OUTPUT_FILE = r"C:\Users\SW526XH\Downloads\Go Live-1\HDA\HDA_Business_Rules.xlsx
 # ─────────────────────────────────────────────
 RULE1_KEY = "TOTAL_BILLINGQUANTITYINBASEUNIT"
 RULE2_KEY = "BILLING_DATE"
+RULE3_KEY="UNIT_PRICE"
 
-RULES_FIELDS_ORDERED = [RULE1_KEY, RULE2_KEY]
-ERROR_SHEET_PRIORITY = [RULE1_KEY, RULE2_KEY]
+RULES_FIELDS_ORDERED = [RULE1_KEY, RULE2_KEY,RULE3_KEY]
+ERROR_SHEET_PRIORITY = [RULE1_KEY, RULE2_KEY,RULE3_KEY]
 
 # Columns to display in error sheets (in this exact order)
 ERROR_SHEET_COLS = [
@@ -30,25 +31,26 @@ ERROR_SHEET_COLS = [
     "PARTNAME_SITE",
     "SITE_CUSTOMER",
     "TOTAL_BILLINGQUANTITYINBASEUNIT",
+    "UNIT_PRICE",
 ]
 
 REASON_MAP = {
-    RULE1_KEY: "TOTAL_BILLINGQUANTITYINBASEUNIT: Negative values are not allowed — quantity must be ≥ 0",
+    RULE1_KEY: "TOTAL_BILLINGQUANTITYINBASEUNIT: Negative values are present",
     RULE2_KEY: "BILLING_DATE: Future-dated transactions are not allowed — date must be ≤ today's date",
+    RULE3_KEY: "UNIT_PRICE: Negative values are not allowed — price must be ≥ 0",
 }
 
 RULES_CONTENT = {
     RULE1_KEY: [
         "Field must not contain negative values.",
-        "Any row where TOTAL_BILLINGQUANTITYINBASEUNIT is less than 0 is flagged as an error.",
-        "Zero values are permitted; only strictly negative values are invalid.",
     ],
     RULE2_KEY: [
         "Field must not contain future-dated transactions.",
-        "The cutoff is today's system date at runtime.",
-        "Any row where BILLING_DATE is later than today's date is flagged as an error.",
-        "Blank or unparseable dates are also flagged.",
     ],
+        RULE3_KEY: [
+        "Field must not contain negative values.",
+    ],
+
 }
 
 
@@ -142,6 +144,8 @@ class HDABusinessRuleEngine:
         rules = {
             RULE1_KEY: self.validate_billing_qty,
             RULE2_KEY: self.validate_billing_date,
+            RULE3_KEY: self.validate_unit_price,
+
         }
         error_map: dict = {}
 
@@ -161,6 +165,19 @@ class HDABusinessRuleEngine:
                     }
 
         return error_map
+    
+    def validate_unit_price(self, row) -> tuple[bool, str]:
+     val = row.get(RULE3_KEY)
+
+     if self._is_blank(val):
+        return True, ""  # ignore blanks
+     try:
+         if float(str(val).strip()) < 0:
+            return False, REASON_MAP[RULE3_KEY]
+     except ValueError:
+        return True, ""  # ignore non-numeric here
+
+     return True, ""
 
 
 # ══════════════════════════════════════════════
