@@ -29,7 +29,6 @@ def read_input(path: str) -> pd.DataFrame:
         raise ValueError(f"Unsupported file type: {path}")
 
 
-
 # ======================================================
 # Load master/reference data
 # ======================================================
@@ -38,13 +37,19 @@ print("📂 Loading reference files...")
 part_df = read_input(PART_FILE)
 part_df.columns = part_df.columns.str.strip().str.upper()
 if "MATERIALNUMBER_PLANT" not in part_df.columns:
-    part_df["MATERIALNUMBER_PLANT"] = part_df["MATERIALNUMBER"].astype(str).str.strip() + "_" + part_df["PLANT"].astype(str).str.strip()
+    part_df["MATERIALNUMBER_PLANT"] = (
+        part_df["MATERIALNUMBER"].astype(str).str.strip() + "_" +
+        part_df["PLANT"].astype(str).str.strip()
+    )
 part_set = set(part_df["MATERIALNUMBER_PLANT"].dropna().str.strip())
 
 customer_df = read_input(CUSTOMER_FILE)
 customer_df.columns = customer_df.columns.str.strip().str.upper()
 if "SUPPLYINGPLANT_CUSTOMER" not in customer_df.columns:
-    customer_df["SUPPLYINGPLANT_CUSTOMER"] = customer_df["SUPPLYINGPLANT"].astype(str).str.strip() + "_" + customer_df["CUSTOMER"].astype(str).str.strip()
+    customer_df["SUPPLYINGPLANT_CUSTOMER"] = (
+        customer_df["SUPPLYINGPLANT"].astype(str).str.strip() + "_" +
+        customer_df["CUSTOMER"].astype(str).str.strip()
+    )
 customer_set = set(customer_df["SUPPLYINGPLANT_CUSTOMER"].dropna().str.strip())
 
 site_df = read_input(SITE_FILE)
@@ -53,148 +58,191 @@ site_set = set(site_df["PLANT"].dropna().str.strip())
 
 # ======================================================
 # Validation rules
+# (chunk processing removed — full file loaded at once
+#  to enable accurate duplicate detection across all rows)
 # ======================================================
 rules = [
     ("Plant",             "ERROR_PLANT",             "Plant is not present in site master."),
-    ("BILLING_DATE","ERROR_BILLING_DATE", "Must not be blank and must be in YYYYMMDD format."),
+    ("BILLING_DATE",      "ERROR_BILLING_DATE",       "Must not be blank and must be in YYYYMMDD format."),
     ("MATERIAL_PLANT",    "ERROR_MATERIAL_PLANT",     "Material-Plant combination not present in the Part master."),
     ("PLANT_SOLDTOPARTY", "ERROR_PLANT_SOLDTOPARTY",  "Plant-Soldtoparty combination is not present in customer master."),
+    ("DUPLICATE_CHECK",   "ERROR_DUPLICATE",          "Duplicate record: MATERIAL-PLANT-SOLDTOPARTY-BILLINGDATE combination already exists."),
 ]
 
 ERROR_MESSAGES = {col: reason for field, col, reason in rules}
 
 ERROR_SHEETS = {
     "ERROR_PLANT":             ("PLANT",             ERROR_MESSAGES["ERROR_PLANT"]),
-    "ERROR_BILLING_DATE":("BILLING_DATE", ERROR_MESSAGES["ERROR_BILLING_DATE"]),
+    "ERROR_BILLING_DATE":      ("BILLING_DATE",      ERROR_MESSAGES["ERROR_BILLING_DATE"]),
     "ERROR_MATERIAL_PLANT":    ("MATERIAL_PLANT",    ERROR_MESSAGES["ERROR_MATERIAL_PLANT"]),
     "ERROR_PLANT_SOLDTOPARTY": ("PLANT_SOLDTOPARTY", ERROR_MESSAGES["ERROR_PLANT_SOLDTOPARTY"]),
+    "ERROR_DUPLICATE":         ("DUPLICATE_CHECK",   ERROR_MESSAGES["ERROR_DUPLICATE"]),
 }
 
 # ======================================================
 # Constants
 # ======================================================
-CHUNK_SIZE     = 500_000
-EXCEL_MAX_ROWS = 1_048_576
-date_pattern = re.compile(r"^\d{8}$|^\d{4}-\d{2}-\d{2}$")
+EXCEL_MAX_ROWS  = 1_048_576
+date_pattern    = re.compile(r"^\d{8}$|^\d{4}-\d{2}-\d{2}$")
+
+# Duplicate key columns
+DUPLICATE_KEY_COLS = ["MATERIAL", "PLANT", "SOLDTOPARTY", "BILLING_DATE"]
 
 sheet_tracker = {
     sheet: {"sheet_no": 1, "current_row": 0}
     for sheet, _ in ERROR_SHEETS.values()
 }
 
-error_counts = {field: 0 for field, _, _ in rules}
-total_records = 0
+error_counts      = {field: 0 for field, _, _ in rules}
+total_records     = 0
 records_with_errors = 0
 
 # ======================================================
-# WRITE ERROR DATA
+# LOAD FULL HDA FILE (no chunking — required for duplicate detection)
 # ======================================================
-print("🔍 Validating HDA via streaming chunk ingestion...")
-with pd.ExcelWriter(OUTPUT_EXCEL, engine="openpyxl") as writer:
-    # Guard: write a placeholder so the workbook is never empty
-    pd.DataFrame({"_": ["placeholder"]}).to_excel(writer, sheet_name="_placeholder", index=False)
+print("📂 Loading full HDA file for validation...")
+hda_df = pd.read_csv(HDA_FILE, sep="\t", dtype=str)
+hda_df = hda_df.apply(lambda x: x.str.strip() if x.dtype == "object" else x)
+hda_df.columns = hda_df.columns.str.strip().str.upper()
 
-    for chunk in pd.read_csv(HDA_FILE, sep="\t", dtype=str, chunksize=CHUNK_SIZE):
-        chunk = chunk.apply(lambda x: x.str.strip())
-        chunk.columns = chunk.columns.str.strip().str.upper()
-        total_records += len(chunk)
-
-        # Build composite keys if they don't already exist in the .tab
-        if "MATERIAL_PLANT" not in chunk.columns:
-            chunk["MATERIAL_PLANT"] = chunk["MATERIAL"].astype(str).str.strip() + "_" + chunk["PLANT"].astype(str).str.strip()
-        if "PLANT_SOLDTOPARTY" not in chunk.columns:
-            chunk["PLANT_SOLDTOPARTY"] = chunk["PLANT"].astype(str).str.strip() + "_" + chunk["SOLDTOPARTY"].astype(str).str.strip()
-        
-        # if "PLANT_SOLDTOPARTY" not in chunk.columns:
-        #    chunk["PLANT_SOLDTOPARTY"] = (
-        #    chunk["PLANT"].astype(str).str.strip() + "_" +
-        #    chunk["SOLDTOPARTY"].astype(str).str.strip()
-        #  )
-           
-        chunk["ERROR_PLANT"] = chunk["PLANT"].apply(
-            lambda x: "Yes" if pd.isna(x) or x not in site_set else "")
-        chunk["ERROR_BILLING_DATE"] = chunk["BILLING_DATE"].apply(
-            lambda x: "Yes" if pd.isna(x) or not date_pattern.match(x) else "")
-        chunk["ERROR_MATERIAL_PLANT"] = chunk["MATERIAL_PLANT"].apply(
-            lambda x: "Yes" if pd.isna(x) or x not in part_set else "")
-        chunk["ERROR_PLANT_SOLDTOPARTY"] = chunk["PLANT_SOLDTOPARTY"].apply(
-            lambda x: "Yes" if pd.isna(x) or x not in customer_set else "")
-
-        row_has_error = False
-        for field, col, _ in rules:
-            cnt = (chunk[col] == "Yes").sum()
-            error_counts[field] += cnt
-            row_has_error = row_has_error | (chunk[col] == "Yes")
-        records_with_errors += row_has_error.sum()
-
-        for error_col, (base_sheet, error_msg) in ERROR_SHEETS.items():
-            error_rows = chunk[chunk[error_col] == "Yes"].copy()
-            if error_rows.empty:
-                continue
-
-            error_rows["ERROR_COLUMNS"] = error_msg
-            tracker = sheet_tracker[base_sheet]
-            start = 0
-
-            while start < len(error_rows):
-                sheet_name = base_sheet if tracker["sheet_no"] == 1 else f"{base_sheet}_{tracker['sheet_no']}"
-                remaining  = EXCEL_MAX_ROWS - tracker["current_row"]
-                write_df   = error_rows.iloc[start:start + remaining]
-
-                write_df.to_excel(
-                    writer,
-                    sheet_name=sheet_name,
-                    startrow=tracker["current_row"],
-                    index=False,
-                    header=(tracker["current_row"] == 0)
-                )
-
-                start += len(write_df)
-                tracker["current_row"] += len(write_df)
-
-                if tracker["current_row"] >= EXCEL_MAX_ROWS:
-                    tracker["sheet_no"] += 1
-                    tracker["current_row"] = 0
-
-records_passing = total_records - records_with_errors
-
-print("📝 Generating standardized reports...")
+total_records = len(hda_df)
+print(f"   → {total_records:,} records loaded.")
 
 # ======================================================
-# LOAD WORKBOOK FOR STYLING
+# BUILD COMPOSITE KEYS
 # ======================================================
-wb = load_workbook(OUTPUT_EXCEL)
+if "MATERIAL_PLANT" not in hda_df.columns:
+    hda_df["MATERIAL_PLANT"] = (
+        hda_df["MATERIAL"].astype(str).str.strip() + "_" +
+        hda_df["PLANT"].astype(str).str.strip()
+    )
 
-# Remove placeholder sheet
-if "_placeholder" in wb.sheetnames:
-    del wb["_placeholder"]
-if "Sheet" in wb.sheetnames:
-    del wb["Sheet"]
-
-bold            = Font(bold=True)
-center          = Alignment(horizontal="center")
-thin_side       = Side(style="thin")
-border          = Border(left=thin_side, right=thin_side, top=thin_side, bottom=thin_side)
-title_fill      = PatternFill("solid", fgColor="BDD7EE")
-header_fill     = PatternFill("solid", fgColor="D9E1F2")
-green_fill      = PatternFill("solid", fgColor="E2EFDA")
-total_fill      = PatternFill("solid", fgColor="F2F2F2")
-pale_yellow_fill = PatternFill("solid", fgColor="FFF2CC")
-red_fill         = PatternFill("solid", fgColor="FF0000")
-blue_header_fill = PatternFill("solid", fgColor="BDD7EE")
+if "PLANT_SOLDTOPARTY" not in hda_df.columns:
+    hda_df["PLANT_SOLDTOPARTY"] = (
+        hda_df["PLANT"].astype(str).str.strip() + "_" +
+        hda_df["SOLDTOPARTY"].astype(str).str.strip()
+    )
 
 # ======================================================
-# APPLY STYLING TO ERROR SHEETS
-# Sort by base_sheet name length descending so "PLANT_SOLDTOPARTY"
-# is always matched before "PLANT" — fixes wrong-column-red bug
+# RUN VALIDATION CHECKS
 # ======================================================
+print("🔍 Running validation checks...")
+
+hda_df["ERROR_PLANT"] = hda_df["PLANT"].apply(
+    lambda x: "Yes" if pd.isna(x) or x not in site_set else ""
+)
+
+hda_df["ERROR_BILLING_DATE"] = hda_df["BILLING_DATE"].apply(
+    lambda x: "Yes" if pd.isna(x) or not date_pattern.match(str(x)) else ""
+)
+
+hda_df["ERROR_MATERIAL_PLANT"] = hda_df["MATERIAL_PLANT"].apply(
+    lambda x: "Yes" if pd.isna(x) or x not in part_set else ""
+)
+
+hda_df["ERROR_PLANT_SOLDTOPARTY"] = hda_df["PLANT_SOLDTOPARTY"].apply(
+    lambda x: "Yes" if pd.isna(x) or x not in customer_set else ""
+)
+
+# Duplicate check: flag ALL occurrences of duplicate key combinations
+# (MATERIAL + PLANT + SOLDTOPARTY + BILLING_DATE)
+available_dup_cols = [c for c in DUPLICATE_KEY_COLS if c in hda_df.columns]
+if len(available_dup_cols) == len(DUPLICATE_KEY_COLS):
+    hda_df["ERROR_DUPLICATE"] = hda_df.duplicated(
+        subset=available_dup_cols, keep=False
+    ).map({True: "Yes", False: ""})
+else:
+    missing = set(DUPLICATE_KEY_COLS) - set(available_dup_cols)
+    print(f"⚠️  Warning: Duplicate check skipped — missing columns: {missing}")
+    hda_df["ERROR_DUPLICATE"] = ""
+
+# ======================================================
+# COUNT ERRORS & RECORDS WITH ERRORS
+# ======================================================
+row_has_error = pd.Series(False, index=hda_df.index)
+for field, col, _ in rules:
+    cnt = (hda_df[col] == "Yes").sum()
+    error_counts[field] += cnt
+    row_has_error = row_has_error | (hda_df[col] == "Yes")
+
+records_with_errors = int(row_has_error.sum())
+records_passing     = total_records - records_with_errors
+
+# ======================================================
+# WRITE ERROR SHEETS TO EXCEL
+# ======================================================
+print("📝 Writing error data to Excel...")
+
 sorted_error_sheets = sorted(
     ERROR_SHEETS.items(),
     key=lambda x: len(x[1][0]),
     reverse=True
 )
 
-# Collect all error sheet names present in workbook
+with pd.ExcelWriter(OUTPUT_EXCEL, engine="openpyxl") as writer:
+    pd.DataFrame({"_": ["placeholder"]}).to_excel(
+        writer, sheet_name="_placeholder", index=False
+    )
+
+    for error_col, (base_sheet, error_msg) in sorted_error_sheets:
+        error_rows = hda_df[hda_df[error_col] == "Yes"].copy()
+        if error_rows.empty:
+            continue
+
+        error_rows["ERROR_COLUMNS"] = error_msg
+        tracker = sheet_tracker[base_sheet]
+        start   = 0
+
+        while start < len(error_rows):
+            sheet_name = (
+                base_sheet if tracker["sheet_no"] == 1
+                else f"{base_sheet}_{tracker['sheet_no']}"
+            )
+            remaining = EXCEL_MAX_ROWS - tracker["current_row"]
+            write_df  = error_rows.iloc[start:start + remaining]
+
+            write_df.to_excel(
+                writer,
+                sheet_name=sheet_name,
+                startrow=tracker["current_row"],
+                index=False,
+                header=(tracker["current_row"] == 0),
+            )
+
+            start                  += len(write_df)
+            tracker["current_row"] += len(write_df)
+
+            if tracker["current_row"] >= EXCEL_MAX_ROWS:
+                tracker["sheet_no"]    += 1
+                tracker["current_row"]  = 0
+
+# ======================================================
+# LOAD WORKBOOK FOR STYLING
+# ======================================================
+wb = load_workbook(OUTPUT_EXCEL)
+
+if "_placeholder" in wb.sheetnames:
+    del wb["_placeholder"]
+if "Sheet" in wb.sheetnames:
+    del wb["Sheet"]
+
+bold             = Font(bold=True)
+center           = Alignment(horizontal="center")
+thin_side        = Side(style="thin")
+border           = Border(left=thin_side, right=thin_side, top=thin_side, bottom=thin_side)
+title_fill       = PatternFill("solid", fgColor="BDD7EE")
+header_fill      = PatternFill("solid", fgColor="D9E1F2")
+green_fill       = PatternFill("solid", fgColor="E2EFDA")
+total_fill       = PatternFill("solid", fgColor="F2F2F2")
+pale_yellow_fill = PatternFill("solid", fgColor="FFF2CC")
+red_fill         = PatternFill("solid", fgColor="FF0000")
+blue_header_fill = PatternFill("solid", fgColor="BDD7EE")
+
+# ======================================================
+# APPLY STYLING TO ERROR SHEETS
+# Sort by base_sheet name length descending so longer names
+# (e.g. "PLANT_SOLDTOPARTY") match before shorter ones ("PLANT")
+# ======================================================
 all_error_sheet_names = set()
 for error_col, (base_sheet, _) in sorted_error_sheets:
     for sname in wb.sheetnames:
@@ -204,7 +252,6 @@ for error_col, (base_sheet, _) in sorted_error_sheets:
 for sheet_name in all_error_sheet_names:
     ws = wb[sheet_name]
 
-    # Match to base_sheet using longest-first sorted list
     matched_base = None
     for error_col, (base_sheet, _) in sorted_error_sheets:
         if sheet_name == base_sheet or sheet_name.startswith(base_sheet + "_"):
@@ -213,7 +260,6 @@ for sheet_name in all_error_sheet_names:
     if matched_base is None:
         continue
 
-    # Find the column index of the error-highlighted column from header row
     highlight_col_idx = None
     for cell in list(ws.iter_rows(min_row=1, max_row=1))[0]:
         if cell.value == matched_base:
@@ -251,17 +297,17 @@ ws["A1"].alignment = center
 
 ws.append(["#", "Field Name", "Error Count", "Record Count", "% Health", "% of Error", "Reason"])
 for col in range(1, 8):
-    c            = ws.cell(row=2, column=col)
-    c.font       = bold
-    c.fill       = header_fill
-    c.border     = border
-    c.alignment  = center
+    c           = ws.cell(row=2, column=col)
+    c.font      = bold
+    c.fill      = header_fill
+    c.border    = border
+    c.alignment = center
 
 row = 3
 for idx, (field, _, reason) in enumerate(rules, start=1):
-    cnt        = error_counts[field]
-    pct_error  = round((cnt / total_records) * 100, 2) if total_records else 0
-    pct_health = round(100 - pct_error, 2)
+    cnt           = error_counts[field]
+    pct_error     = round((cnt / total_records) * 100, 2) if total_records else 0
+    pct_health    = round(100 - pct_error, 2)
     display_reason = reason if cnt > 0 else ""
     ws.append([idx, field, cnt, total_records, f"{pct_health}%", f"{pct_error}%", display_reason])
     for col in range(1, 8):
@@ -296,7 +342,7 @@ for label, value in [
 # ======================================================
 # RULESETS SHEET
 # ======================================================
-wsr                = wb.create_sheet("Rulesets")
+wsr = wb.create_sheet("Rulesets")
 wsr.merge_cells("A1:C1")
 wsr["A1"]           = "HDA – Validation Rules"
 wsr["A1"].font      = Font(bold=True, size=14)
