@@ -2,6 +2,11 @@ Part:
 1)There should not be any duplicates in the extract . Key - All columns
 2)MATERIALNUMBER: MATERIALNUMBER column should be mapped to single description (PRODUCTDESCRIPTION column)
 Ex: One material number should have only one product description
+3)BASEUIT:Base UOM should be consistent (Ex: For same MSKU the base UOM should be consistent across sites.).Consider MATERIALNUMBER and BASEUNIT columns for this
+4)MINREMSHELFLIFE:
+  a)Field should not be blank for Material Type -FERT and HAWA
+  b)Field should be > 0
+5)PROCUREMENTTYPE:Field should be E/F/X
 
 
 Site:
