@@ -8,8 +8,8 @@ from openpyxl.utils import get_column_letter
 # ─────────────────────────────────────────────
 #  FILE PATHS
 # ─────────────────────────────────────────────
-INPUT_FILE  = r"C:\Users\SW526XH\Downloads\Go Live-1\HDA\HDA_Secondary.tab"
-OUTPUT_FILE = r"C:\Users\SW526XH\Downloads\Go Live-1\HDA\HDA_Secondary_Business_Rules.xlsx"
+INPUT_FILE  = r"C:\Users\SW526XH\Downloads\Go Live-1\HDA_Secondary\HDA(SecSales)2026-05-06-1606.tab"
+OUTPUT_FILE = r"C:\Users\SW526XH\Downloads\Go Live-1\HDA\Validated_HDA_Secondary_Business.xlsx"
 
 
 # ─────────────────────────────────────────────
@@ -17,9 +17,10 @@ OUTPUT_FILE = r"C:\Users\SW526XH\Downloads\Go Live-1\HDA\HDA_Secondary_Business_
 # ─────────────────────────────────────────────
 RULE1_KEY = "INVOICE_QTY_IN_BU"
 RULE2_KEY = "INVOICE_DATE"
+RULE3_KEY = "UNIT_PRICE"
 
-RULES_FIELDS_ORDERED = [RULE1_KEY, RULE2_KEY]
-ERROR_SHEET_PRIORITY = [RULE1_KEY, RULE2_KEY]
+RULES_FIELDS_ORDERED = [RULE1_KEY, RULE2_KEY,RULE3_KEY]
+ERROR_SHEET_PRIORITY = [RULE1_KEY, RULE2_KEY,RULE3_KEY]
 
 # Columns to display in error sheets (in this exact order)
 ERROR_SHEET_COLS = [
@@ -33,21 +34,20 @@ ERROR_SHEET_COLS = [
 ]
 
 REASON_MAP = {
-    RULE1_KEY: "INVOICE_QTY_IN_BU: Negative values are not allowed — quantity must be ≥ 0",
+    RULE1_KEY: "INVOICE_QTY_IN_BU: Negative values are not present",
     RULE2_KEY: "INVOICE_DATE: Future-dated transactions are not allowed — date must be ≤ today's date",
+    RULE3_KEY: "UNIT_PRICE: Negative values are prsent",
 }
 
 RULES_CONTENT = {
     RULE1_KEY: [
         "Field must not contain negative values.",
-        "Any row where INVOICE_QTY_IN_BU is less than 0 is flagged as an error.",
-        "Zero values are permitted; only strictly negative values are invalid.",
     ],
     RULE2_KEY: [
         "Field must not contain future-dated transactions.",
-        "The cutoff is today's system date at runtime.",
-        "Any row where INVOICE_DATE is later than today's date is flagged as an error.",
-        "Blank or unparseable dates are also flagged.",
+    ],
+    RULE3_KEY:[
+        "Field must not contain negative values.",
     ],
 }
 
@@ -142,6 +142,8 @@ class HDASecondaryBusinessRuleEngine:
         rules = {
             RULE1_KEY: self.validate_invoice_qty,
             RULE2_KEY: self.validate_invoice_date,
+            RULE3_KEY: self.validate_unit_price,
+
         }
         error_map: dict = {}
 
@@ -161,6 +163,17 @@ class HDASecondaryBusinessRuleEngine:
                     }
 
         return error_map
+    
+    def validate_unit_price(self, row) -> tuple[bool, str]:
+     val = row.get(RULE3_KEY)
+     if self._is_blank(val):
+        return True, ""   # blank not checked here
+     try:
+        if float(str(val).strip()) < 0:
+            return False, REASON_MAP[RULE3_KEY]
+     except ValueError:
+        return True, ""   # ignore non-numeric
+     return True, ""
 
 
 # ══════════════════════════════════════════════
@@ -252,7 +265,7 @@ class HDASecondaryReportWriter:
         # Title
         ws.merge_cells("A1:G1")
         tc           = ws.cell(row=1, column=1,
-                               value=f"HDA Secondary – Business Rules Validation Summary  "
+                               value=f"HDA Secondary-Business Rules Validation Summary  "
                                      f"(Run date: {self.today_str})")
         tc.font      = Font(name="Arial", bold=True, size=14)
         tc.fill      = TITLE_FILL
