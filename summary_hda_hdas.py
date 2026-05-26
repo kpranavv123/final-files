@@ -19,7 +19,9 @@ OUTPUT_EXCEL = r"C:\Users\SW526XH\Downloads\Go Live-1\HDA\Technical_Summary3.xls
 # ======================================================
 # Constants
 # ======================================================
-CHUNK_SIZE   = 500_000
+# NOTE: CHUNK_SIZE removed — full-file load is required for duplicate detection.
+# Chunked processing cannot detect cross-chunk duplicates, so both HDA Primary
+# and HDA Secondary are now loaded entirely into memory before validation.
 date_pattern = re.compile(r"^\d{8}$|^\d{4}-\d{2}-\d{2}$")
 
 # ======================================================
@@ -84,14 +86,19 @@ site_df = read_input(SITE_FILE)
 site_df.columns = site_df.columns.str.strip().str.upper()
 site_set = set(site_df["PLANT"].dropna().str.strip())
 
+
 # ══════════════════════════════════════════════════════
 #  HDA PRIMARY — rules & counting
+#  NOTE: Loaded fully into memory (no chunking) so that
+#        the duplicate check can see the entire dataset.
 # ══════════════════════════════════════════════════════
 PRIMARY_RULES = [
     ("PLANT",              "ERROR_PLANT",              "Plant is not present in site master."),
-    ("BILLING_DATE", "ERROR_BILLING_DATE", "Must not be blank and must be in YYYYMMDD format."),
+    ("BILLING_DATE",       "ERROR_BILLING_DATE",       "Must not be blank and must be in YYYYMMDD format."),
     ("MATERIAL_PLANT",     "ERROR_MATERIAL_PLANT",     "Material-Plant combination not present in the Part master."),
     ("PLANT_SOLDTOPARTY",  "ERROR_PLANT_SOLDTOPARTY",  "Plant-Soldtoparty combination is not present in customer master."),
+    # ── NEW RULE ──────────────────────────────────────────────────────────────
+    ("DUPLICATE_CHECK",    "ERROR_DUPLICATE_CHECK",    "Duplicate record: MATERIAL + PLANT + SOLDTOPARTY + BILLING_DATE combination already exists in the extract."),
 ]
 
 PRIMARY_RULESET_DESC = {
@@ -111,87 +118,131 @@ PRIMARY_RULESET_DESC = {
         "Field should not be blank",
         "Plant-Soldtoparty combination must exist in Customer master."
     ],
+    # ── NEW RULE ──────────────────────────────────────────────────────────────
+    "DUPLICATE_CHECK": [
+        "There should be no duplicate records in the extract.",
+        "A duplicate is identified when MATERIAL + PLANT + SOLDTOPARTY + BILLING_DATE are all identical across two or more rows.",
+        "All rows involved in a duplicate combination are flagged as errors."
+    ],
 }
-print("\n🔍 Counting errors for HDA Primary...")
-p_error_counts      = {field: 0 for field, _, _ in PRIMARY_RULES}
-p_total_records      = 0
-p_records_with_errors = 0
 
-for chunk in pd.read_csv(HDA_PRIMARY_FILE, sep="\t", dtype=str, chunksize=CHUNK_SIZE):
-    chunk = chunk.apply(lambda x: x.str.strip())
-    chunk.columns = chunk.columns.str.strip().str.upper()
-    p_total_records += len(chunk)
+# ── Load full HDA Primary file ──────────────────────────────────────────────
+print("\n📂 Loading HDA Primary file (full load for duplicate detection)...")
+primary_df = pd.read_csv(HDA_PRIMARY_FILE, sep="\t", dtype=str)
+primary_df = primary_df.apply(lambda x: x.str.strip() if x.dtype == "object" else x)
+primary_df.columns = primary_df.columns.str.strip().str.upper()
 
-    if "MATERIAL_PLANT" not in chunk.columns:
-        chunk["MATERIAL_PLANT"] = chunk["MATERIAL"].astype(str).str.strip() + "_" + chunk["PLANT"].astype(str).str.strip()
-    if "PLANT_SOLDTOPARTY" not in chunk.columns:
-        chunk["PLANT_SOLDTOPARTY"] = chunk["PLANT"].astype(str).str.strip() + "_" + chunk["SOLDTOPARTY"].astype(str).str.strip()
+p_total_records = len(primary_df)
+print(f"   Rows loaded: {p_total_records:,}")
 
-    chunk["ERROR_PLANT"] = chunk["PLANT"].apply(
-        lambda x: "Yes" if pd.isna(x) or x not in site_set else "")
-    chunk["ERROR_BILLING_DATE"] = chunk["BILLING_DATE"].apply(
-        lambda x: "Yes" if pd.isna(x) or not date_pattern.match(x) else "")
-    chunk["ERROR_MATERIAL_PLANT"] = chunk["MATERIAL_PLANT"].apply(
-        lambda x: "Yes" if pd.isna(x) or x not in part_plant_set else "")
-    chunk["ERROR_PLANT_SOLDTOPARTY"] = chunk["PLANT_SOLDTOPARTY"].apply(
-        lambda x: "Yes" if pd.isna(x) or x not in customer_plant_set else "")
+# ── Build composite keys ─────────────────────────────────────────────────────
+if "MATERIAL_PLANT" not in primary_df.columns:
+    primary_df["MATERIAL_PLANT"] = (
+        primary_df["MATERIAL"].astype(str).str.strip() + "_" +
+        primary_df["PLANT"].astype(str).str.strip()
+    )
+if "PLANT_SOLDTOPARTY" not in primary_df.columns:
+    primary_df["PLANT_SOLDTOPARTY"] = (
+        primary_df["PLANT"].astype(str).str.strip() + "_" +
+        primary_df["SOLDTOPARTY"].astype(str).str.strip()
+    )
 
-    row_has_error = False
-    for field, col, _ in PRIMARY_RULES:
-        cnt = (chunk[col] == "Yes").sum()
-        p_error_counts[field] += cnt
-        row_has_error = row_has_error | (chunk[col] == "Yes")
-    p_records_with_errors += row_has_error.sum()
+# ── Existing validation rules ────────────────────────────────────────────────
+primary_df["ERROR_PLANT"] = primary_df["PLANT"].apply(
+    lambda x: "Yes" if pd.isna(x) or x not in site_set else "")
+primary_df["ERROR_BILLING_DATE"] = primary_df["BILLING_DATE"].apply(
+    lambda x: "Yes" if pd.isna(x) or not date_pattern.match(str(x)) else "")
+primary_df["ERROR_MATERIAL_PLANT"] = primary_df["MATERIAL_PLANT"].apply(
+    lambda x: "Yes" if pd.isna(x) or x not in part_plant_set else "")
+primary_df["ERROR_PLANT_SOLDTOPARTY"] = primary_df["PLANT_SOLDTOPARTY"].apply(
+    lambda x: "Yes" if pd.isna(x) or x not in customer_plant_set else "")
+
+# ── NEW: Duplicate check rule ────────────────────────────────────────────────
+# A row is a duplicate if the combination of MATERIAL + PLANT + SOLDTOPARTY +
+# BILLING_DATE appears more than once.  ALL occurrences (including the first)
+# are flagged so that every duplicate instance is counted as an error.
+PRIMARY_DUP_COLS = ["MATERIAL", "PLANT", "SOLDTOPARTY", "BILLING_DATE"]
+primary_df["ERROR_DUPLICATE_CHECK"] = primary_df.duplicated(
+    subset=PRIMARY_DUP_COLS, keep=False          # keep=False → flags ALL copies
+).map({True: "Yes", False: ""})
+
+# ── Count errors per rule ────────────────────────────────────────────────────
+print("🔍 Counting errors for HDA Primary...")
+p_error_counts = {}
+for field, col, _ in PRIMARY_RULES:
+    p_error_counts[field] = (primary_df[col] == "Yes").sum()
+
+error_cols_primary     = [col for _, col, _ in PRIMARY_RULES]
+p_records_with_errors  = (primary_df[error_cols_primary] == "Yes").any(axis=1).sum()
 
 print(f"   ✅ Primary: {p_total_records:,} records scanned")
 
+
 # ══════════════════════════════════════════════════════
 #  HDA SECONDARY — rules & counting
+#  NOTE: Loaded fully into memory (no chunking) so that
+#        the duplicate check can see the entire dataset.
 # ══════════════════════════════════════════════════════
 SECONDARY_RULES = [
-    ("CSKU",       "ERROR_CSKU",       "CSKU: CSKU missing in Part master"),
-    ("DISTRIBUTOR_CODE",   "ERROR_DISTRIBUTOR_CODE",   "DISTRIBUTOR_CODE: Distributor code is blank or missing in Customer master"),
-    ("INVOICE_DATE", "ERROR_INVOICE_DATE", "INVOICE_DATE: Invoice week start is blank or not in YYYYMMDD format"),
-    ("PLANT", "ERROR_PLANT", "PLANT: Plant does not exist in Site master or is blank"),
+    ("CSKU",             "ERROR_CSKU",             "CSKU: CSKU missing in Part master"),
+    ("DISTRIBUTOR_CODE", "ERROR_DISTRIBUTOR_CODE", "DISTRIBUTOR_CODE: Distributor code is blank or missing in Customer master"),
+    ("INVOICE_DATE",     "ERROR_INVOICE_DATE",     "INVOICE_DATE: Invoice week start is blank or not in YYYYMMDD format"),
+    ("PLANT",            "ERROR_PLANT",            "PLANT: Plant does not exist in Site master or is blank"),
+    # ── NEW RULE ──────────────────────────────────────────────────────────────
+    ("DUPLICATE_CHECK",  "ERROR_DUPLICATE_CHECK",  "Duplicate record: DISTRIBUTOR_CODE + PLANT + INVOICE_DATE + CSKU combination already exists in the extract."),
 ]
 
 SECONDARY_RULESET_DESC = {
-    "CSKU":       ["Must not be blank.", "Must exist as MATERIALNUMBER in Part master."],
-    "DISTRIBUTOR_CODE":   ["Must not be blank.", "Must exist as CUSTOMER in Customer master."],
-    "INVOICE_DATE": ["Must not be blank.", "Must strictly be in YYYYMMDD format."],
-    "PLANT": ["Must not be blank.","Must exist in Site master."],
-
+    "CSKU":             ["Must not be blank.", "Must exist as MATERIALNUMBER in Part master."],
+    "DISTRIBUTOR_CODE": ["Must not be blank.", "Must exist as CUSTOMER in Customer master."],
+    "INVOICE_DATE":     ["Must not be blank.", "Must strictly be in YYYYMMDD format."],
+    "PLANT":            ["Must not be blank.", "Must exist in Site master."],
+    # ── NEW RULE ──────────────────────────────────────────────────────────────
+    "DUPLICATE_CHECK": [
+        "There should be no duplicate records in the extract.",
+        "A duplicate is identified when DISTRIBUTOR_CODE + PLANT + INVOICE_DATE + CSKU are all identical across two or more rows.",
+        "All rows involved in a duplicate combination are flagged as errors."
+    ],
 }
 
+# ── Load full HDA Secondary file ─────────────────────────────────────────────
+print("\n📂 Loading HDA Secondary file (full load for duplicate detection)...")
+secondary_df = pd.read_csv(HDA_SECONDARY_FILE, sep="\t", dtype=str)
+secondary_df = secondary_df.apply(lambda x: x.str.strip() if x.dtype == "object" else x)
+secondary_df.columns = secondary_df.columns.str.strip().str.upper()
+
+s_total_records = len(secondary_df)
+print(f"   Rows loaded: {s_total_records:,}")
+
+# ── Existing validation rules ────────────────────────────────────────────────
+secondary_df["ERROR_CSKU"] = secondary_df["CSKU"].apply(
+    lambda x: "Yes" if pd.isna(x) or x == "" or x not in part_set else "")
+secondary_df["ERROR_DISTRIBUTOR_CODE"] = secondary_df["DISTRIBUTOR_CODE"].apply(
+    lambda x: "Yes" if pd.isna(x) or x == "" or x not in customer_set else "")
+secondary_df["ERROR_INVOICE_DATE"] = secondary_df["INVOICE_DATE"].apply(
+    lambda x: "Yes" if pd.isna(x) or x == "" or not date_pattern.fullmatch(str(x)) else "")
+secondary_df["ERROR_PLANT"] = secondary_df["PLANT"].apply(
+    lambda x: "Yes" if pd.isna(x) or x == "" or x not in site_set else "")
+
+# ── NEW: Duplicate check rule ────────────────────────────────────────────────
+# A row is a duplicate if the combination of DISTRIBUTOR_CODE + PLANT +
+# INVOICE_DATE + CSKU appears more than once.  ALL occurrences are flagged.
+SECONDARY_DUP_COLS = ["DISTRIBUTOR_CODE", "PLANT", "INVOICE_DATE", "CSKU"]
+secondary_df["ERROR_DUPLICATE_CHECK"] = secondary_df.duplicated(
+    subset=SECONDARY_DUP_COLS, keep=False         # keep=False → flags ALL copies
+).map({True: "Yes", False: ""})
+
+# ── Count errors per rule ────────────────────────────────────────────────────
 print("🔍 Counting errors for HDA Secondary...")
-s_error_counts      = {field: 0 for field, _, _ in SECONDARY_RULES}
-s_total_records      = 0
-s_records_with_errors = 0
+s_error_counts = {}
+for field, col, _ in SECONDARY_RULES:
+    s_error_counts[field] = (secondary_df[col] == "Yes").sum()
 
-for chunk in pd.read_csv(HDA_SECONDARY_FILE, sep="\t", dtype=str, chunksize=CHUNK_SIZE):
-    chunk = chunk.apply(lambda x: x.str.strip())
-    chunk.columns = chunk.columns.str.strip().str.upper()
-    s_total_records += len(chunk)
-
-    chunk["ERROR_CSKU"] = chunk["CSKU"].apply(
-        lambda x: "Yes" if pd.isna(x) or x == "" or x not in part_set else "")
-    chunk["ERROR_DISTRIBUTOR_CODE"] = chunk["DISTRIBUTOR_CODE"].apply(
-        lambda x: "Yes" if pd.isna(x) or x == "" or x not in customer_set else "")
-    chunk["ERROR_INVOICE_DATE"] = chunk["INVOICE_DATE"].apply(
-        lambda x: "Yes" if pd.isna(x) or x == "" or not date_pattern.fullmatch(x) else "")
-    
-    chunk["ERROR_PLANT"] = chunk["PLANT"].apply(
-       lambda x: "Yes" if pd.isna(x) or x == "" or x not in site_set else "")
-
-
-    row_has_error = False
-    for field, col, _ in SECONDARY_RULES:
-        cnt = (chunk[col] == "Yes").sum()
-        s_error_counts[field] += cnt
-        row_has_error = row_has_error | (chunk[col] == "Yes")
-    s_records_with_errors += row_has_error.sum()
+error_cols_secondary   = [col for _, col, _ in SECONDARY_RULES]
+s_records_with_errors  = (secondary_df[error_cols_secondary] == "Yes").any(axis=1).sum()
 
 print(f"   ✅ Secondary: {s_total_records:,} records scanned")
+
 
 # ══════════════════════════════════════════════════════
 #  BUILD EXCEL — Summary + Ruleset only (no error rows)
