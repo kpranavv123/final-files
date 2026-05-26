@@ -7,22 +7,28 @@ from openpyxl.utils import get_column_letter
 # ======================================================
 # File paths
 # ======================================================
-HDA_FILE         = r"C:\Users\SW526XH\Downloads\Go Live-1\HDA\HistoricalDemandActuals.tab"
-SUMMARY_HDA_FILE = r"C:\Users\SW526XH\Downloads\Go Live-1\HDA\HDA_Validated.tab"
+HDA_FILE         = r"C:\Users\SW526XH\Downloads\Go Live-1\HDA\HDA_2026-05-20-2012.tab"
+SUMMARY_HDA_FILE = r"C:\Users\SW526XH\Downloads\Go Live-1\HDA\HDA_Validated2.tab"
 
-PART_FILE     = r"C:\Users\SW526XH\Downloads\Go Live-1\HDA\Part_site_FG 10.04.2026.csv"
-CUSTOMER_FILE = r"C:\Users\SW526XH\Downloads\Go Live-1\HDA\Customer_2026-04-10-1807.xlsx"
-SITE_FILE     = r"C:\Users\SW526XH\Downloads\Go Live-1\HDA\Site_2026-04-09-1058.csv.xlsx"
+PART_FILE     = r"C:\Users\SW526XH\Downloads\Go Live-1\Part\Part_Site_2026-05-21-1510.tab"
+CUSTOMER_FILE = r"C:\Users\SW526XH\Downloads\Go Live-1\Customer\Cutomer_2026-05-20-1205.tab"
+SITE_FILE     = r"C:\Users\SW526XH\Downloads\Go Live-1\Site\Site_2026-05-20-1153.tab"
 
-OUTPUT_EXCEL = r"C:\Users\SW526XH\Downloads\Go Live-1\HDA\Validated_HDA.xlsx"
+OUTPUT_EXCEL = r"C:\Users\SW526XH\Downloads\Go Live-1\HDA\Validated_HDA_Technical2.xlsx"
 
 # ======================================================
 # Helper: Universal loader
 # ======================================================
 def read_input(path: str) -> pd.DataFrame:
-    if path.lower().endswith('.csv'):
-        return pd.read_csv(path, dtype=str)
-    return pd.read_excel(path, dtype=str)
+    ext = path.lower()
+    if ext.endswith((".csv", ".tab", ".txt")):
+        return pd.read_csv(path, dtype=str, sep="\t")
+    elif ext.endswith((".xlsx", ".xls")):
+        return pd.read_excel(path, dtype=str, engine="openpyxl")
+    else:
+        raise ValueError(f"Unsupported file type: {path}")
+
+
 
 # ======================================================
 # Load master/reference data
@@ -49,17 +55,17 @@ site_set = set(site_df["PLANT"].dropna().str.strip())
 # Validation rules
 # ======================================================
 rules = [
-    ("PLANT",             "ERROR_PLANT",             "Plant is not present in site master."),
-    ("BILLING_WEEK_START","ERROR_BILLING_WEEK_START", "Must not be blank and must be in YYYYMMDD format."),
+    ("Plant",             "ERROR_PLANT",             "Plant is not present in site master."),
+    ("BILLING_DATE","ERROR_BILLING_DATE", "Must not be blank and must be in YYYYMMDD format."),
     ("MATERIAL_PLANT",    "ERROR_MATERIAL_PLANT",     "Material-Plant combination not present in the Part master."),
-    ("PLANT_SOLDTOPARTY", "ERROR_PLANT_SOLDTOPARTY",  "Plant-SoldToParty combination is not present in customer master."),
+    ("PLANT_SOLDTOPARTY", "ERROR_PLANT_SOLDTOPARTY",  "Plant-Soldtoparty combination is not present in customer master."),
 ]
 
 ERROR_MESSAGES = {col: reason for field, col, reason in rules}
 
 ERROR_SHEETS = {
     "ERROR_PLANT":             ("PLANT",             ERROR_MESSAGES["ERROR_PLANT"]),
-    "ERROR_BILLING_WEEK_START":("BILLING_WEEK_START", ERROR_MESSAGES["ERROR_BILLING_WEEK_START"]),
+    "ERROR_BILLING_DATE":("BILLING_DATE", ERROR_MESSAGES["ERROR_BILLING_DATE"]),
     "ERROR_MATERIAL_PLANT":    ("MATERIAL_PLANT",    ERROR_MESSAGES["ERROR_MATERIAL_PLANT"]),
     "ERROR_PLANT_SOLDTOPARTY": ("PLANT_SOLDTOPARTY", ERROR_MESSAGES["ERROR_PLANT_SOLDTOPARTY"]),
 }
@@ -69,7 +75,7 @@ ERROR_SHEETS = {
 # ======================================================
 CHUNK_SIZE     = 500_000
 EXCEL_MAX_ROWS = 1_048_576
-date_pattern   = re.compile(r"^\d{8}$")
+date_pattern = re.compile(r"^\d{8}$|^\d{4}-\d{2}-\d{2}$")
 
 sheet_tracker = {
     sheet: {"sheet_no": 1, "current_row": 0}
@@ -98,10 +104,16 @@ with pd.ExcelWriter(OUTPUT_EXCEL, engine="openpyxl") as writer:
             chunk["MATERIAL_PLANT"] = chunk["MATERIAL"].astype(str).str.strip() + "_" + chunk["PLANT"].astype(str).str.strip()
         if "PLANT_SOLDTOPARTY" not in chunk.columns:
             chunk["PLANT_SOLDTOPARTY"] = chunk["PLANT"].astype(str).str.strip() + "_" + chunk["SOLDTOPARTY"].astype(str).str.strip()
-
+        
+        # if "PLANT_SOLDTOPARTY" not in chunk.columns:
+        #    chunk["PLANT_SOLDTOPARTY"] = (
+        #    chunk["PLANT"].astype(str).str.strip() + "_" +
+        #    chunk["SOLDTOPARTY"].astype(str).str.strip()
+        #  )
+           
         chunk["ERROR_PLANT"] = chunk["PLANT"].apply(
             lambda x: "Yes" if pd.isna(x) or x not in site_set else "")
-        chunk["ERROR_BILLING_WEEK_START"] = chunk["BILLING_WEEK_START"].apply(
+        chunk["ERROR_BILLING_DATE"] = chunk["BILLING_DATE"].apply(
             lambda x: "Yes" if pd.isna(x) or not date_pattern.match(x) else "")
         chunk["ERROR_MATERIAL_PLANT"] = chunk["MATERIAL_PLANT"].apply(
             lambda x: "Yes" if pd.isna(x) or x not in part_set else "")
