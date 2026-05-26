@@ -58,6 +58,7 @@ THIN_BORDER = Border(
 
 # ─────────────────────────────────────────────
 #  Columns shown in error sheets (rules-defined order)
+#  NOTE: DUPLICATE_CHECK added at the end
 # ─────────────────────────────────────────────
 RULES_FIELDS_ORDERED = [
     "MATERIALNUMBER",
@@ -70,12 +71,15 @@ RULES_FIELDS_ORDERED = [
     "PROCUREMENTTYPE",
     "IBPSTATUS",
     "XPLANTMATSTATUS",
+    "DUPLICATE_CHECK",          # ← NEW
 ]
 
 # ─────────────────────────────────────────────
 #  Error sub-sheet creation order
+#  NOTE: DUPLICATE_CHECK listed first — highest priority
 # ─────────────────────────────────────────────
 ERROR_SHEET_PRIORITY = [
+    "DUPLICATE_CHECK",          # ← NEW (first — most critical)
     "PLANT",
     "PROCUREMENTTYPE",
     "PRODUCTHIERARCHY",
@@ -88,8 +92,10 @@ ERROR_SHEET_PRIORITY = [
 # ══════════════════════════════════════════════
 class RuleEngine:
 
-    def __init__(self, valid_plants: set):
-        self.valid_plants = valid_plants
+    def __init__(self, valid_plants: set, duplicate_indices: set = None):
+        self.valid_plants      = valid_plants
+        # Set of DataFrame indices that are duplicates (MATERIALNUMBER+PLANT combo)
+        self.duplicate_indices = duplicate_indices or set()
 
     @staticmethod
     def _is_blank(value) -> bool:
@@ -97,19 +103,22 @@ class RuleEngine:
             return True
         return str(value).strip() == ""
 
-    M_NUMBER_REASON = (
+    M_NUMBER_REASON  = (
         "MATERIALNUMBER: Must be 14xxxxxxxxxxxxxx (FERT) or 15xxxxxxxxxxxxxx (HAWA) "
         "— invalid range or blank"
     )
-    PLANT_REASON    = "PLANT: Value is not in the Consolidated PL list or field is blank"
-    PRODDESC_REASON = "PRODUCTDESCRIPTION: Field is blank"
-    PRODTYPE_REASON = "PRODUCTTYPE: Must be FERT or HAWA — invalid or blank value found"
-    PRODHIER_REASON = "PRODUCTHIERARCHY: Field is blank"
-    BASEUNIT_REASON = "BASEUNIT: Field is blank"
-    MRPTYPE_REASON  = "MRPTYPE: Must be ND or PD — invalid or blank value found"
-    PROC_REASON     = "PROCUREMENTTYPE: Field is blank"
-    IBP_REASON      = "IBPSTATUS: Must be 'IBP' — blank or unexpected value found"
-    XPLANT_REASON   = "XPLANTMATSTATUS: Must be '2' or blank — unexpected value found"
+    PLANT_REASON     = "PLANT: Value is not in the Consolidated PL list or field is blank"
+    PRODDESC_REASON  = "PRODUCTDESCRIPTION: Field is blank"
+    PRODTYPE_REASON  = "PRODUCTTYPE: Must be FERT or HAWA — invalid or blank value found"
+    PRODHIER_REASON  = "PRODUCTHIERARCHY: Field is blank"
+    BASEUNIT_REASON  = "BASEUNIT: Field is blank"
+    MRPTYPE_REASON   = "MRPTYPE: Must be ND or PD — invalid or blank value found"
+    PROC_REASON      = "PROCUREMENTTYPE: Field is blank"
+    IBP_REASON       = "IBPSTATUS: Must be 'IBP' — blank or unexpected value found"
+    XPLANT_REASON    = "XPLANTMATSTATUS: Must be '2' or blank — unexpected value found"
+    DUPLICATE_REASON = (                                                   # ← NEW
+        "DUPLICATE_CHECK: Duplicate combination of MATERIALNUMBER + PLANT detected"
+    )
 
     def validate_material_number(self, row) -> tuple[bool, str]:
         raw = row.get("MATERIALNUMBER")
@@ -183,6 +192,18 @@ class RuleEngine:
             return True, ""
         return False, self.XPLANT_REASON
 
+    # ── NEW: Duplicate check ─────────────────────────────────────────────────
+    def validate_duplicate(self, row) -> tuple[bool, str]:
+        """
+        Flags a row as duplicate when its DataFrame index is present in
+        self.duplicate_indices (populated by PartTableValidator before
+        per-row validation begins).
+        """
+        if row.name in self.duplicate_indices:
+            return False, self.DUPLICATE_REASON
+        return True, ""
+    # ────────────────────────────────────────────────────────────────────────
+
     def get_rules(self) -> dict:
         return {
             "MATERIALNUMBER":     self.validate_material_number,
@@ -195,6 +216,7 @@ class RuleEngine:
             "PROCUREMENTTYPE":    self.validate_procurement_type,
             "IBPSTATUS":          self.validate_ibp_status,
             "XPLANTMATSTATUS":    self.validate_xplant_mat_status,
+            "DUPLICATE_CHECK":    self.validate_duplicate,   # ← NEW
         }
 
 
@@ -242,8 +264,36 @@ class PartTableValidator:
                 self.df["PRODUCTTYPE"].str.strip().str.upper().isin({"FERT", "HAWA"})
             ].copy()
 
+    # ── NEW: Build the duplicate index set ──────────────────────────────────
+    def _find_duplicate_indices(self) -> set:
+        """
+        Returns the set of DataFrame indices where the combination of
+        MATERIALNUMBER + PLANT appears more than once in the extract.
+        All occurrences (including the first) are flagged as errors.
+        """
+        if "MATERIALNUMBER" not in self.df.columns or "PLANT" not in self.df.columns:
+            return set()
+
+        combo = self.df[["MATERIALNUMBER", "PLANT"]].apply(
+            lambda r: (
+                str(r["MATERIALNUMBER"]).strip().upper(),
+                str(r["PLANT"]).strip().upper(),
+            ),
+            axis=1,
+        )
+        # Mark every row that belongs to a duplicated combo
+        is_dup   = combo.duplicated(keep=False)   # keep=False flags ALL occurrences
+        dup_idxs = set(self.df.index[is_dup])
+        return dup_idxs
+    # ────────────────────────────────────────────────────────────────────────
+
     def validate(self):
-        engine = RuleEngine(self.valid_plants)
+        # Pre-build duplicate index set so the rule function can look it up
+        duplicate_indices = self._find_duplicate_indices()           # ← NEW
+        if duplicate_indices:
+            print(f"    Duplicate rows detected : {len(duplicate_indices)}")
+
+        engine = RuleEngine(self.valid_plants, duplicate_indices)    # ← UPDATED
         rules  = engine.get_rules()
 
         for idx, row in self.df.iterrows():
@@ -305,6 +355,13 @@ class ReportWriter:
             "Allowed values: 2 or blank.",
             "Any other value is treated as an error.",
         ],
+        # ── NEW ──────────────────────────────────────────────────────────────
+        "DUPLICATE_CHECK": [
+            "The combination of MATERIALNUMBER + PLANT must be unique across the extract.",
+            "All occurrences of a duplicated MATERIALNUMBER + PLANT pair are flagged as errors "
+            "(including the first occurrence).",
+        ],
+        # ─────────────────────────────────────────────────────────────────────
     }
 
     REASON_MAP = {
@@ -321,6 +378,11 @@ class ReportWriter:
         "PROCUREMENTTYPE":    "PROCUREMENTTYPE: Field is blank",
         "IBPSTATUS":          "IBPSTATUS: Must be 'IBP' — blank or unexpected value found",
         "XPLANTMATSTATUS":    "XPLANTMATSTATUS: Must be '2' or blank — unexpected value found",
+        # ── NEW ──────────────────────────────────────────────────────────────
+        "DUPLICATE_CHECK": (
+            "DUPLICATE_CHECK: Duplicate combination of MATERIALNUMBER + PLANT detected"
+        ),
+        # ─────────────────────────────────────────────────────────────────────
     }
 
     def __init__(self, validator: PartTableValidator, output_path: str):
@@ -497,7 +559,9 @@ class ReportWriter:
         v = self.validator
 
         # Only keep columns that exist in both source data and the rules list
-        rules_cols_in_data = [c for c in RULES_FIELDS_ORDERED if c in df.columns]
+        # Exclude DUPLICATE_CHECK from source columns (it's a synthetic check, not a data column)
+        source_fields      = [c for c in RULES_FIELDS_ORDERED if c != "DUPLICATE_CHECK"]
+        rules_cols_in_data = [c for c in source_fields if c in df.columns]
 
         # Collect all fields that have at least one error row
         all_error_fields: set = set()
@@ -520,7 +584,13 @@ class ReportWriter:
             if not row_indices:
                 continue
 
-            subset = df.loc[row_indices, rules_cols_in_data].copy()
+            # ── For DUPLICATE_CHECK, show MATERIALNUMBER + PLANT prominently ──
+            if field_name == "DUPLICATE_CHECK":
+                display_cols = rules_cols_in_data  # show all rule columns for context
+            else:
+                display_cols = rules_cols_in_data
+
+            subset = df.loc[row_indices, display_cols].copy()
             subset["ERROR_COLUMNS"] = subset.index.map(
                 lambda i, fn=field_name: v.error_map.get(i, {}).get(fn, "")
             )
@@ -548,11 +618,18 @@ class ReportWriter:
                                                wrap_text=True)
                     cell.fill      = ROW_FILL
 
-                # Highlight the failing column in red
-                if field_name in col_idx_map:
-                    target_cell      = ws.cell(row=r_idx, column=col_idx_map[field_name])
-                    target_cell.fill = RED_FILL
-                    target_cell.font = ERR_FONT
+                # ── For DUPLICATE_CHECK highlight both key columns in red ──
+                if field_name == "DUPLICATE_CHECK":
+                    for key_col in ("MATERIALNUMBER", "PLANT"):
+                        if key_col in col_idx_map:
+                            target_cell      = ws.cell(row=r_idx, column=col_idx_map[key_col])
+                            target_cell.fill = RED_FILL
+                            target_cell.font = ERR_FONT
+                else:
+                    if field_name in col_idx_map:
+                        target_cell      = ws.cell(row=r_idx, column=col_idx_map[field_name])
+                        target_cell.fill = RED_FILL
+                        target_cell.font = ERR_FONT
 
             self._auto_width(ws, min_w=10, max_w=60)
             ws.freeze_panes = "A2"
