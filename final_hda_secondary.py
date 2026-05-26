@@ -7,17 +7,19 @@ from openpyxl.utils import get_column_letter
 # ====================================================
 # File paths
 # ====================================================
-HDA_FILE = r"C:\Users\SW526XH\Downloads\Go Live-1\HDA_Secondary\HDA(SecSales)2026-05-06-1606.tab"
-PART_FILE = r"C:\Users\SW526XH\Downloads\Go Live-1\Part\Part_Site_2026-05-21-1510.tab"
+HDA_FILE      = r"C:\Users\SW526XH\Downloads\Go Live-1\HDA_Secondary\HDA(SecSales)2026-05-06-1606.tab"
+PART_FILE     = r"C:\Users\SW526XH\Downloads\Go Live-1\Part\Part_Site_2026-05-21-1510.tab"
 CUSTOMER_FILE = r"C:\Users\SW526XH\Downloads\Go Live-1\Customer\Cutomer_2026-05-20-1205.tab"
-SITE_FILE = r"C:\Users\SW526XH\Downloads\Go Live-1\Site\Site_2026-05-20-1153.tab"
-OUTPUT_EXCEL = r"C:\Users\SW526XH\Downloads\Go Live-1\HDA_Secondary\Validated_HDA_Secondary_Technical2.xlsx"
+SITE_FILE     = r"C:\Users\SW526XH\Downloads\Go Live-1\Site\Site_2026-05-20-1153.tab"
+OUTPUT_EXCEL  = r"C:\Users\SW526XH\Downloads\Go Live-1\HDA_Secondary\Validated_HDA_Secondary_Technical2.xlsx"
 
 # ====================================================
 # Constants & Styling
 # ====================================================
-CHUNK_SIZE = 500_000
 EXCEL_MAX_ROWS = 1_048_000
+
+# Duplicate key columns
+DUPLICATE_KEY_COLS = ["DISTRIBUTOR_CODE", "PLANT", "INVOICE_DATE", "CSKU"]
 
 RED_FILL    = PatternFill("solid", start_color="FF0000", end_color="FF0000")
 ROW_FILL    = PatternFill("solid", start_color="FFF2CC", end_color="FFF2CC")
@@ -27,13 +29,13 @@ TITLE_FILL  = PatternFill("solid", start_color="BDD7EE", end_color="BDD7EE")
 TOTAL_FILL  = PatternFill("solid", start_color="F2F2F2", end_color="F2F2F2")
 STATS_FILL  = PatternFill("solid", start_color="EDEDED", end_color="EDEDED")
 
-HDR_FONT    = Font(bold=True, name="Arial")
-BODY_FONT   = Font(name="Arial", size=10)
-ERR_FONT    = Font(name="Arial", size=10, bold=True, color="FFFFFF")
+HDR_FONT  = Font(bold=True, name="Arial")
+BODY_FONT = Font(name="Arial", size=10)
+ERR_FONT  = Font(name="Arial", size=10, bold=True, color="FFFFFF")
 
 THIN_BORDER = Border(
-    left=Side(style="thin"), right=Side(style="thin"),
-    top=Side(style="thin"),  bottom=Side(style="thin"),
+    left=Side(style="thin"),  right=Side(style="thin"),
+    top=Side(style="thin"),   bottom=Side(style="thin"),
 )
 
 
@@ -41,23 +43,22 @@ THIN_BORDER = Border(
 # Helper: Universal loader
 # ====================================================
 def read_input(path: str) -> pd.DataFrame:
-    path = path.lower()
-    
-    if path.endswith('.csv'):
+    p = path.lower()
+    if p.endswith(".csv"):
         return pd.read_csv(path, dtype=str)
-    
-    elif path.endswith('.tab'):
+    elif p.endswith(".tab"):
         return pd.read_csv(path, sep="\t", dtype=str)
-    
-    elif path.endswith('.xlsx') or path.endswith('.xls'):
+    elif p.endswith((".xlsx", ".xls")):
         return pd.read_excel(path, dtype=str)
-    
     else:
         raise ValueError(f"Unsupported file format: {path}")
+
+
 # ====================================================
 # Load master data
 # ====================================================
 print("📂 Loading reference files...")
+
 part_df = read_input(PART_FILE)
 part_df.columns = part_df.columns.str.strip().str.upper()
 part_set = set(part_df["MATERIALNUMBER"].dropna().str.strip())
@@ -71,111 +72,171 @@ site_df.columns = site_df.columns.str.strip().str.upper()
 site_set = set(site_df["PLANT"].dropna().str.strip())
 
 
-
 # ====================================================
 # Regex & Mappings
 # ====================================================
 date_pattern = re.compile(r"^\d{8}$")
 
 ERROR_REASON_MAP = {
-    "ERROR_CSKU":      "CSKU: CSKU missing in Part master",
-    "ERROR_DISTRIBUTOR_CODE":  "DISTRIBUTOR_CODE: Distributor code is missing in Customer master",
-    "ERROR_INVOICE_DATE":"INVOICE_DATE: Invoice week start is blank or not in YYYYMMDD format",
-    "ERROR_PLANT": "PLANT: Plant does not exist in Site master or is blank",
+    "ERROR_CSKU":             "CSKU: CSKU missing in Part master",
+    "ERROR_DISTRIBUTOR_CODE": "DISTRIBUTOR_CODE: Distributor code is missing in Customer master",
+    "ERROR_INVOICE_DATE":     "INVOICE_DATE: Invoice week start is blank or not in YYYYMMDD format",
+    "ERROR_PLANT":            "PLANT: Plant does not exist in Site master or is blank",
+    "ERROR_DUPLICATE":        "DUPLICATE_CHECK: Duplicate record — DISTRIBUTOR_CODE, PLANT, INVOICE_DATE, CSKU combination already exists.",
 }
 
 ERROR_COLUMNS = list(ERROR_REASON_MAP.keys())
 
 SUMMARY_RULES = [
-    ("CSKU",      "ERROR_CSKU",      ERROR_REASON_MAP["ERROR_CSKU"]),
-    ("DISTRIBUTOR_CODE",  "ERROR_DISTRIBUTOR_CODE",  ERROR_REASON_MAP["ERROR_DISTRIBUTOR_CODE"]),
-    ("INVOICE_DATE","ERROR_INVOICE_DATE", ERROR_REASON_MAP["ERROR_INVOICE_DATE"]),
-    ("PLANT", "ERROR_PLANT", ERROR_REASON_MAP["ERROR_PLANT"]),
+    ("CSKU",             "ERROR_CSKU",             ERROR_REASON_MAP["ERROR_CSKU"]),
+    ("DISTRIBUTOR_CODE", "ERROR_DISTRIBUTOR_CODE",  ERROR_REASON_MAP["ERROR_DISTRIBUTOR_CODE"]),
+    ("INVOICE_DATE",     "ERROR_INVOICE_DATE",       ERROR_REASON_MAP["ERROR_INVOICE_DATE"]),
+    ("PLANT",            "ERROR_PLANT",              ERROR_REASON_MAP["ERROR_PLANT"]),
+    ("DUPLICATE_CHECK",  "ERROR_DUPLICATE",          ERROR_REASON_MAP["ERROR_DUPLICATE"]),
 ]
 
 RULESET_DESCRIPTIONS = {
-    "CSKU":       ["Must not be blank.", "Must exist as MATERIALNUMBER in Part master."],
-    "DISTRIBUTOR_CODE":   ["Must not be blank.", "Must exist as CUSTOMER in Customer master."],
-    "INVOICE_DATE": ["Must not be blank.", "Must strictly be in YYYYMMDD format."],
-    "PLANT": ["Must not be blank.", "Must exist in Site master."],
+    "CSKU":             ["Must not be blank.", "Must exist as MATERIALNUMBER in Part master."],
+    "DISTRIBUTOR_CODE": ["Must not be blank.", "Must exist as CUSTOMER in Customer master."],
+    "INVOICE_DATE":     ["Must not be blank.", "Must strictly be in YYYYMMDD format."],
+    "PLANT":            ["Must not be blank.", "Must exist in Site master."],
+    "DUPLICATE_CHECK":  [
+        "Must not be blank.",
+        "No duplicate combinations of DISTRIBUTOR_CODE + PLANT + INVOICE_DATE + CSKU allowed.",
+        "All occurrences of a duplicate group are flagged as errors.",
+    ],
 }
 
 ATTRIBUTE_SHEETS = {
-    "ERROR_CSKU":      ("CSKU",       ERROR_REASON_MAP["ERROR_CSKU"]),
-    "ERROR_DISTRIBUTOR_CODE":  ("DISTRIBUTOR_CODE",   ERROR_REASON_MAP["ERROR_DISTRIBUTOR_CODE"]),
-    "ERROR_INVOICE_DATE":("INVOICE_DATE", ERROR_REASON_MAP["ERROR_INVOICE_DATE"]),
-    "ERROR_PLANT": ("PLANT", ERROR_REASON_MAP["ERROR_PLANT"]),
+    "ERROR_CSKU":             ("CSKU",             ERROR_REASON_MAP["ERROR_CSKU"]),
+    "ERROR_DISTRIBUTOR_CODE": ("DISTRIBUTOR_CODE",  ERROR_REASON_MAP["ERROR_DISTRIBUTOR_CODE"]),
+    "ERROR_INVOICE_DATE":     ("INVOICE_DATE",       ERROR_REASON_MAP["ERROR_INVOICE_DATE"]),
+    "ERROR_PLANT":            ("PLANT",              ERROR_REASON_MAP["ERROR_PLANT"]),
+    "ERROR_DUPLICATE":        ("DUPLICATE_CHECK",    ERROR_REASON_MAP["ERROR_DUPLICATE"]),
 }
 
 attribute_sheet_rows = {
-    base: {"sheet_no": 1, "row": 0} 
-    for base in ["CSKU", "DISTRIBUTOR_CODE", "INVOICE_DATE","PLANT"]
+    base: {"sheet_no": 1, "row": 0}
+    for base in ["CSKU", "DISTRIBUTOR_CODE", "INVOICE_DATE", "PLANT", "DUPLICATE_CHECK"]
 }
 
-error_counts = {field: 0 for field, _, _ in SUMMARY_RULES}
-total_records = 0
+error_counts        = {field: 0 for field, _, _ in SUMMARY_RULES}
+total_records       = 0
 records_with_errors = 0
 
+
 # ====================================================
-# Excel writing setup
+# LOAD FULL FILE
+# (chunking removed — full load required for duplicate detection)
 # ====================================================
-print("🔍 Validating HDA(Secondary) in chunks...")
+print("📂 Loading full HDA Secondary file for validation...")
+hda_df = pd.read_csv(HDA_FILE, sep="\t", dtype=str)
+hda_df = hda_df.apply(lambda x: x.str.strip() if x.dtype == "object" else x)
+hda_df.columns = hda_df.columns.str.strip().str.upper()
+
+total_records = len(hda_df)
+print(f"   → {total_records:,} records loaded.")
+
+
+# ====================================================
+# RUN VALIDATION CHECKS
+# ====================================================
+print("🔍 Running validation checks...")
+
+hda_df["ERROR_CSKU"] = hda_df["CSKU"].apply(
+    lambda x: "Yes" if pd.isna(x) or x == "" or x not in part_set else ""
+)
+
+hda_df["ERROR_DISTRIBUTOR_CODE"] = hda_df["DISTRIBUTOR_CODE"].apply(
+    lambda x: "Yes" if pd.isna(x) or x == "" or x not in customer_set else ""
+)
+
+hda_df["ERROR_INVOICE_DATE"] = hda_df["INVOICE_DATE"].apply(
+    lambda x: "Yes" if pd.isna(x) or x == "" or not date_pattern.fullmatch(str(x)) else ""
+)
+
+hda_df["ERROR_PLANT"] = hda_df["PLANT"].apply(
+    lambda x: "Yes" if pd.isna(x) or x == "" or x not in site_set else ""
+)
+
+# Duplicate check: flag ALL occurrences of duplicate key combinations
+# (DISTRIBUTOR_CODE + PLANT + INVOICE_DATE + CSKU)
+available_dup_cols = [c for c in DUPLICATE_KEY_COLS if c in hda_df.columns]
+if len(available_dup_cols) == len(DUPLICATE_KEY_COLS):
+    hda_df["ERROR_DUPLICATE"] = hda_df.duplicated(
+        subset=available_dup_cols, keep=False
+    ).map({True: "Yes", False: ""})
+else:
+    missing = set(DUPLICATE_KEY_COLS) - set(available_dup_cols)
+    print(f"⚠️  Warning: Duplicate check skipped — missing columns: {missing}")
+    hda_df["ERROR_DUPLICATE"] = ""
+
+
+# ====================================================
+# COUNT ERRORS & RECORDS WITH ERRORS
+# ====================================================
+row_has_error = pd.Series(False, index=hda_df.index)
+for field, col, _ in SUMMARY_RULES:
+    cnt = (hda_df[col] == "Yes").sum()
+    error_counts[field] += cnt
+    row_has_error = row_has_error | (hda_df[col] == "Yes")
+
+records_with_errors = int(row_has_error.sum())
+
+
+# ====================================================
+# WRITE ERROR SHEETS TO EXCEL
+# ====================================================
+print("📝 Writing error data to Excel...")
+
 with pd.ExcelWriter(OUTPUT_EXCEL, engine="openpyxl") as writer:
 
-    for chunk in pd.read_csv(HDA_FILE, sep="\t", dtype=str, chunksize=CHUNK_SIZE):
-        chunk = chunk.apply(lambda x: x.str.strip())
-        total_records += len(chunk)
+    for err_col, (base_name, reason_text) in ATTRIBUTE_SHEETS.items():
+        error_rows = hda_df[hda_df[err_col] == "Yes"].copy()
+        if error_rows.empty:
+            continue
 
-        chunk["ERROR_CSKU"] = chunk["CSKU"].apply(
-            lambda x: "Yes" if pd.isna(x) or x == "" or x not in part_set else "")
-        chunk["ERROR_DISTRIBUTOR_CODE"] = chunk["DISTRIBUTOR_CODE"].apply(
-            lambda x: "Yes" if pd.isna(x) or x == "" or x not in customer_set else "")
-        chunk["ERROR_INVOICE_DATE"] = chunk["INVOICE_DATE"].apply(
-            lambda x: "Yes" if pd.isna(x) or x == "" or not date_pattern.fullmatch(x) else "")       
-        chunk["ERROR_PLANT"] = chunk["PLANT"].apply(
-         lambda x: "Yes" if pd.isna(x) or x == "" or x not in site_set else "")
+        # Drop all error flag columns, then append the human-readable reason
+        error_rows = error_rows.drop(columns=ERROR_COLUMNS, errors="ignore")
+        error_rows["ERROR_COLUMNS"] = reason_text
 
+        state = attribute_sheet_rows[base_name]
+        start = 0
 
-        row_has_error = False
-        for field, col, _ in SUMMARY_RULES:
-            cnt = (chunk[col] == "Yes").sum()
-            error_counts[field] += cnt
-            row_has_error = row_has_error | (chunk[col] == "Yes")
-        records_with_errors += row_has_error.sum()
+        while start < len(error_rows):
+            sheet_name = (
+                base_name if state["sheet_no"] == 1
+                else f"{base_name}_{state['sheet_no']}"
+            )
+            remaining = EXCEL_MAX_ROWS - state["row"]
+            write_df  = error_rows.iloc[start:start + remaining]
 
-        # Attribute-wise error sheets
-        for err_col, (base_name, reason_text) in ATTRIBUTE_SHEETS.items():
-            attr_rows = chunk[chunk[err_col] == "Yes"].copy()
-            if attr_rows.empty:
-                continue
-            
-            # Formatting explicitly to match customer standards
-            attr_rows = attr_rows.drop(columns=ERROR_COLUMNS)
-            attr_rows["ERROR_COLUMNS"] = reason_text  
+            write_df.to_excel(
+                writer,
+                sheet_name=sheet_name[:31],
+                startrow=state["row"],
+                index=False,
+                header=(state["row"] == 0),
+            )
 
-            state = attribute_sheet_rows[base_name]
-            if state["row"] + len(attr_rows) > EXCEL_MAX_ROWS:
+            start        += len(write_df)
+            state["row"] += len(write_df)
+
+            if state["row"] >= EXCEL_MAX_ROWS:
                 state["sheet_no"] += 1
                 state["row"]       = 0
-                
-            sheet_name = f"{base_name}_{state['sheet_no']}" if state['sheet_no'] > 1 else base_name
-            
-            attr_rows.to_excel(
-                writer, sheet_name=sheet_name[:31],
-                startrow=state["row"], index=False, header=(state["row"] == 0))
-            
-            state["row"] += len(attr_rows)
 
 print("📝 Generating standardized reports...")
 
+
 # ====================================================
-# STYLING & RULESETS ADDITION
+# STYLING & RULESETS
 # ====================================================
 wb = load_workbook(OUTPUT_EXCEL)
 if "Sheet" in wb.sheetnames:
     del wb["Sheet"]
 
-# ── Summary Sheet ──────────────────────────
+# ── Summary Sheet ──────────────────────────────────
 ws_sum = wb.create_sheet("Summary", 0)
 
 ws_sum.merge_cells("A1:G1")
@@ -195,11 +256,9 @@ for c_idx, h in enumerate(headers, start=1):
 
 row_num = 3
 for idx, (field, _, reason) in enumerate(SUMMARY_RULES, start=1):
-    cnt        = error_counts[field]
-    pct_error  = round((cnt / total_records) * 100, 2) if total_records else 0
-    pct_health = round(100 - pct_error, 2)
-    
-    # Hide reason string if 0 count
+    cnt           = error_counts[field]
+    pct_error     = round((cnt / total_records) * 100, 2) if total_records else 0
+    pct_health    = round(100 - pct_error, 2)
     display_reason = reason if cnt > 0 else ""
 
     ws_sum.cell(row=row_num, column=1, value=idx)
@@ -211,13 +270,14 @@ for idx, (field, _, reason) in enumerate(SUMMARY_RULES, start=1):
     ws_sum.cell(row=row_num, column=7, value=display_reason)
 
     for col in range(1, 8):
-        ws_sum.cell(row=row_num, column=col).font      = BODY_FONT
-        ws_sum.cell(row=row_num, column=col).border    = THIN_BORDER
-        align = Alignment(horizontal="center", vertical="center")
-        if col == 7:
-            align = Alignment(horizontal="left", vertical="center", wrap_text=True)
-        ws_sum.cell(row=row_num, column=col).alignment = align
-
+        c           = ws_sum.cell(row=row_num, column=col)
+        c.font      = BODY_FONT
+        c.border    = THIN_BORDER
+        c.alignment = (
+            Alignment(horizontal="left", vertical="center", wrap_text=True)
+            if col == 7
+            else Alignment(horizontal="center", vertical="center")
+        )
     row_num += 1
 
 total_errors       = sum(error_counts[f] for f, _, _ in SUMMARY_RULES)
@@ -234,35 +294,38 @@ ws_sum.cell(row=row_num, column=6, value=f"{total_pct_error}%")
 ws_sum.cell(row=row_num, column=7, value="")
 
 for col in range(1, 8):
-    c = ws_sum.cell(row=row_num, column=col)
-    c.font = Font(name="Arial", bold=True)
-    c.fill = TOTAL_FILL
-    c.border = THIN_BORDER
+    c           = ws_sum.cell(row=row_num, column=col)
+    c.font      = Font(name="Arial", bold=True)
+    c.fill      = TOTAL_FILL
+    c.border    = THIN_BORDER
     c.alignment = Alignment(horizontal="center", vertical="center")
 
 row_num += 2
 
-for label, value in [("Total Records:", total_records),
-                     ("Records with Errors:", records_with_errors),
-                     ("Records Passing:", total_records - records_with_errors)]:
+for label, value in [
+    ("Total Records:",        total_records),
+    ("Records with Errors:",  records_with_errors),
+    ("Records Passing:",      total_records - records_with_errors),
+]:
     ws_sum.merge_cells(start_row=row_num, start_column=1, end_row=row_num, end_column=2)
-    label_cell           = ws_sum.cell(row=row_num, column=1, value=label)
-    label_cell.font      = Font(name="Arial", bold=True, size=10)
-    label_cell.fill      = STATS_FILL
-    label_cell.border    = THIN_BORDER
-    label_cell.alignment = Alignment(horizontal="left", vertical="center")
+    lc           = ws_sum.cell(row=row_num, column=1, value=label)
+    lc.font      = Font(name="Arial", bold=True, size=10)
+    lc.fill      = STATS_FILL
+    lc.border    = THIN_BORDER
+    lc.alignment = Alignment(horizontal="left", vertical="center")
 
-    value_cell           = ws_sum.cell(row=row_num, column=3, value=value)
-    value_cell.font      = BODY_FONT
-    value_cell.border    = THIN_BORDER
-    value_cell.alignment = Alignment(horizontal="center", vertical="center")
+    vc           = ws_sum.cell(row=row_num, column=3, value=value)
+    vc.font      = BODY_FONT
+    vc.border    = THIN_BORDER
+    vc.alignment = Alignment(horizontal="center", vertical="center")
     row_num += 1
 
 for col in ws_sum.columns:
     length = max((len(str(c.value)) if c.value else 0) for c in col)
     ws_sum.column_dimensions[get_column_letter(col[0].column)].width = min(max(length + 3, 10), 60)
 
-# ── Ruleset Sheet ──────────────────────────
+
+# ── Ruleset Sheet ──────────────────────────────────
 wsr = wb.create_sheet("Rule_Set", 1)
 
 wsr.merge_cells("A1:C1")
@@ -317,8 +380,9 @@ wsr.column_dimensions["A"].width = 6
 wsr.column_dimensions["B"].width = 30
 wsr.column_dimensions["C"].width = 65
 
-# ── Restyle Data Sheets ────────────────────
-attribute_base_names = {base for base in attribute_sheet_rows}
+
+# ── Restyle Data Sheets ────────────────────────────
+attribute_base_names = set(attribute_sheet_rows.keys())
 
 attr_sheets_in_wb = []
 for sname in wb.sheetnames:
@@ -336,9 +400,7 @@ for sheet_name, base_col in attr_sheets_in_wb:
     for cell in ws[1]:
         if cell.value == base_col:
             highlight_col_idx = cell.column
-        if cell.value == "ERROR_COLUMNS":
-            error_col_index = cell.column
-            
+
     max_row = ws.max_row
     max_col = ws.max_column
 
@@ -351,8 +413,8 @@ for sheet_name, base_col in attr_sheets_in_wb:
                 cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
                 cell.border    = THIN_BORDER
             else:
-                cell.font   = BODY_FONT
-                cell.border = THIN_BORDER
+                cell.font      = BODY_FONT
+                cell.border    = THIN_BORDER
                 cell.alignment = Alignment(horizontal="center", vertical="center")
                 if highlight_col_idx is not None and col_idx == highlight_col_idx:
                     cell.fill = RED_FILL
@@ -363,7 +425,7 @@ for sheet_name, base_col in attr_sheets_in_wb:
     for col in ws.columns:
         length = max((len(str(c.value)) if c.value else 0) for c in col)
         ws.column_dimensions[get_column_letter(col[0].column)].width = min(max(length + 3, 10), 60)
-        
+
     ws.freeze_panes = "A2"
 
 wb.save(OUTPUT_EXCEL)
