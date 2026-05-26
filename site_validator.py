@@ -16,8 +16,7 @@ OUTPUT_FILE      = r"C:\Users\SW526XH\Downloads\Go Live-1\Site\Validated_Site_Te
 #  CONSOLIDATED PL LIST
 # ─────────────────────────────────────────────
 VALID_PLANTS = [
-
-"1555","1452","1204","1292","1253","1234","1731","1508","5011637","1100",
+    "1555","1452","1204","1292","1253","1234","1731","1508","5011637","1100",
     "2091","2081","1436","1448","1438","1501","1248","1257","1623","1623",
     "1601","1451","2092","1125","1649","1646","2088","1494","1137","1275",
     "2084","1437","5018849","1554","1213","1499","1575","1104","1104A","1145",
@@ -39,30 +38,23 @@ VALID_PLANTS = [
     "1166","1184","1186","1218","1223","1279","1442","1732","1472","2086",
     "1439","1425","1208","1722","1734","4011702","1525","1236","1568","1296",
     "1589","1658","5123296","1518","1455","1196","1441","1190","1593"
-
-
 ]
-
-# VALID_COMPANY_CODES = {"1001", "1006", "1009"}
 
 KEEP_COLS = ["PLANT", "NAME", "ADDRESS", "TCPL_PLANTTYPE"]
 
 # ─────────────────────────────────────────────
-#  Colours / Styles  — matched to screenshot
+#  Colours / Styles
 # ─────────────────────────────────────────────
 RED_FILL        = PatternFill("solid", start_color="FF0000",  end_color="FF0000")
-ROW_FILL        = PatternFill("solid", start_color="FFF2CC",  end_color="FFF2CC")   # error-sheet rows
-HDR_FILL        = PatternFill("solid", start_color="D9E1F2",  end_color="D9E1F2")   # summary col-headers
-RULE_FILL       = PatternFill("solid", start_color="E2EFDA",  end_color="E2EFDA")   # rules sheet
-TITLE_FILL      = PatternFill("solid", start_color="BDD7EE",  end_color="BDD7EE")   # rules sheet title
-TOTAL_FILL      = PatternFill("solid", start_color="F2F2F2",  end_color="F2F2F2")   # TOTAL row
-WHITE_FILL      = PatternFill("solid", start_color="FFFFFF",  end_color="FFFFFF")   # summary data rows
-STATS_FILL      = PatternFill("solid", start_color="EDEDED",  end_color="EDEDED")   # stats labels
-PLANT_SUB_FILL  = PatternFill("solid", start_color="FFFFFF",  end_color="FFFFFF")   # sub-rows (white, italic)
-
-# Summary header row uses the same blue as the screenshot
+ROW_FILL        = PatternFill("solid", start_color="FFF2CC",  end_color="FFF2CC")
+HDR_FILL        = PatternFill("solid", start_color="D9E1F2",  end_color="D9E1F2")
+RULE_FILL       = PatternFill("solid", start_color="E2EFDA",  end_color="E2EFDA")
+TITLE_FILL      = PatternFill("solid", start_color="BDD7EE",  end_color="BDD7EE")
+TOTAL_FILL      = PatternFill("solid", start_color="F2F2F2",  end_color="F2F2F2")
+WHITE_FILL      = PatternFill("solid", start_color="FFFFFF",  end_color="FFFFFF")
+STATS_FILL      = PatternFill("solid", start_color="EDEDED",  end_color="EDEDED")
+PLANT_SUB_FILL  = PatternFill("solid", start_color="FFFFFF",  end_color="FFFFFF")
 SUMM_HDR_FILL   = PatternFill("solid", start_color="BDD7EE",  end_color="BDD7EE")
-# Summary title (row 1) — white background, no fill
 SUMM_TITLE_FILL = PatternFill("solid", start_color="BDD7EE",  end_color="BDD7EE")
 
 HDR_FONT    = Font(bold=True, name="Arial")
@@ -74,18 +66,17 @@ THIN_BORDER = Border(
 )
 
 # Canonical field order
-FIELD_ORDER = ["PLANT", "NAME", "ADDRESS", "TCPL_PLANTTYPE"]
+FIELD_ORDER = ["PLANT", "NAME", "ADDRESS", "TCPL_PLANTTYPE", "DUPLICATE_CHECK"]
 
 # ─────────────────────────────────────────────
 #  Per-field single-line reason shown in summary
 # ─────────────────────────────────────────────
 FIELD_REASON = {
-    "NAME":           "NAME: Field is blank — site name is mandatory",
-    "ADDRESS":        "ADDRESS: Field is blank — address is mandatory",
-    "TCPL_PLANTTYPE": "TCPL_PLANTTYPE: Field is blank",
-    # "COMPANYCODE":    "COMPANYCODE: Field is blank or invalid — must be one of 1001 / 1006 / 1009",
+    "NAME":            "NAME: Field is blank — site name is mandatory",
+    "ADDRESS":         "ADDRESS: Field is blank — address is mandatory",
+    "TCPL_PLANTTYPE":  "TCPL_PLANTTYPE: Field is blank",
+    "DUPLICATE_CHECK": "DUPLICATE_CHECK: PLANT value appears more than once in the extract",
 }
-# PLANT reasons are driven by sub-rows, so no single-line reason for the parent row.
 
 
 # ══════════════════════════════════════════════
@@ -93,9 +84,10 @@ FIELD_REASON = {
 # ══════════════════════════════════════════════
 class SiteRuleEngine:
 
-    def __init__(self, valid_plants: list, part_plants: set):
-        self.valid_plants = set(str(p).strip() for p in valid_plants)
-        self.part_plants  = set(str(p).strip() for p in part_plants)
+    def __init__(self, valid_plants: list, part_plants: set, duplicate_plants: set):
+        self.valid_plants     = set(str(p).strip() for p in valid_plants)
+        self.part_plants      = set(str(p).strip() for p in part_plants)
+        self.duplicate_plants = duplicate_plants
 
     @staticmethod
     def _is_blank(value) -> bool:
@@ -126,21 +118,19 @@ class SiteRuleEngine:
             return "TCPL_PLANTTYPE: Field is blank"
         return ""
 
-    # def validate_companycode(self, row) -> str:
-    #     val = row.get("COMPANYCODE", None)
-    #     if self._is_blank(val):
-    #         return "COMPANYCODE: Field is blank — company code is mandatory"
-    #     if str(val).strip() not in VALID_COMPANY_CODES:
-    #         return f"COMPANYCODE: '{str(val).strip()}' is invalid — must be one of 1001 / 1006 / 1009"
-    #     return ""
+    def validate_duplicate_plant(self, row) -> str:
+        val = str(row.get("PLANT", "")).strip()
+        if val and val != "nan" and val in self.duplicate_plants:
+            return f"DUPLICATE_CHECK: PLANT '{val}' appears more than once in the extract"
+        return ""
 
     def get_rules(self) -> dict:
         return {
-            "PLANT":          self.validate_plant,
-            "NAME":           self.validate_name,
-            "ADDRESS":        self.validate_address,
-            "TCPL_PLANTTYPE": self.validate_tcpl_planttype,
-            # "COMPANYCODE":    self.validate_companycode,
+            "PLANT":            self.validate_plant,
+            "NAME":             self.validate_name,
+            "ADDRESS":          self.validate_address,
+            "TCPL_PLANTTYPE":   self.validate_tcpl_planttype,
+            "DUPLICATE_CHECK":  self.validate_duplicate_plant,
         }
 
 
@@ -159,10 +149,10 @@ class SiteTableValidator:
         self.reason_map   = {}
 
     def load(self):
-        self.df = pd.read_csv(self.site_path, dtype=str,sep="\t",encoding="latin1")
+        self.df = pd.read_csv(self.site_path, dtype=str, sep="\t", encoding="latin1")
         self.df.columns = [c.strip().upper() for c in self.df.columns]
 
-        part_df = pd.read_csv(self.part_path, dtype=str,sep="\t",encoding="latin1")
+        part_df = pd.read_csv(self.part_path, dtype=str, sep="\t", encoding="latin1")
         part_df.columns = [c.strip().upper() for c in part_df.columns]
 
         if "PLANT" not in part_df.columns:
@@ -171,9 +161,16 @@ class SiteTableValidator:
         self.part_plants = set(part_df["PLANT"].dropna().str.strip().tolist())
         print(f"    Part table plants loaded  : {len(self.part_plants)} unique values")
 
-
     def validate(self):
-        engine = SiteRuleEngine(self.valid_plants, self.part_plants)
+        # Pre-compute which PLANT values appear more than once across the extract
+        if "PLANT" in self.df.columns:
+            plant_series     = self.df["PLANT"].fillna("").str.strip()
+            duplicate_plants = set(plant_series[plant_series.duplicated(keep=False)].tolist())
+            duplicate_plants.discard("")   # blanks are already caught by validate_plant
+        else:
+            duplicate_plants = set()
+
+        engine = SiteRuleEngine(self.valid_plants, self.part_plants, duplicate_plants)
         rules  = engine.get_rules()
 
         for idx, row in self.df.iterrows():
@@ -181,7 +178,8 @@ class SiteTableValidator:
             col_reason_map = {}
 
             for col, rule_fn in rules.items():
-                if col not in self.df.columns:
+                # DUPLICATE_CHECK is a virtual field — no real column in the dataframe
+                if col != "DUPLICATE_CHECK" and col not in self.df.columns:
                     continue
                 try:
                     reason = rule_fn(row)
@@ -226,7 +224,7 @@ class SiteTableValidator:
                 counts["blank"] += 1
             elif "consolidated pl list" in reason.lower():
                 counts["not_in_pl"] += 1
-            elif "Material-Plant combination" in reason.lower():
+            elif "material-plant combination" in reason.lower():
                 counts["no_part_site"] += 1
         return counts
 
@@ -242,15 +240,14 @@ class SiteReportWriter:
     RULES_CONTENT = {
         "PLANT": [
             "Must not be blank.",
-            "Must be present in the Consolidated PL list",
+            "Must be present in the Consolidated PL list.",
             "Must have an active Material-Plant combination in the Part master table (PLANT column).",
         ],
         "NAME":           ["Must not be blank."],
         "ADDRESS":        ["Must not be blank."],
         "TCPL_PLANTTYPE": ["Must not be blank."],
-        "COMPANYCODE": [
-            "Must not be blank.",
-            "Value must be one of: 1001 / 1006 / 1009.",
+        "DUPLICATE_CHECK": [
+            "PLANT must be unique across the entire extract — duplicate PLANT codes are not allowed.",
         ],
     }
 
@@ -281,7 +278,6 @@ class SiteReportWriter:
     def _style_summary_data_row(self, ws, row_num: int, num_cols: int = 7,
                                 bold: bool = False, fill: PatternFill = None,
                                 italic: bool = False):
-        """Apply consistent styling to a summary data row."""
         for c in range(1, num_cols + 1):
             cell           = ws.cell(row=row_num, column=c)
             cell.font      = Font(name="Arial", bold=bold, italic=italic, size=10)
@@ -291,11 +287,11 @@ class SiteReportWriter:
                 cell.fill = fill
 
     # ══════════════════════════════════════════
-    #  Summary sheet — written into existing ws
+    #  Summary sheet
     # ══════════════════════════════════════════
     def _write_summary_sheet_into(self, ws, error_map: dict, total_rows: int):
 
-        # ── Row 1: Title (white bg, no border, left-aligned, large bold) ──
+        # Row 1: Title
         ws.merge_cells("A1:G1")
         title_cell           = ws.cell(row=1, column=1, value="Site Validation Summary")
         title_cell.font      = Font(name="Arial", bold=True, size=14)
@@ -303,7 +299,7 @@ class SiteReportWriter:
         title_cell.alignment = Alignment(horizontal="left", vertical="center")
         ws.row_dimensions[1].height = 26
 
-        # ── Row 2: Column headers (blue fill, bold, centred) ──
+        # Row 2: Column headers
         headers = ["#", "Field Name", "Error Count", "Record Count", "% Health", "% of Error",
                    "Reason / Sub-Category"]
         for c_idx, h in enumerate(headers, start=1):
@@ -314,7 +310,7 @@ class SiteReportWriter:
             cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
         ws.row_dimensions[2].height = 30
 
-        # ── Build per-field error counts ──
+        # Per-field error counts
         col_error_counts: dict = {}
         for bad_cols in error_map.values():
             for col in bad_cols:
@@ -332,9 +328,6 @@ class SiteReportWriter:
             pct_error  = round((count / total_rows) * 100, 2) if total_rows else 0
             pct_health = round(100 - pct_error, 2)
 
-            # Determine reason text for this field row
-            # PLANT parent row: leave reason blank (sub-rows carry the reasons)
-            # Other fields: show reason only when there are errors
             if col_name == "PLANT":
                 reason_text = ""
             elif has_errors:
@@ -352,14 +345,13 @@ class SiteReportWriter:
 
             self._style_summary_data_row(ws, row_num, fill=WHITE_FILL)
 
-            # Left-align the reason column
             ws.cell(row=row_num, column=7).alignment = Alignment(
                 horizontal="left", vertical="center", wrap_text=True
             )
 
             row_num += 1
 
-            # ── PLANT sub-rows (only when PLANT has errors) ──
+            # PLANT sub-rows
             if col_name == "PLANT" and has_errors:
                 sub_definitions = [
                     (
@@ -388,7 +380,6 @@ class SiteReportWriter:
 
                     self._style_summary_data_row(ws, row_num, fill=PLANT_SUB_FILL, italic=True)
 
-                    # Override specific cells for sub-row styling
                     ws.cell(row=row_num, column=2).alignment = Alignment(
                         horizontal="left", vertical="center", indent=1
                     )
@@ -400,7 +391,7 @@ class SiteReportWriter:
 
             field_num += 1
 
-        # ── TOTAL row ──
+        # TOTAL row
         total_errors       = sum(col_error_counts.values())
         total_record_count = total_rows * len(FIELD_ORDER)
         total_pct_error    = round((total_errors / total_record_count) * 100, 2) if total_record_count else 0
@@ -420,9 +411,9 @@ class SiteReportWriter:
             ws.cell(row=row_num, column=c).border    = THIN_BORDER
             ws.cell(row=row_num, column=c).alignment = Alignment(horizontal="center", vertical="center")
 
-        row_num += 2   # blank spacer row
+        row_num += 2   # blank spacer
 
-        # ── Quick-glance stats block ──
+        # Quick-glance stats block
         records_with_errors = len(error_map)
         records_passing     = total_rows - records_with_errors
 
@@ -445,21 +436,16 @@ class SiteReportWriter:
 
             row_num += 1
 
-        # ── Column widths ──
+        # Column widths
         col_widths = [6, 30, 14, 16, 12, 12, 65]
         for c_idx, width in enumerate(col_widths, start=1):
             ws.column_dimensions[get_column_letter(c_idx)].width = width
 
     # ── Per-field error sheets ────────────────
     def _write_field_error_sheets(self, wb, df: pd.DataFrame):
-        """
-        Creates a separate sheet ONLY for fields that have at least one error row.
-        Sheets are created in FIELD_ORDER so tab order is consistent.
-        """
         field_errors = self.validator.get_errors_by_field()
 
         for field_name in FIELD_ORDER:
-            # ── Skip if no errors for this field ──
             if field_name not in field_errors:
                 continue
 
@@ -487,8 +473,10 @@ class SiteReportWriter:
                     cell.fill      = ROW_FILL
                     cell.border    = THIN_BORDER
 
-                if field_name in col_idx_map:
-                    target_cell      = ws.cell(row=excel_row, column=col_idx_map[field_name])
+                # For DUPLICATE_CHECK, highlight the PLANT column (since that's the offending field)
+                highlight_col = "PLANT" if field_name == "DUPLICATE_CHECK" else field_name
+                if highlight_col in col_idx_map:
+                    target_cell      = ws.cell(row=excel_row, column=col_idx_map[highlight_col])
                     target_cell.fill = RED_FILL
                     target_cell.font = ERR_FONT
 
@@ -573,16 +561,12 @@ class SiteReportWriter:
         keep_cols = [c for c in KEEP_COLS if c in df.columns] + ["ERROR_COLUMNS"]
         df        = df[keep_cols]
 
-        # ── Create workbook — first sheet is Summary ──
         wb               = Workbook()
         ws_summary       = wb.active
         ws_summary.title = self.SHEET_SUMMARY
         self._write_summary_sheet_into(ws_summary, v.error_map, total_rows=len(df))
 
-        # Rules sheet
         self._write_rules_sheet(wb)
-
-        # Per-field error sheets (only for fields WITH errors, in FIELD_ORDER)
         self._write_field_error_sheets(wb, df)
 
         wb.save(self.output_path)
