@@ -16,13 +16,16 @@ Technical Rules:
 
   ALTERNATIVEUNIT:
     1. ALTERNATIVEUNIT should not be blank
-    2. Each PRODUCT + PLANT combination must have all three units: KG, CV, PAC
-       (if any one is missing, all rows for that combination are flagged)
+    2. Each PRODUCT must have all three units: KG, CV, PAC
+       (if any one is missing, all rows for that PRODUCT are flagged)
 
   CONVERSIONFACTOR:
     1. CONVERSIONFACTOR should not be blank
     2. CONVERSIONFACTOR should be numeric
     3. CONVERSIONFACTOR should be non-zero
+
+  DUPLICATE_CHECK:
+    1. No duplicate PRODUCT + PLANT + ALTERNATIVEUNIT combinations allowed
 
 Output:
   Validated_PartUOM_Technical.xlsx
@@ -42,8 +45,17 @@ PART_REFERENCE_FILE = r"C:\Users\SW526XH\Downloads\Go Live-1\Part\Part_Site_2026
 SITE_REFERENCE_FILE = r"C:\Users\SW526XH\Downloads\Go Live-1\Site\Site_2026-05-20-1153.tab"
 OUTPUT_FILE         = r"C:\Users\SW526XH\Downloads\Go Live-1\PartUOM\Validated_PartUOM_Technical2.xlsx"
 
-# Required units that every PRODUCT+PLANT combination must have
+# Required units that every PRODUCT must have
 REQUIRED_UNITS = {"KG", "CV", "PAC"}
+
+# Canonical display label for the "missing units" sub-rule in the Summary sheet.
+# All dynamic per-row messages (e.g. "required unit(s) missing: CV") are bucketed
+# under this single label so the summary always shows exactly two sub-rows for
+# ALTERNATIVEUNIT instead of potentially many.
+MISSING_UNITS_SUMMARY_LABEL = "PRODUCT is missing required unit(s): KG, CV or PAC"
+
+# Canonical display label for the duplicate check in the Summary sheet.
+DUPLICATE_SUMMARY_LABEL = "Duplicate PRODUCT + PLANT + ALTERNATIVEUNIT combination"
 
 
 # ─────────────────────────────────────────────
@@ -67,6 +79,8 @@ THIN_BORDER = Border(
 
 # ══════════════════════════════════════════════
 #  Technical Ruleset Info
+#  (Drives BOTH the Rulesets sheet and the
+#   Summary sub-row labels — keep in sync.)
 # ══════════════════════════════════════════════
 SUMMARY_RULESET_INFO = {
     "PRODUCT": [
@@ -79,12 +93,17 @@ SUMMARY_RULESET_INFO = {
     ],
     "ALTERNATIVEUNIT": [
         "ALTERNATIVEUNIT is blank",
-        "PRODUCT is missing required unit(s): KG, CV and PAC",
+        # Exactly ONE canonical label for all "missing units" errors
+        MISSING_UNITS_SUMMARY_LABEL,
     ],
     "CONVERSIONFACTOR": [
         "CONVERSIONFACTOR is blank",
         "CONVERSIONFACTOR is not numeric",
         "CONVERSIONFACTOR must be non-zero",
+    ],
+    # New field — single sub-rule
+    "DUPLICATE_CHECK": [
+        DUPLICATE_SUMMARY_LABEL,
     ],
 }
 
@@ -98,8 +117,10 @@ class PartUOMTechnicalRuleEngine:
     def __init__(self, part_plant_combos: set, site_codes: set):
         self.part_plant_combos = part_plant_combos
         self.site_codes = set(str(s).strip() for s in site_codes)
-        # Will be populated before row-level validation
-        self.combo_missing_units: dict = {}   # (product, plant) -> set of missing units
+        # Populated by precompute_missing_units()
+        self.combo_missing_units: dict = {}   # product_str -> set of missing unit strings
+        # Populated by precompute_duplicates()
+        self.duplicate_combos: set = set()    # (product, plant, alt_unit) tuples that are dups
 
     @staticmethod
     def _is_blank(value) -> bool:
@@ -113,40 +134,74 @@ class PartUOMTechnicalRuleEngine:
             return True
         except (ValueError, TypeError):
             return False
-    
+
     def precompute_missing_units(self, df: pd.DataFrame):
-     """
-     For every PRODUCT, determine which of the required units (KG, CV, PAC) are absent.
-     """
-     self.combo_missing_units = {}
+        """
+        For every PRODUCT, determine which of the required units (KG, CV, PAC)
+        are absent across the whole file.
+        """
+        self.combo_missing_units = {}
 
-     if "ALTERNATIVEUNIT" not in df.columns:
-        return
+        if "ALTERNATIVEUNIT" not in df.columns:
+            return
 
-    # Build mapping: product -> set of units present
-     product_units: dict = {}
+        product_units: dict = {}
 
-     for _, row in df.iterrows():
-        product = row.get("PRODUCT", "")
-        unit    = row.get("ALTERNATIVEUNIT", "")
+        for _, row in df.iterrows():
+            product = row.get("PRODUCT", "")
+            unit    = row.get("ALTERNATIVEUNIT", "")
 
-        if self._is_blank(product):
-            continue
+            if self._is_blank(product):
+                continue
 
-        product_str = str(product).strip()
-        unit_str = str(unit).strip().upper() if not self._is_blank(unit) else ""
+            product_str = str(product).strip()
+            unit_str    = str(unit).strip().upper() if not self._is_blank(unit) else ""
 
-        product_units.setdefault(product_str, set())
+            product_units.setdefault(product_str, set())
+            if unit_str:
+                product_units[product_str].add(unit_str)
 
-        if unit_str:
-            product_units[product_str].add(unit_str)
+        for product, present_units in product_units.items():
+            missing = REQUIRED_UNITS - present_units
+            if missing:
+                self.combo_missing_units[product] = missing
 
-    # Determine missing units per PRODUCT
-     for product, present_units in product_units.items():
-        missing = REQUIRED_UNITS - present_units
-        if missing:
-            self.combo_missing_units[product] = missing
-    
+    def precompute_duplicates(self, df: pd.DataFrame):
+        """
+        Find every (PRODUCT, PLANT, ALTERNATIVEUNIT) combination that appears
+        more than once. All occurrences (not just the second) are flagged.
+        """
+        self.duplicate_combos = set()
+
+        required_cols = {"PRODUCT", "PLANT", "ALTERNATIVEUNIT"}
+        if not required_cols.issubset(df.columns):
+            return
+
+        seen: dict = {}   # combo -> first index seen
+
+        for idx, row in df.iterrows():
+            product  = row.get("PRODUCT", "")
+            plant    = row.get("PLANT", "")
+            alt_unit = row.get("ALTERNATIVEUNIT", "")
+
+            # Skip rows where any key field is blank (those are caught by other rules)
+            if self._is_blank(product) or self._is_blank(plant) or self._is_blank(alt_unit):
+                continue
+
+            combo = (
+                str(product).strip(),
+                str(plant).strip(),
+                str(alt_unit).strip().upper(),
+            )
+
+            if combo in seen:
+                # Mark both the first occurrence and this one
+                self.duplicate_combos.add(seen[combo])
+                self.duplicate_combos.add(idx)
+            else:
+                seen[combo] = idx
+
+    # ── Individual validators ──────────────────
 
     def validate_product(self, row) -> tuple:
         product = row.get("PRODUCT")
@@ -180,7 +235,9 @@ class PartUOMTechnicalRuleEngine:
     def validate_alternativeunit(self, row) -> tuple:
         """
         Rule 1 – ALTERNATIVEUNIT must not be blank.
-        Rule 2 – For all (PRODUCT,PLANT) combinations all std UOMs (KG, CV, TO)  should be present
+        Rule 2 – For every PRODUCT all required UOMs (KG, CV, PAC) must be present.
+                 The error message stored in error_map uses the CANONICAL label so
+                 the Summary sheet always collapses to exactly one sub-row for this rule.
         """
         alt_unit = row.get("ALTERNATIVEUNIT")
 
@@ -188,21 +245,15 @@ class PartUOMTechnicalRuleEngine:
         if self._is_blank(alt_unit):
             return False, "ALTERNATIVEUNIT is blank"
 
-        # Rule 2: required-units check (group level)
+        # Rule 2: required-units check (group level, keyed on PRODUCT only)
         product = row.get("PRODUCT", "")
-        plant   = row.get("PLANT", "")
-
-        
         if not self._is_blank(product):
-            key = str(product).strip()
+            key     = str(product).strip()
             missing = self.combo_missing_units.get(key)
 
             if missing:
-                missing_sorted = ", ".join(sorted(missing))
-                return (
-                    False,
-                    f"For this PRODUCT, required unit(s) missing: {missing_sorted}",
-                )
+                # Always store the canonical label so Summary bucketing works
+                return False, MISSING_UNITS_SUMMARY_LABEL
 
         return True, ""
 
@@ -223,12 +274,23 @@ class PartUOMTechnicalRuleEngine:
 
         return True, ""
 
+    def validate_duplicate_check(self, row, idx) -> tuple:
+        """
+        Rule – (PRODUCT, PLANT, ALTERNATIVEUNIT) must be unique across the file.
+        Uses the pre-computed set of duplicate row indices.
+        """
+        if idx in self.duplicate_combos:
+            return False, DUPLICATE_SUMMARY_LABEL
+        return True, ""
+
     def get_rules(self) -> dict:
+        """Return field -> validator mapping (row-level rules only)."""
         return {
             "PRODUCT":          self.validate_product,
             "PLANT":            self.validate_plant,
             "ALTERNATIVEUNIT":  self.validate_alternativeunit,
             "CONVERSIONFACTOR": self.validate_conversionfactor,
+            # DUPLICATE_CHECK is handled separately (needs idx) in the main loop
         }
 
 
@@ -315,16 +377,20 @@ class PartUOMTechnicalValidator:
 
         engine = PartUOMTechnicalRuleEngine(self.part_plant_combos, self.site_codes)
 
-        # Pre-compute which PRODUCT+PLANT combos are missing required units
+        # Pre-computations (group-level)
         engine.precompute_missing_units(self.df)
         print(
-            f"    PRODUCT missing required units (KG/CV/PAC): "
+            f"    PRODUCTs missing required units (KG/CV/PAC): "
             f"{len(engine.combo_missing_units)}"
         )
+
+        engine.precompute_duplicates(self.df)
+        print(f"    Duplicate rows (PRODUCT+PLANT+ALTERNATIVEUNIT): {len(engine.duplicate_combos)}")
 
         rules = engine.get_rules()
 
         for idx, row in self.df.iterrows():
+            # Standard field-level rules
             for field, rule_fn in rules.items():
                 if field not in self.df.columns:
                     continue
@@ -335,6 +401,15 @@ class PartUOMTechnicalValidator:
 
                 if not passed:
                     self._add_error(idx, field, reason)
+
+            # Duplicate check (needs idx, handled separately)
+            try:
+                passed, reason = engine.validate_duplicate_check(row, idx)
+            except Exception as e:
+                passed, reason = False, f"Exception: {e}"
+
+            if not passed:
+                self._add_error(idx, "DUPLICATE_CHECK", reason)
 
     def get_error_series(self) -> pd.Series:
         details = {}
@@ -392,13 +467,14 @@ class PartUOMTechnicalReportWriter:
             ws.column_dimensions[get_column_letter(col[0].column)].width = max(12, min(max_len + 4, 80))
 
     def _get_ruleset_columns(self):
-        ruleset_fields = ["PRODUCT", "PLANT", "ALTERNATIVEUNIT", "CONVERSIONFACTOR"]
-        ruleset_columns = [col for col in ruleset_fields if col in self.validator.df.columns]
+        # Include DUPLICATE_CHECK as a virtual "column" in error sheets
+        base_fields = ["PRODUCT", "PLANT", "ALTERNATIVEUNIT", "CONVERSIONFACTOR", "DUPLICATE_CHECK"]
+        ruleset_columns = [col for col in base_fields if col in self.validator.df.columns or col == "DUPLICATE_CHECK"]
         ruleset_columns.append("ERROR_FIELDS")
         return ruleset_columns
 
     def _summary_order(self):
-        return ["PRODUCT", "PLANT", "ALTERNATIVEUNIT", "CONVERSIONFACTOR"]
+        return ["PRODUCT", "PLANT", "ALTERNATIVEUNIT", "CONVERSIONFACTOR", "DUPLICATE_CHECK"]
 
     # ── Rulesets sheet ────────────────────────
     def _write_ruleset_sheet(self, wb, summary_fields=None):
@@ -412,11 +488,11 @@ class PartUOMTechnicalReportWriter:
         ws.row_dimensions[1].height = 22
 
         for c_idx, h in enumerate(["#", "Field", "Rule Description"], start=1):
-            cell            = ws.cell(row=3, column=c_idx, value=h)
-            cell.fill       = HDR_FILL
-            cell.font       = HDR_FONT
-            cell.border     = THIN_BORDER
-            cell.alignment  = Alignment(horizontal="center")
+            cell           = ws.cell(row=3, column=c_idx, value=h)
+            cell.fill      = HDR_FILL
+            cell.font      = HDR_FONT
+            cell.border    = THIN_BORDER
+            cell.alignment = Alignment(horizontal="center")
 
         ruleset_info = {
             "PRODUCT": [
@@ -429,15 +505,18 @@ class PartUOMTechnicalReportWriter:
             ],
             "ALTERNATIVEUNIT": [
                 "Must not be blank.",
-                (
-                    "Each PRODUCT must contain all three required units: "
-                    "KG, CV, and PAC."
-                ),
+                "Each PRODUCT must contain all three required units: KG, CV, and PAC.",
             ],
             "CONVERSIONFACTOR": [
                 "Must not be blank.",
                 "Must be numeric.",
                 "Must be non-zero.",
+            ],
+            "DUPLICATE_CHECK": [
+                (
+                    "No duplicate combinations of PRODUCT + PLANT + ALTERNATIVEUNIT "
+                    "are allowed in the extract."
+                ),
             ],
         }
 
@@ -505,14 +584,18 @@ class PartUOMTechnicalReportWriter:
         col_widths = [6, 28, 16, 16, 16, 16, 90]
 
         for c_idx, h in enumerate(headers, start=1):
-            cell            = ws.cell(row=3, column=c_idx, value=h)
-            cell.fill       = TITLE_FILL
-            cell.font       = Font(name="Arial", bold=True)
-            cell.border     = THIN_BORDER
-            cell.alignment  = Alignment(horizontal="center", vertical="center")
+            cell           = ws.cell(row=3, column=c_idx, value=h)
+            cell.fill      = TITLE_FILL
+            cell.font      = Font(name="Arial", bold=True)
+            cell.border    = THIN_BORDER
+            cell.alignment = Alignment(horizontal="center", vertical="center")
 
-        field_order     = self._summary_order()
+        field_order      = self._summary_order()
         col_error_counts = {field: 0 for field in field_order}
+
+        # ── Count errors per field, bucketing ALTERNATIVEUNIT "missing units"
+        #    variants under the single canonical label.
+        # key: (field, canonical_reason) -> count
         rule_error_counts: dict = {}
 
         for bad_cols in error_map.values():
@@ -521,14 +604,14 @@ class PartUOMTechnicalReportWriter:
                     continue
                 col_error_counts[col] += 1
 
-                # Bucket similar "missing unit" messages under a generic key
-                display_reason = reason
-                # if "required unit(s) missing:" in reason:
-                #     display_reason = "PRODUCT is missing required unit(s): KG, CV or PAC"
+                # Bucket ALL "missing units" dynamic messages under one canonical label
+                if col == "ALTERNATIVEUNIT" and reason != "ALTERNATIVEUNIT is blank":
+                    canonical_reason = MISSING_UNITS_SUMMARY_LABEL
+                else:
+                    canonical_reason = reason
 
-                rule_error_counts[(col, display_reason)] = (
-                    rule_error_counts.get((col, display_reason), 0) + 1
-                )
+                key = (col, canonical_reason)
+                rule_error_counts[key] = rule_error_counts.get(key, 0) + 1
 
         sorted_fields = [(field, col_error_counts.get(field, 0)) for field in field_order]
         self._summary_fields_order = [field for field, _ in sorted_fields]
@@ -537,30 +620,33 @@ class PartUOMTechnicalReportWriter:
         item_counter = 1
 
         for field_name, count in sorted_fields:
-            reasons      = SUMMARY_RULESET_INFO.get(field_name, [])
-            actual_reasons = set(r for (f, r) in rule_error_counts.keys() if f == field_name)
-            all_reasons  = list(reasons) + list(actual_reasons - set(reasons))
-            is_multi     = len(all_reasons) > 1
+            # Use ONLY the static canonical labels from SUMMARY_RULESET_INFO —
+            # never the dynamic per-row messages.  This guarantees the sub-row count
+            # matches exactly what is defined in code.
+            static_reasons = SUMMARY_RULESET_INFO.get(field_name, [])
+            is_multi       = len(static_reasons) > 1
 
             if is_multi:
+                # Parent row (field total)
                 ws.cell(row=row_num, column=1, value=item_counter)
                 ws.cell(row=row_num, column=2, value=field_name)
                 ws.cell(row=row_num, column=3, value=count)
                 ws.cell(row=row_num, column=4, value=total_rows)
                 err_pct = count / total_rows if total_rows else 0
                 ws.cell(row=row_num, column=5, value=1 - err_pct).number_format = "0.00%"
-                ws.cell(row=row_num, column=6, value=err_pct).number_format       = "0.00%"
+                ws.cell(row=row_num, column=6, value=err_pct).number_format     = "0.00%"
                 ws.cell(row=row_num, column=7, value="")
 
                 for c in range(1, 8):
-                    cell            = ws.cell(row=row_num, column=c)
-                    cell.border     = THIN_BORDER
-                    cell.alignment  = Alignment(horizontal="center" if c != 7 else "left")
-                    cell.font       = BODY_FONT
+                    cell           = ws.cell(row=row_num, column=c)
+                    cell.border    = THIN_BORDER
+                    cell.alignment = Alignment(horizontal="center" if c != 7 else "left")
+                    cell.font      = BODY_FONT
 
                 row_num += 1
 
-                for reason in all_reasons:
+                # Sub-rows — one per canonical reason in SUMMARY_RULESET_INFO
+                for reason in static_reasons:
                     sub_count = rule_error_counts.get((field_name, reason), 0)
                     sub_pct   = sub_count / total_rows if total_rows else 0
 
@@ -569,7 +655,7 @@ class PartUOMTechnicalReportWriter:
                     ws.cell(row=row_num, column=3, value=sub_count)
                     ws.cell(row=row_num, column=4, value=total_rows)
                     ws.cell(row=row_num, column=5, value=1 - sub_pct).number_format = "0.00%"
-                    ws.cell(row=row_num, column=6, value=sub_pct).number_format       = "0.00%"
+                    ws.cell(row=row_num, column=6, value=sub_pct).number_format     = "0.00%"
                     ws.cell(row=row_num, column=7, value=reason if sub_count > 0 else "")
 
                     for c in range(1, 8):
@@ -585,16 +671,20 @@ class PartUOMTechnicalReportWriter:
                     row_num += 1
 
             else:
-                reason  = all_reasons[0] if all_reasons else ""
+                # Single-sub-row field (or no sub-rows defined)
+                reason  = static_reasons[0] if static_reasons else ""
                 err_pct = count / total_rows if total_rows else 0
-                values  = [item_counter, field_name, count, total_rows, 1 - err_pct, err_pct,
-                           reason if count > 0 else ""]
+                values  = [
+                    item_counter, field_name, count, total_rows,
+                    1 - err_pct, err_pct,
+                    reason if count > 0 else "",
+                ]
 
                 for c_idx, value in enumerate(values, start=1):
-                    cell            = ws.cell(row=row_num, column=c_idx, value=value)
-                    cell.font       = BODY_FONT
-                    cell.border     = THIN_BORDER
-                    cell.alignment  = Alignment(
+                    cell           = ws.cell(row=row_num, column=c_idx, value=value)
+                    cell.font      = BODY_FONT
+                    cell.border    = THIN_BORDER
+                    cell.alignment = Alignment(
                         horizontal="center" if c_idx != 7 else "left",
                         wrap_text=(c_idx == 7),
                     )
@@ -611,18 +701,18 @@ class PartUOMTechnicalReportWriter:
         total_error_percent = total_errors / sum_record_counts if sum_record_counts else 0
         total_fill          = PatternFill("solid", start_color="F2F2F2", end_color="F2F2F2")
 
-        ws.cell(row=row_num, column=2, value="TOTAL").font             = Font(name="Arial", bold=True)
-        ws.cell(row=row_num, column=3, value=total_errors).font        = Font(name="Arial", bold=True)
-        ws.cell(row=row_num, column=4, value=sum_record_counts).font   = Font(name="Arial", bold=True)
+        ws.cell(row=row_num, column=2, value="TOTAL").font           = Font(name="Arial", bold=True)
+        ws.cell(row=row_num, column=3, value=total_errors).font      = Font(name="Arial", bold=True)
+        ws.cell(row=row_num, column=4, value=sum_record_counts).font = Font(name="Arial", bold=True)
         ws.cell(row=row_num, column=5, value=1 - total_error_percent).number_format = "0.00%"
-        ws.cell(row=row_num, column=6, value=total_error_percent).number_format      = "0.00%"
+        ws.cell(row=row_num, column=6, value=total_error_percent).number_format     = "0.00%"
 
         for c in range(1, 8):
-            cell            = ws.cell(row=row_num, column=c)
-            cell.fill       = total_fill
-            cell.border     = THIN_BORDER
-            cell.font       = Font(name="Arial", bold=True)
-            cell.alignment  = Alignment(horizontal="center" if c != 7 else "left")
+            cell           = ws.cell(row=row_num, column=c)
+            cell.fill      = total_fill
+            cell.border    = THIN_BORDER
+            cell.font      = Font(name="Arial", bold=True)
+            cell.alignment = Alignment(horizontal="center" if c != 7 else "left")
 
         row_num += 2
 
@@ -637,17 +727,17 @@ class PartUOMTechnicalReportWriter:
         stats_fill = PatternFill("solid", start_color="EDEDED", end_color="EDEDED")
 
         for label, value in stats:
-            label_cell            = ws.cell(row=row_num, column=1, value=label)
-            label_cell.font       = Font(name="Arial", bold=True, size=10)
-            label_cell.fill       = stats_fill
-            label_cell.border     = THIN_BORDER
-            label_cell.alignment  = Alignment(horizontal="left")
+            label_cell           = ws.cell(row=row_num, column=1, value=label)
+            label_cell.font      = Font(name="Arial", bold=True, size=10)
+            label_cell.fill      = stats_fill
+            label_cell.border    = THIN_BORDER
+            label_cell.alignment = Alignment(horizontal="left")
             ws.merge_cells(start_row=row_num, start_column=1, end_row=row_num, end_column=2)
 
-            value_cell            = ws.cell(row=row_num, column=3, value=value)
-            value_cell.font       = Font(name="Arial", size=10)
-            value_cell.border     = THIN_BORDER
-            value_cell.alignment  = Alignment(horizontal="center")
+            value_cell           = ws.cell(row=row_num, column=3, value=value)
+            value_cell.font      = Font(name="Arial", size=10)
+            value_cell.border    = THIN_BORDER
+            value_cell.alignment = Alignment(horizontal="center")
             row_num += 1
 
         for c_idx, width in enumerate(col_widths, start=1):
@@ -672,23 +762,34 @@ class PartUOMTechnicalReportWriter:
             sheet_name = self._safe_sheet_name(wb, field_name)
             ws         = wb.create_sheet(sheet_name)
 
-            subset                = df.loc[row_indices].copy()
+            subset = df.loc[row_indices].copy()
             subset["ERROR_FIELDS"] = subset.index.map(
                 lambda i, fn=field_name: v.error_map.get(i, {}).get(fn, "")
             )
 
-            self._write_header(ws, subset.columns)
-            col_idx_map = {col: i for i, col in enumerate(subset.columns, start=1)}
+            # For DUPLICATE_CHECK the "column" doesn't exist in the data — show
+            # the real data columns so the user can see the duplicated values.
+            display_cols = list(subset.columns)
+
+            self._write_header(ws, display_cols)
+            col_idx_map = {col: i for i, col in enumerate(display_cols, start=1)}
 
             for excel_row, (_, row_data) in enumerate(subset.iterrows(), start=2):
                 for c_idx, value in enumerate(row_data, start=1):
-                    cell            = ws.cell(row=excel_row, column=c_idx, value=value)
-                    cell.font       = BODY_FONT
-                    cell.fill       = ROW_FILL
-                    cell.alignment  = Alignment(vertical="center", wrap_text=True)
+                    cell           = ws.cell(row=excel_row, column=c_idx, value=value)
+                    cell.font      = BODY_FONT
+                    cell.fill      = ROW_FILL
+                    cell.alignment = Alignment(vertical="center", wrap_text=True)
 
-                # Highlight the erroneous field cell in red
-                if field_name in col_idx_map:
+                # Highlight the erroneous field cell in red (skip for DUPLICATE_CHECK
+                # since there's no matching column; highlight the three key columns instead)
+                if field_name == "DUPLICATE_CHECK":
+                    for dup_col in ["PRODUCT", "PLANT", "ALTERNATIVEUNIT"]:
+                        if dup_col in col_idx_map:
+                            target_cell      = ws.cell(row=excel_row, column=col_idx_map[dup_col])
+                            target_cell.fill = RED_FILL
+                            target_cell.font = ERR_FONT
+                elif field_name in col_idx_map:
                     target_cell      = ws.cell(row=excel_row, column=col_idx_map[field_name])
                     target_cell.fill = RED_FILL
                     target_cell.font = ERR_FONT
@@ -706,12 +807,13 @@ class PartUOMTechnicalReportWriter:
         v  = self.validator
         df = v.df.copy()
 
-        error_series        = v.get_error_series()
-        df["ERROR_FIELDS"]  = df.index.map(
+        error_series       = v.get_error_series()
+        df["ERROR_FIELDS"] = df.index.map(
             lambda i: error_series.get(i, "") if i in error_series.index else ""
         )
 
         ruleset_columns = self._get_ruleset_columns()
+        # Keep data columns + ERROR_FIELDS; DUPLICATE_CHECK is virtual so skip if absent
         filtered_cols   = [col for col in df.columns if col in ruleset_columns]
         df              = df[filtered_cols]
 
