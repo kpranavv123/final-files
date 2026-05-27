@@ -25,6 +25,7 @@ OUTPUT_FILE = r"C:\Users\SW526XH\Downloads\Go Live-1\ProductH\Validated_Product 
 VALID_MATERIAL_TYPES = {"FERT", "HAWA"}
 VALID_IBP_STATUSES   = {"IBP", ""}
 
+# Original 25 not-blank fields
 NOT_BLANK_FIELDS = [
     "MATERIALNUMBER", "MATERIALDESCRIPTION", "PRODUCTGROUP", "MATLGRPDESC",
     "DIVISION", "DIVISIONDESCRIPTION", "PRODUCTTYPE", "PRODUCT_HIERARCHY_KEY",
@@ -33,11 +34,17 @@ NOT_BLANK_FIELDS = [
     "SUBBRAND", "SUBBRANDDESCRIPTION", "BRANDVARIANT", "BRANDVARIANTDESCRIPTION",
     "PACKSIZE", "PACKSIZEDESCRIPTION", "MARKETSKU", "MARKETSKUDESCRIPTION",
     "SUPPLY_FAMILY",
+    # ── New not-blank fields ──────────────────
+    "NETWEIGHT", "WEIGHTUNIT", "LENGTH", "WIDTH", "HEIGHT",
 ]
 
+# Canonical duplicate-check label (single source of truth)
+DUPLICATE_SUMMARY_LABEL = "Duplicate value found in PRODUCT column"
+
 # Defines ALL fields that appear in the Summary (order matters).
-# MATERIALTYPE and IBPSTATUS are appended after the 25 NOT_BLANK_FIELDS.
-ALL_SUMMARY_FIELDS = NOT_BLANK_FIELDS + ["MATERIALTYPE", "IBPSTATUS"]
+# MATERIALTYPE and IBPSTATUS follow the NOT_BLANK_FIELDS block;
+# DUPLICATE_CHECK is appended last.
+ALL_SUMMARY_FIELDS = NOT_BLANK_FIELDS + ["MATERIALTYPE", "IBPSTATUS", "DUPLICATE_CHECK"]
 
 RULES_CONTENT = {
     **{f: ["Must not be blank for FERT/HAWA material types."] for f in NOT_BLANK_FIELDS},
@@ -49,13 +56,17 @@ RULES_CONTENT = {
         "Allowed values: IBP or blank.",
         "Any other value is treated as an error.",
     ],
+    "DUPLICATE_CHECK": [
+        "The PRODUCT column must not contain duplicate values across the extract.",
+    ],
 }
 
 # Centralised reason messages (matches what the Summary Reason column shows)
 FIELD_REASON_MAP = {
     **{f: f"{f}: is blank for FERT/HAWA material types." for f in NOT_BLANK_FIELDS},
-    "MATERIALTYPE": "MATERIALTYPE: is blank for FERT/HAWA material types",
-    "IBPSTATUS":    "IBPSTATUS: Invalid value – must be 'IBP' or blank.",
+    "MATERIALTYPE":    "MATERIALTYPE: is blank for FERT/HAWA material types",
+    "IBPSTATUS":       "IBPSTATUS: Invalid value – must be 'IBP' or blank.",
+    "DUPLICATE_CHECK": DUPLICATE_SUMMARY_LABEL,
 }
 
 # ─────────────────────────────────────────────
@@ -156,6 +167,8 @@ class ProductHierarchyValidator:
 
     def __init__(self):
         self.validators: list[FieldValidator] = self._build_validators()
+        # Populated by _precompute_duplicates(); stores row indices that are dups
+        self._duplicate_indices: set = set()
 
     def _build_validators(self) -> list[FieldValidator]:
         validators = [
@@ -164,7 +177,31 @@ class ProductHierarchyValidator:
         ]
         validators.append(MaterialTypeValidator("MATERIALTYPE", "Field must be FERT or HAWA and must not be blank"))
         validators.append(IBPStatusValidator("IBPSTATUS",       "Field values must be either 'IBP' or blank"))
+        # NOTE: DUPLICATE_CHECK is handled separately (needs the full DataFrame context)
         return validators
+
+    def _precompute_duplicates(self, df: pd.DataFrame):
+        """
+        Find every row where the PRODUCT value appears more than once.
+        All occurrences (not just the second) are flagged.
+        """
+        self._duplicate_indices = set()
+
+        if "PRODUCT" not in df.columns:
+            return
+
+        # Map product value -> list of positional indices in df
+        seen: dict = {}
+        for pos, (idx, row) in enumerate(df.iterrows()):
+            product = row.get("PRODUCT", "")
+            if is_blank(product):
+                continue
+            product_str = str(product).strip()
+            seen.setdefault(product_str, []).append(idx)
+
+        for product_str, indices in seen.items():
+            if len(indices) > 1:
+                self._duplicate_indices.update(indices)
 
     def validate_row(self, row: pd.Series) -> list[str]:
         errors = []
@@ -183,21 +220,36 @@ class ProductHierarchyValidator:
         df["MATERIALTYPE"] = df["MATERIALTYPE"].str.strip().str.upper()
         df = df[df["MATERIALTYPE"].isin(VALID_MATERIAL_TYPES)].copy()
 
+        # Pre-compute duplicate PRODUCT rows across the filtered extract
+        self._precompute_duplicates(df)
+        print(f"    Duplicate PRODUCT rows: {len(self._duplicate_indices)}")
+
         error_list        = []
         error_fields_list = []
         error_detail_list = []
 
-        for _, row in df.iterrows():
+        for idx, row in df.iterrows():
             row_errors = self.validate_row(row)
+
+            # Duplicate check — appended as an extra error when applicable
+            if idx in self._duplicate_indices:
+                row_errors.append(DUPLICATE_SUMMARY_LABEL)
+
             error_list.append(" | ".join(row_errors) if row_errors else "")
 
             fields_in_error = set()
             field_reason    = {}
 
             for e in row_errors:
-                field = e.split(":")[0].strip()
-                fields_in_error.add(field)
-                field_reason[field] = e
+                # DUPLICATE_CHECK errors don't follow the "FIELD: reason" pattern,
+                # so they are keyed directly.
+                if e == DUPLICATE_SUMMARY_LABEL:
+                    fields_in_error.add("DUPLICATE_CHECK")
+                    field_reason["DUPLICATE_CHECK"] = e
+                else:
+                    field = e.split(":")[0].strip()
+                    fields_in_error.add(field)
+                    field_reason[field] = e
 
             error_fields_list.append(fields_in_error)
             error_detail_list.append(field_reason)
@@ -297,14 +349,13 @@ class ExcelReportBuilder:
             cell.border    = THIN_BORDER
             cell.alignment = Alignment(horizontal="center", vertical="center")
 
-        # ── Per-field data rows: ALL 27 fields always written ──
+        # ── Per-field data rows: ALL fields always written ──
         row_num = 3
         for field_num, col_name in enumerate(ALL_SUMMARY_FIELDS, start=1):
             count      = field_counts.get(col_name, 0)
             pct_error  = round((count / total_rows) * 100, 2) if total_rows else 0
             pct_health = round(100 - pct_error, 2)
 
-            # Reason only populated when this field has actual errors
             reason = (
                 FIELD_REASON_MAP.get(col_name, f"{col_name}: is blank for FERT/HAWA material types.")
                 if count > 0
@@ -473,7 +524,14 @@ class ExcelReportBuilder:
                     cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
                     cell.fill      = ROW_ERROR_FILL
 
-                if field in col_idx_map:
+                # For DUPLICATE_CHECK highlight the PRODUCT column in red;
+                # for all other fields highlight the field's own column.
+                if field == "DUPLICATE_CHECK":
+                    if "PRODUCT" in col_idx_map:
+                        target_cell      = ws.cell(row=r_idx, column=col_idx_map["PRODUCT"])
+                        target_cell.fill = RED_FILL
+                        target_cell.font = ERR_FONT
+                elif field in col_idx_map:
                     target_cell      = ws.cell(row=r_idx, column=col_idx_map[field])
                     target_cell.fill = RED_FILL
                     target_cell.font = ERR_FONT
