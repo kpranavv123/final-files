@@ -1,542 +1,377 @@
 import pandas as pd
-from datetime import date
-from openpyxl import Workbook
-from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
+import re
+from openpyxl import load_workbook
+from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 
+# ======================================================
+# File paths
+# ======================================================
+HDA_FILE         = r"C:\Users\SW526XH\Downloads\Go Live-1\HDA\BillingDocument(HDA)_2026-05-22-1152.tab"
+SUMMARY_HDA_FILE = r"C:\Users\SW526XH\Downloads\Go Live-1\HDA\HDA_Validated.tab"
 
-# ─────────────────────────────────────────────
-#  FILE PATHS
-# ─────────────────────────────────────────────
-INPUT_FILE  = r"C:\Users\SW526XH\Downloads\Go Live-1\HDA\HDA_2026-05-20-2012.tab"
-OUTPUT_FILE = r"C:\Users\SW526XH\Downloads\Go Live-1\HDA\Validated_HDA_Business.xlsx"
+PART_FILE     = r"C:\Users\SW526XH\Downloads\Go Live-1\Part\Part_Site_2026-05-21-1510.tab"
+CUSTOMER_FILE = r"C:\Users\SW526XH\Downloads\Go Live-1\Customer\Cutomer_2026-05-20-1205.tab"
+SITE_FILE     = r"C:\Users\SW526XH\Downloads\Go Live-1\Site\Site_2026-05-20-1153.tab"
+
+OUTPUT_EXCEL = r"C:\Users\SW526XH\Downloads\Go Live-1\HDA\Validated_HDA_Technical2.xlsx"
+
+# ======================================================
+# Helper: Universal loader
+# ======================================================
+def read_input(path: str) -> pd.DataFrame:
+    ext = path.lower()
+    if ext.endswith((".csv", ".tab", ".txt")):
+        return pd.read_csv(path, dtype=str, sep="\t")
+    elif ext.endswith((".xlsx", ".xls")):
+        return pd.read_excel(path, dtype=str, engine="openpyxl")
+    else:
+        raise ValueError(f"Unsupported file type: {path}")
 
 
-# ─────────────────────────────────────────────
-#  BASE DATE CONFIGURATION
-#  ► Set this to a specific date to use as the cutoff for BILLING_DATE validation.
-#  ► Set to None to always use today's date at runtime.
-#
-#  Examples:
-#    BASE_DATE = date(2026, 5, 20)   # fixed date — any billing date after this is flagged
-#    BASE_DATE = None                # dynamic — uses today's date every time you run
-# ─────────────────────────────────────────────
-BASE_DATE = None   # ← change this to date(YYYY, M, D) to pin a specific date
+# ======================================================
+# Load master/reference data
+# ======================================================
+print("📂 Loading reference files...")
 
+part_df = read_input(PART_FILE)
+part_df.columns = part_df.columns.str.strip().str.upper()
+if "MATERIALNUMBER_PLANT" not in part_df.columns:
+    part_df["MATERIALNUMBER_PLANT"] = (
+        part_df["MATERIALNUMBER"].astype(str).str.strip() + "_" +
+        part_df["PLANT"].astype(str).str.strip()
+    )
+part_set = set(part_df["MATERIALNUMBER_PLANT"].dropna().str.strip())
 
-def _resolve_base_date() -> date:
-    """Returns BASE_DATE if set, otherwise today's date."""
-    return BASE_DATE if BASE_DATE is not None else date.today()
+customer_df = read_input(CUSTOMER_FILE)
+customer_df.columns = customer_df.columns.str.strip().str.upper()
+if "SUPPLYINGPLANT_CUSTOMER" not in customer_df.columns:
+    customer_df["SUPPLYINGPLANT_CUSTOMER"] = (
+        customer_df["SUPPLYINGPLANT"].astype(str).str.strip() + "_" +
+        customer_df["CUSTOMER"].astype(str).str.strip()
+    )
+customer_set = set(customer_df["SUPPLYINGPLANT_CUSTOMER"].dropna().str.strip())
 
+site_df = read_input(SITE_FILE)
+site_df.columns = site_df.columns.str.strip().str.upper()
+site_set = set(site_df["PLANT"].dropna().str.strip())
 
-# ─────────────────────────────────────────────
-#  BUSINESS RULE CONSTANTS
-# ─────────────────────────────────────────────
-RULE1_KEY = "TOTAL_BILLINGQUANTITYINBASEUNIT"
-RULE2_KEY = "BILLING_DATE"
-RULE3_KEY = "UNIT_PRICE"
-
-RULES_FIELDS_ORDERED = [RULE1_KEY, RULE2_KEY, RULE3_KEY]
-ERROR_SHEET_PRIORITY = [RULE1_KEY, RULE2_KEY, RULE3_KEY]
-
-# Columns to display in error sheets (in this exact order)
-ERROR_SHEET_COLS = [
-    "PARTNAME",
-    "SITE",
-    "CUSTOMER",
-    "BILLING_DATE",
-    "PARTNAME_SITE",
-    "SITE_CUSTOMER",
-    "TOTAL_BILLINGQUANTITYINBASEUNIT",
-    "UNIT_PRICE",
+# ======================================================
+# Validation rules
+# (chunk processing removed — full file loaded at once
+#  to enable accurate duplicate detection across all rows)
+# ======================================================
+rules = [
+     ("MATERIAL_PLANT",    "ERROR_MATERIAL_PLANT",     "Material-Plant combination not present in the Part master."),
+    ("Plant",             "ERROR_PLANT",             "Plant is not present in site master."),
+    ("PLANT_SOLDTOPARTY", "ERROR_PLANT_SOLDTOPARTY",  "Plant-Soldtoparty combination is not present in customer master."),
+    ("BILLING_DATE",      "ERROR_BILLING_DATE",       "Must not be blank and must be in YYYYMMDD format."),
+    ("DUPLICATE_CHECK",   "ERROR_DUPLICATE",          "Duplicate record: MATERIAL-PLANT-SOLDTOPARTY-BILLINGDATE combination already exists."),
 ]
 
-REASON_MAP = {
-    RULE1_KEY: "TOTAL_BILLINGQUANTITYINBASEUNIT: Negative values are present",
-    RULE2_KEY: "BILLING_DATE: Future-dated transactions are not allowed — date must be ≤ base date",
-    RULE3_KEY: "UNIT_PRICE: Negative values are not allowed — price must be ≥ 0",
+ERROR_MESSAGES = {col: reason for field, col, reason in rules}
+
+ERROR_SHEETS = {
+    "ERROR_MATERIAL_PLANT":    ("MATERIAL_PLANT",    ERROR_MESSAGES["ERROR_MATERIAL_PLANT"]),
+    "ERROR_PLANT":             ("PLANT",             ERROR_MESSAGES["ERROR_PLANT"]),
+    "ERROR_PLANT_SOLDTOPARTY": ("PLANT_SOLDTOPARTY", ERROR_MESSAGES["ERROR_PLANT_SOLDTOPARTY"]),
+    "ERROR_BILLING_DATE":      ("BILLING_DATE",      ERROR_MESSAGES["ERROR_BILLING_DATE"]),
+    "ERROR_DUPLICATE":         ("DUPLICATE_CHECK",   ERROR_MESSAGES["ERROR_DUPLICATE"]),
 }
 
-RULES_CONTENT = {
-    RULE1_KEY: [
-        "Field must not contain negative values.",
-    ],
-    RULE2_KEY: [
-        "Field must not contain future-dated transactions.",
-        "A transaction is flagged if its BILLING_DATE is later than the configured BASE_DATE.",
-        "BASE_DATE can be pinned to a fixed date or set to dynamically use today's date at runtime.",
-    ],
-    RULE3_KEY: [
-        "Field must not contain negative values.",
-    ],
+# ======================================================
+# Constants
+# ======================================================
+EXCEL_MAX_ROWS  = 1_048_576
+date_pattern    = re.compile(r"^\d{8}$|^\d{4}-\d{2}-\d{2}$")
+
+# Duplicate key columns
+DUPLICATE_KEY_COLS = ["MATERIAL", "PLANT", "SOLDTOPARTY", "BILLING_DATE"]
+
+sheet_tracker = {
+    sheet: {"sheet_no": 1, "current_row": 0}
+    for sheet, _ in ERROR_SHEETS.values()
 }
 
+error_counts      = {field: 0 for field, _, _ in rules}
+total_records     = 0
+records_with_errors = 0
 
-# ─────────────────────────────────────────────
-#  STYLING CONSTANTS
-# ─────────────────────────────────────────────
-RED_FILL   = PatternFill("solid", fgColor="FF0000")
-ROW_FILL   = PatternFill("solid", fgColor="FFF2CC")
-HDR_FILL   = PatternFill("solid", fgColor="D9E1F2")
-RULE_FILL  = PatternFill("solid", fgColor="E2EFDA")
-TITLE_FILL = PatternFill("solid", fgColor="BDD7EE")
-TOTAL_FILL = PatternFill("solid", fgColor="F2F2F2")
-WHITE_FILL = PatternFill("solid", fgColor="FFFFFF")
-STATS_FILL = PatternFill("solid", fgColor="EDEDED")
+# ======================================================
+# LOAD FULL HDA FILE (no chunking — required for duplicate detection)
+# ======================================================
+print("📂 Loading full HDA file for validation...")
+hda_df = pd.read_csv(HDA_FILE, sep="\t", dtype=str)
+hda_df = hda_df.apply(lambda x: x.str.strip() if x.dtype == "object" else x)
+hda_df.columns = hda_df.columns.str.strip().str.upper()
 
-HDR_FONT  = Font(bold=True, name="Arial")
-BODY_FONT = Font(name="Arial", size=10)
-ERR_FONT  = Font(name="Arial", size=10, bold=True, color="FFFFFF")
+total_records = len(hda_df)
+print(f"   → {total_records:,} records loaded.")
 
-THIN_BORDER = Border(
-    left=Side(style="thin"), right=Side(style="thin"),
-    top=Side(style="thin"),  bottom=Side(style="thin"),
+# ======================================================
+# BUILD COMPOSITE KEYS
+# ======================================================
+if "MATERIAL_PLANT" not in hda_df.columns:
+    hda_df["MATERIAL_PLANT"] = (
+        hda_df["MATERIAL"].astype(str).str.strip() + "_" +
+        hda_df["PLANT"].astype(str).str.strip()
+    )
+
+if "PLANT_SOLDTOPARTY" not in hda_df.columns:
+    hda_df["PLANT_SOLDTOPARTY"] = (
+        hda_df["PLANT"].astype(str).str.strip() + "_" +
+        hda_df["SOLDTOPARTY"].astype(str).str.strip()
+    )
+
+# ======================================================
+# RUN VALIDATION CHECKS
+# ======================================================
+print("🔍 Running validation checks...")
+
+hda_df["ERROR_MATERIAL_PLANT"] = hda_df["MATERIAL_PLANT"].apply(
+    lambda x: "Yes" if pd.isna(x) or x not in part_set else ""
+)
+hda_df["ERROR_PLANT"] = hda_df["PLANT"].apply(
+    lambda x: "Yes" if pd.isna(x) or x not in site_set else ""
+)
+hda_df["ERROR_PLANT_SOLDTOPARTY"] = hda_df["PLANT_SOLDTOPARTY"].apply(
+    lambda x: "Yes" if pd.isna(x) or x not in customer_set else ""
+)
+hda_df["ERROR_BILLING_DATE"] = hda_df["BILLING_DATE"].apply(
+    lambda x: "Yes" if pd.isna(x) or not date_pattern.match(str(x)) else ""
 )
 
 
-# ══════════════════════════════════════════════
-#  Rule Engine
-# ══════════════════════════════════════════════
-class HDABusinessRuleEngine:
-    """
-    Returns error_map:
-        { row_index : { rule_key : { "reason": str, "highlight_cols": [col] } } }
-    """
+# Duplicate check: flag ALL occurrences of duplicate key combinations
+# (MATERIAL + PLANT + SOLDTOPARTY + BILLING_DATE)
+available_dup_cols = [c for c in DUPLICATE_KEY_COLS if c in hda_df.columns]
+if len(available_dup_cols) == len(DUPLICATE_KEY_COLS):
+    hda_df["ERROR_DUPLICATE"] = hda_df.duplicated(
+        subset=available_dup_cols, keep=False
+    ).map({True: "Yes", False: ""})
+else:
+    missing = set(DUPLICATE_KEY_COLS) - set(available_dup_cols)
+    print(f"⚠️  Warning: Duplicate check skipped — missing columns: {missing}")
+    hda_df["ERROR_DUPLICATE"] = ""
 
-    def __init__(self):
-        # ► Resolved once at engine instantiation — consistent across all rows
-        self.base_date = _resolve_base_date()
+# ======================================================
+# COUNT ERRORS & RECORDS WITH ERRORS
+# ======================================================
+row_has_error = pd.Series(False, index=hda_df.index)
+for field, col, _ in rules:
+    cnt = (hda_df[col] == "Yes").sum()
+    error_counts[field] += cnt
+    row_has_error = row_has_error | (hda_df[col] == "Yes")
 
-    @staticmethod
-    def _is_blank(value) -> bool:
-        if value is None:
-            return True
-        try:
-            import math
-            if math.isnan(float(value)):
-                return True
-        except (TypeError, ValueError):
-            pass
-        return str(value).strip() == ""
+records_with_errors = int(row_has_error.sum())
+records_passing     = total_records - records_with_errors
 
-    # ── Rule 1: No negative billing quantity ──
-    def validate_billing_qty(self, row) -> tuple[bool, str]:
-        val = row.get(RULE1_KEY)
-        if self._is_blank(val):
-            return True, ""          # blank is not a business rule violation here
-        try:
-            if float(str(val).strip()) < 0:
-                return False, REASON_MAP[RULE1_KEY]
-        except ValueError:
-            return True, ""          # non-numeric — not this rule's concern
-        return True, ""
+# ======================================================
+# WRITE ERROR SHEETS TO EXCEL
+# ======================================================
+print("📝 Writing error data to Excel...")
 
-    # ── Rule 2: No billing date after BASE_DATE ──
-    @staticmethod
-    def _parse_date(raw: str):
-        """
-        Try YYYYMMDD first (e.g. 20260504), then fall back to
-        pandas general parsing for other formats (dd-mm-yyyy, yyyy-mm-dd, etc.).
-        Returns a datetime.date or raises ValueError.
-        """
-        s = raw.strip()
-        if len(s) == 8 and s.isdigit():
-            from datetime import datetime
-            return datetime.strptime(s, "%Y%m%d").date()
-        return pd.to_datetime(s, dayfirst=False, errors="raise").date()
+sorted_error_sheets = sorted(
+    ERROR_SHEETS.items(),
+    key=lambda x: len(x[1][0]),
+    reverse=True
+)
 
-    def validate_billing_date(self, row) -> tuple[bool, str]:
-        val = row.get(RULE2_KEY)
-        if self._is_blank(val):
-            return False, REASON_MAP[RULE2_KEY]
-        try:
-            parsed = self._parse_date(str(val))
-            if parsed > self.base_date:           # ◄ uses self.base_date, not date.today()
-                return False, REASON_MAP[RULE2_KEY]
-        except Exception:
-            return False, REASON_MAP[RULE2_KEY]
-        return True, ""
+with pd.ExcelWriter(OUTPUT_EXCEL, engine="openpyxl") as writer:
+    pd.DataFrame({"_": ["placeholder"]}).to_excel(
+        writer, sheet_name="_placeholder", index=False
+    )
 
-    # ── Rule 3: No negative unit price ────────
-    def validate_unit_price(self, row) -> tuple[bool, str]:
-        val = row.get(RULE3_KEY)
-        if self._is_blank(val):
-            return True, ""          # ignore blanks
-        try:
-            if float(str(val).strip()) < 0:
-                return False, REASON_MAP[RULE3_KEY]
-        except ValueError:
-            return True, ""          # ignore non-numeric here
-        return True, ""
+    for error_col, (base_sheet, error_msg) in sorted_error_sheets:
+        error_rows = hda_df[hda_df[error_col] == "Yes"].copy()
+        if error_rows.empty:
+            continue
 
-    def run(self, df: pd.DataFrame) -> dict:
-        rules = {
-            RULE1_KEY: self.validate_billing_qty,
-            RULE2_KEY: self.validate_billing_date,
-            RULE3_KEY: self.validate_unit_price,
-        }
-        error_map: dict = {}
+        error_rows["ERROR_COLUMNS"] = error_msg
+        tracker = sheet_tracker[base_sheet]
+        start   = 0
 
-        for idx, row in df.iterrows():
-            for rule_key, rule_fn in rules.items():
-                if rule_key not in df.columns:
-                    continue
-                try:
-                    passed, reason = rule_fn(row)
-                except Exception as e:
-                    passed, reason = False, f"{rule_key}: Exception — {e}"
-
-                if not passed:
-                    error_map.setdefault(idx, {})[rule_key] = {
-                        "reason":         reason,
-                        "highlight_cols": [rule_key],
-                    }
-
-        return error_map
-
-
-# ══════════════════════════════════════════════
-#  Validator
-# ══════════════════════════════════════════════
-class HDAValidator:
-
-    def __init__(self, filepath: str):
-        self.filepath  = filepath
-        self.df        = pd.DataFrame()
-        self.error_map = {}
-
-    def load(self):
-        path = self.filepath.lower()
-        if path.endswith(".csv"):
-            self.df = pd.read_csv(self.filepath, dtype=str)
-        elif path.endswith(".tab") or path.endswith(".tsv"):
-            self.df = pd.read_csv(
-                self.filepath,
-                sep="\t",
-                dtype=str,
-                encoding="cp1252",
-                engine="python",
+        while start < len(error_rows):
+            sheet_name = (
+                base_sheet if tracker["sheet_no"] == 1
+                else f"{base_sheet}_{tracker['sheet_no']}"
             )
-        elif path.endswith(".xlsx") or path.endswith(".xls"):
-            self.df = pd.read_excel(self.filepath, dtype=str, engine="openpyxl")
-        else:
-            raise ValueError(f"Unsupported file format: {self.filepath}")
+            remaining = EXCEL_MAX_ROWS - tracker["current_row"]
+            write_df  = error_rows.iloc[start:start + remaining]
 
-        self.df.columns = [c.strip().upper() for c in self.df.columns]
-
-    def validate(self):
-        engine         = HDABusinessRuleEngine()
-        self.error_map = engine.run(self.df)
-
-
-# ══════════════════════════════════════════════
-#  Report Writer
-# ══════════════════════════════════════════════
-class HDAReportWriter:
-
-    SHEET_SUMMARY = "Summary"
-    SHEET_RULES   = "Rules"
-
-    def __init__(self, validator: HDAValidator, output_path: str):
-        self.validator   = validator
-        self.output_path = output_path
-        # ► Resolved once — same value used in title, console, everywhere
-        self.base_date     = _resolve_base_date()
-        self.base_date_str = self.base_date.strftime("%d-%b-%Y")
-
-    # ── Helpers ──────────────────────────────
-    def _write_header(self, ws, columns):
-        for c_idx, col_name in enumerate(columns, start=1):
-            cell           = ws.cell(row=1, column=c_idx, value=col_name)
-            cell.fill      = HDR_FILL
-            cell.font      = HDR_FONT
-            cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
-            cell.border    = THIN_BORDER
-        ws.row_dimensions[1].height = 30
-
-    def _auto_width(self, ws, min_w=10, max_w=60):
-        for col in ws.columns:
-            length = max((len(str(c.value)) if c.value else 0) for c in col)
-            ws.column_dimensions[get_column_letter(col[0].column)].width = min(
-                max(length + 3, min_w), max_w
+            write_df.to_excel(
+                writer,
+                sheet_name=sheet_name,
+                startrow=tracker["current_row"],
+                index=False,
+                header=(tracker["current_row"] == 0),
             )
 
-    def _safe_sheet_name(self, wb, name: str) -> str:
-        name     = name[:31]
-        existing = [s.title for s in wb.worksheets]
-        base     = name
-        counter  = 1
-        while name in existing:
-            name = f"{base[:28]}_{counter}"
-            counter += 1
-        return name
+            start                  += len(write_df)
+            tracker["current_row"] += len(write_df)
 
-    # ── Summary Sheet ─────────────────────────
-    def _write_summary_sheet(self, wb):
-        ws         = wb.create_sheet(self.SHEET_SUMMARY)
-        v          = self.validator
-        total_rows = len(v.df)
+            if tracker["current_row"] >= EXCEL_MAX_ROWS:
+                tracker["sheet_no"]    += 1
+                tracker["current_row"]  = 0
 
-        # Per-rule error counts
-        col_error_counts = {r: 0 for r in RULES_FIELDS_ORDERED}
-        for rule_dict in v.error_map.values():
-            for rule_key in rule_dict:
-                if rule_key in col_error_counts:
-                    col_error_counts[rule_key] += 1
+# ======================================================
+# LOAD WORKBOOK FOR STYLING
+# ======================================================
+wb = load_workbook(OUTPUT_EXCEL)
 
-        # Title — shows base date so the report is self-documenting
-        ws.merge_cells("A1:G1")
-        tc           = ws.cell(
-            row=1, column=1,
-            value=f"HDA – Business Rules Validation Summary  "
-                  f"(Base date: {self.base_date_str})",   # ◄ base_date_str
+if "_placeholder" in wb.sheetnames:
+    del wb["_placeholder"]
+if "Sheet" in wb.sheetnames:
+    del wb["Sheet"]
+
+bold             = Font(bold=True)
+center           = Alignment(horizontal="center")
+thin_side        = Side(style="thin")
+border           = Border(left=thin_side, right=thin_side, top=thin_side, bottom=thin_side)
+title_fill       = PatternFill("solid", fgColor="BDD7EE")
+header_fill      = PatternFill("solid", fgColor="D9E1F2")
+green_fill       = PatternFill("solid", fgColor="E2EFDA")
+total_fill       = PatternFill("solid", fgColor="F2F2F2")
+pale_yellow_fill = PatternFill("solid", fgColor="FFF2CC")
+red_fill         = PatternFill("solid", fgColor="FF0000")
+blue_header_fill = PatternFill("solid", fgColor="BDD7EE")
+
+# ======================================================
+# APPLY STYLING TO ERROR SHEETS
+# Sort by base_sheet name length descending so longer names
+# (e.g. "PLANT_SOLDTOPARTY") match before shorter ones ("PLANT")
+# ======================================================
+all_error_sheet_names = set()
+for error_col, (base_sheet, _) in sorted_error_sheets:
+    for sname in wb.sheetnames:
+        if sname == base_sheet or sname.startswith(base_sheet + "_"):
+            all_error_sheet_names.add(sname)
+
+for sheet_name in all_error_sheet_names:
+    ws = wb[sheet_name]
+
+    matched_base = None
+    for error_col, (base_sheet, _) in sorted_error_sheets:
+        if sheet_name == base_sheet or sheet_name.startswith(base_sheet + "_"):
+            matched_base = base_sheet
+            break
+    if matched_base is None:
+        continue
+
+    highlight_col_idx = None
+    for cell in list(ws.iter_rows(min_row=1, max_row=1))[0]:
+        if cell.value == matched_base:
+            highlight_col_idx = cell.column
+            break
+
+    max_row = ws.max_row
+    max_col = ws.max_column
+
+    for row_idx in range(1, max_row + 1):
+        for col_idx in range(1, max_col + 1):
+            cell = ws.cell(row=row_idx, column=col_idx)
+            if row_idx == 1:
+                cell.fill      = blue_header_fill
+                cell.font      = Font(bold=True)
+                cell.alignment = Alignment(horizontal="center")
+                cell.border    = border
+            else:
+                cell.border = border
+                if highlight_col_idx is not None and col_idx == highlight_col_idx:
+                    cell.fill = red_fill
+                else:
+                    cell.fill = pale_yellow_fill
+
+# ======================================================
+# SUMMARY SHEET
+# ======================================================
+ws = wb.create_sheet("Summary")
+
+ws.merge_cells("A1:G1")
+ws["A1"]           = "HDA Validation Summary"
+ws["A1"].font      = Font(bold=True, size=14)
+ws["A1"].fill      = title_fill
+ws["A1"].alignment = center
+
+ws.append(["#", "Field Name", "Error Count", "Record Count", "% Health", "% of Error", "Reason"])
+for col in range(1, 8):
+    c           = ws.cell(row=2, column=col)
+    c.font      = bold
+    c.fill      = header_fill
+    c.border    = border
+    c.alignment = center
+
+row = 3
+for idx, (field, _, reason) in enumerate(rules, start=1):
+    cnt           = error_counts[field]
+    pct_error     = round((cnt / total_records) * 100, 2) if total_records else 0
+    pct_health    = round(100 - pct_error, 2)
+    display_reason = reason if cnt > 0 else ""
+    ws.append([idx, field, cnt, total_records, f"{pct_health}%", f"{pct_error}%", display_reason])
+    for col in range(1, 8):
+        ws.cell(row=row, column=col).border = border
+    row += 1
+
+total_errors       = sum(error_counts[field] for field, _, _ in rules)
+total_record_count = total_records * len(rules)
+total_pct_error    = round((total_errors / total_record_count) * 100, 2) if total_record_count else 0
+total_pct_health   = round(100 - total_pct_error, 2)
+
+ws.append(["", "TOTAL", total_errors, total_record_count,
+           f"{total_pct_health}%", f"{total_pct_error}%", ""])
+for col in range(1, 8):
+    c        = ws.cell(row=row, column=col)
+    c.font   = bold
+    c.fill   = total_fill
+    c.border = border
+row += 1
+
+row += 1
+for label, value in [
+    ("Total Records",        total_records),
+    ("Records with Errors",  records_with_errors),
+    ("Records Passing",      records_passing),
+]:
+    ws.cell(row=row, column=1).value = label
+    ws.cell(row=row, column=1).font  = bold
+    ws.cell(row=row, column=2).value = value
+    row += 1
+
+# ======================================================
+# RULESETS SHEET
+# ======================================================
+wsr = wb.create_sheet("Rulesets")
+wsr.merge_cells("A1:C1")
+wsr["A1"]           = "HDA – Validation Rules"
+wsr["A1"].font      = Font(bold=True, size=14)
+wsr["A1"].fill      = title_fill
+wsr["A1"].alignment = center
+
+wsr.append(["#", "Field", "Rule Description"])
+for col in range(1, 4):
+    c           = wsr.cell(row=2, column=col)
+    c.font      = bold
+    c.fill      = header_fill
+    c.border    = border
+    c.alignment = center
+
+row = 3
+for idx, (field, _, reason) in enumerate(rules, start=1):
+    wsr.append([idx, field, reason])
+    wsr.cell(row=row, column=2).fill = green_fill
+    for col in range(1, 4):
+        wsr.cell(row=row, column=col).border = border
+    row += 1
+
+# ======================================================
+# AUTOFIT ALL SHEETS
+# ======================================================
+for sheet in wb.sheetnames:
+    wsx = wb[sheet]
+    for col_idx, col_cells in enumerate(wsx.columns, start=1):
+        wsx.column_dimensions[get_column_letter(col_idx)].width = (
+            max(len(str(c.value)) if c.value else 0 for c in col_cells) + 3
         )
-        tc.font      = Font(name="Arial", bold=True, size=14)
-        tc.fill      = TITLE_FILL
-        tc.alignment = Alignment(horizontal="left", vertical="center")
-        ws.row_dimensions[1].height = 26
 
-        # Header row
-        headers = ["#", "Rule / Field Name", "Error Count", "Record Count",
-                   "% Health", "% of Error", "Reason"]
-        for c_idx, h in enumerate(headers, start=1):
-            cell           = ws.cell(row=2, column=c_idx, value=h)
-            cell.fill      = TITLE_FILL
-            cell.font      = Font(name="Arial", bold=True, size=10)
-            cell.border    = THIN_BORDER
-            cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
-        ws.row_dimensions[2].height = 30
-
-        # Data rows
-        row_num = 3
-        for rule_num, rule_key in enumerate(RULES_FIELDS_ORDERED, start=1):
-            count      = col_error_counts.get(rule_key, 0)
-            pct_error  = round((count / total_rows) * 100, 2) if total_rows else 0
-            pct_health = round(100 - pct_error, 2)
-            reason     = REASON_MAP.get(rule_key, "") if count > 0 else ""
-
-            ws.cell(row=row_num, column=1, value=rule_num)
-            ws.cell(row=row_num, column=2, value=rule_key)
-            ws.cell(row=row_num, column=3, value=count)
-            ws.cell(row=row_num, column=4, value=total_rows)
-            ws.cell(row=row_num, column=5, value=f"{pct_health}%")
-            ws.cell(row=row_num, column=6, value=f"{pct_error}%")
-            ws.cell(row=row_num, column=7, value=reason)
-
-            for c in range(1, 8):
-                cell           = ws.cell(row=row_num, column=c)
-                cell.font      = BODY_FONT
-                cell.fill      = WHITE_FILL
-                cell.border    = THIN_BORDER
-                cell.alignment = Alignment(
-                    horizontal="left" if c in (2, 7) else "center",
-                    vertical="center",
-                    wrap_text=(c == 7),
-                )
-            row_num += 1
-
-        # TOTAL row
-        total_errors       = sum(col_error_counts.values())
-        total_record_count = total_rows * len(RULES_FIELDS_ORDERED)
-        total_pct_error    = round((total_errors / total_record_count) * 100, 2) if total_record_count else 0
-        total_pct_health   = round(100 - total_pct_error, 2)
-
-        for c_idx, val in enumerate(
-            ["", "TOTAL", total_errors, total_record_count,
-             f"{total_pct_health}%", f"{total_pct_error}%", ""],
-            start=1,
-        ):
-            cell           = ws.cell(row=row_num, column=c_idx, value=val)
-            cell.font      = Font(name="Arial", bold=True, size=10)
-            cell.fill      = TOTAL_FILL
-            cell.border    = THIN_BORDER
-            cell.alignment = Alignment(horizontal="center", vertical="center")
-
-        row_num += 2
-
-        # Stats block
-        records_with_errors = len(v.error_map)
-        records_passing     = total_rows - records_with_errors
-
-        for label, value in [
-            ("Total Records:",       total_rows),
-            ("Records with Errors:", records_with_errors),
-            ("Records Passing:",     records_passing),
-        ]:
-            ws.merge_cells(start_row=row_num, start_column=1,
-                           end_row=row_num, end_column=2)
-            lc           = ws.cell(row=row_num, column=1, value=label)
-            lc.font      = Font(name="Arial", bold=True, size=10)
-            lc.fill      = STATS_FILL
-            lc.border    = THIN_BORDER
-            lc.alignment = Alignment(horizontal="left", vertical="center")
-
-            vc           = ws.cell(row=row_num, column=3, value=value)
-            vc.font      = BODY_FONT
-            vc.border    = THIN_BORDER
-            vc.alignment = Alignment(horizontal="center", vertical="center")
-            row_num += 1
-
-        col_widths = [6, 38, 14, 16, 12, 12, 75]
-        for c_idx, width in enumerate(col_widths, start=1):
-            ws.column_dimensions[get_column_letter(c_idx)].width = width
-
-    # ── Rules Sheet ───────────────────────────
-    def _write_rules_sheet(self, wb):
-        ws = wb.create_sheet(self.SHEET_RULES)
-
-        ws.merge_cells("A1:C1")
-        tc           = ws.cell(row=1, column=1, value="HDA – Business Validation Rules")
-        tc.font      = Font(name="Arial", bold=True, size=13)
-        tc.fill      = TITLE_FILL
-        tc.alignment = Alignment(horizontal="center", vertical="center")
-        ws.row_dimensions[1].height = 22
-
-        for c_idx, h in enumerate(["#", "Rule / Field Name", "Rule Description"], start=1):
-            cell           = ws.cell(row=3, column=c_idx, value=h)
-            cell.fill      = HDR_FILL
-            cell.font      = HDR_FONT
-            cell.border    = THIN_BORDER
-            cell.alignment = Alignment(horizontal="center", vertical="center")
-
-        current_row = 4
-        for rule_num, (rule_key, rules_list) in enumerate(RULES_CONTENT.items(), start=1):
-            num_rules = len(rules_list)
-
-            for r_idx, rule_text in enumerate(rules_list):
-                nc           = ws.cell(row=current_row, column=1,
-                                       value=rule_num if r_idx == 0 else "")
-                nc.fill      = RULE_FILL
-                nc.font      = Font(name="Arial", size=10, bold=(r_idx == 0))
-                nc.border    = THIN_BORDER
-                nc.alignment = Alignment(horizontal="center", vertical="center")
-
-                fc           = ws.cell(row=current_row, column=2,
-                                       value=rule_key if r_idx == 0 else "")
-                fc.fill      = RULE_FILL
-                fc.font      = Font(name="Arial", size=10, bold=(r_idx == 0))
-                fc.border    = THIN_BORDER
-                fc.alignment = Alignment(horizontal="left", vertical="center",
-                                         wrap_text=True)
-
-                dc           = ws.cell(row=current_row, column=3, value=rule_text)
-                dc.font      = BODY_FONT
-                dc.border    = THIN_BORDER
-                dc.alignment = Alignment(wrap_text=True, vertical="center",
-                                         horizontal="left")
-                current_row += 1
-
-            if num_rules > 1:
-                s = current_row - num_rules
-                e = current_row - 1
-                ws.merge_cells(start_row=s, start_column=1, end_row=e, end_column=1)
-                ws.merge_cells(start_row=s, start_column=2, end_row=e, end_column=2)
-
-        ws.column_dimensions["A"].width = 6
-        ws.column_dimensions["B"].width = 36
-        ws.column_dimensions["C"].width = 70
-
-    # ── Error Sheets ──────────────────────────
-    def _write_error_sheets(self, wb):
-        v = self.validator
-
-        for rule_key in ERROR_SHEET_PRIORITY:
-            row_indices = [
-                idx for idx, rule_dict in v.error_map.items()
-                if rule_key in rule_dict
-            ]
-            if not row_indices:
-                continue
-
-            display_cols = [c for c in ERROR_SHEET_COLS if c in v.df.columns]
-            subset       = v.df.loc[row_indices, display_cols].copy()
-            subset["ERROR_REASON"] = subset.index.map(
-                lambda i: v.error_map.get(i, {}).get(rule_key, {}).get("reason", "")
-            )
-
-            sheet_name  = self._safe_sheet_name(wb, rule_key[:31])
-            ws          = wb.create_sheet(sheet_name)
-            all_cols    = list(subset.columns)
-            col_idx_map = {col: i for i, col in enumerate(all_cols, start=1)}
-
-            self._write_header(ws, all_cols)
-
-            for r_idx, (orig_idx, row_data) in enumerate(subset.iterrows(), start=2):
-                for col, value in zip(all_cols, row_data):
-                    c_idx          = col_idx_map[col]
-                    cell           = ws.cell(row=r_idx, column=c_idx, value=value)
-                    cell.font      = BODY_FONT
-                    cell.border    = THIN_BORDER
-                    cell.alignment = Alignment(
-                        horizontal="center", vertical="center", wrap_text=True
-                    )
-                    cell.fill = ROW_FILL
-
-                if rule_key in col_idx_map:
-                    tc      = ws.cell(row=r_idx, column=col_idx_map[rule_key])
-                    tc.fill = RED_FILL
-                    tc.font = ERR_FONT
-
-            self._auto_width(ws, min_w=10, max_w=60)
-            ws.freeze_panes = "A2"
-
-            note_row = len(row_indices) + 3
-            ws.cell(
-                row=note_row, column=1,
-                value=f"Total error rows for '{rule_key}': {len(row_indices)}",
-            ).font = Font(name="Arial", italic=True, size=9, bold=True)
-
-    # ── Orchestrate ───────────────────────────
-    def write(self):
-        v  = self.validator
-        wb = Workbook()
-
-        if "Sheet" in wb.sheetnames:
-            del wb["Sheet"]
-
-        self._write_summary_sheet(wb)
-        self._write_rules_sheet(wb)
-        self._write_error_sheets(wb)
-
-        wb.save(self.output_path)
-
-        r1 = sum(1 for rd in v.error_map.values() if RULE1_KEY in rd)
-        r2 = sum(1 for rd in v.error_map.values() if RULE2_KEY in rd)
-        r3 = sum(1 for rd in v.error_map.values() if RULE3_KEY in rd)
-
-        print(f"\n✅  Output saved  → {self.output_path}")
-        print(f"   Base date used                          : {self.base_date_str}")
-        print(f"   Total rows                              : {len(v.df)}")
-        print(f"   Rows with any error                     : {len(v.error_map)}")
-        print(f"   TOTAL_BILLINGQUANTITYINBASEUNIT errors   : {r1}")
-        print(f"   BILLING_DATE errors                      : {r2}")
-        print(f"   UNIT_PRICE errors                        : {r3}")
-
-
-# ══════════════════════════════════════════════
-#  Orchestrator
-# ══════════════════════════════════════════════
-class HDAProcessor:
-
-    def __init__(self, input_path: str, output_path: str):
-        self.validator = HDAValidator(input_path)
-        self.writer    = HDAReportWriter(self.validator, output_path)
-
-    def run(self):
-        base_date_str = _resolve_base_date().strftime("%d-%b-%Y")
-        print("📂  Loading HDA file …")
-        self.validator.load()
-        print(f"    Columns detected : {list(self.validator.df.columns)}")
-        print(f"    Base date        : {base_date_str}")   # ◄ shows what date is being used
-        print("🔍  Running business rules …")
-        self.validator.validate()
-        print("📝  Writing report …")
-        self.writer.write()
-
-
-# ══════════════════════════════════════════════
-#  ENTRY POINT
-# ══════════════════════════════════════════════
-if __name__ == "__main__":
-    processor = HDAProcessor(INPUT_FILE, OUTPUT_FILE)
-    processor.run()
+wb.save(OUTPUT_EXCEL)
+print(f"✅ ALL FEATURES INCLUDED — script completed successfully → {OUTPUT_EXCEL}")
