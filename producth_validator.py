@@ -13,10 +13,10 @@ import os
 
 
 # ─────────────────────────────────────────────
-#  FILE PATHS
+#  FILE PATHS  –  update these
 # ─────────────────────────────────────────────
-INPUT_FILE  = r"C:\Users\SW526XH\Downloads\Go Live-1\ProductH\Product Hierarchy_2026-05-14-1817.tab"
-OUTPUT_FILE = r"C:\Users\SW526XH\Downloads\Go Live-1\ProductH\Validated_Product Hierarchy_Technical2.xlsx"
+INPUT_FILE  = r"C:\Users\SW526XH\Downloads\Go Live-1\ProductH\Product Hierarchy_2026-05-20-1552.tab"
+OUTPUT_FILE = r"C:\Users\SW526XH\Downloads\Go Live-1\ProductH\Validated_Product Hierarchy_Technical.xlsx"
 
 # ─────────────────────────────────────────────
 #  CONSTANTS & CONFIGURATION
@@ -25,24 +25,18 @@ OUTPUT_FILE = r"C:\Users\SW526XH\Downloads\Go Live-1\ProductH\Validated_Product 
 VALID_MATERIAL_TYPES = {"FERT", "HAWA"}
 VALID_IBP_STATUSES   = {"IBP", ""}
 
-# Fields that must not be blank for FERT/HAWA material types
 NOT_BLANK_FIELDS = [
-    "PRODUCTGROUP",          "MATLGRPDESC",
-    "DIVISION",              "DIVISIONDESCRIPTION",
-    "CATEGORY",              "CATEGORYDESCRIPTION",
-    "PRODUCT",               "PRODUCTDESCRIPTION",
-    "VARIANT",               "VARIANTDESCRIPTION",
-    "BRAND",                 "BRANDDESCRIPTION",
-    "SUBBRAND",              "SUBBRANDDESCRIPTION",
-    "BRANDVARIANT",          "BRANDVARIANTDESCRIPTION",
-    "PACKSIZE",              "PACKSIZEDESCRIPTION",
-    "MARKETSKU",             "MARKETSKUDESCRIPTION",
+    "MATERIALNUMBER", "MATERIALDESCRIPTION", "PRODUCTGROUP", "MATLGRPDESC",
+    "DIVISION", "DIVISIONDESCRIPTION", "PRODUCTTYPE", "PRODUCT_HIERARCHY_KEY",
+    "CATEGORY", "CATEGORYDESCRIPTION", "PRODUCT", "PRODUCTDESCRIPTION",
+    "VARIANT", "VARIANTDESCRIPTION", "BRAND", "BRANDDESCRIPTION",
+    "SUBBRAND", "SUBBRANDDESCRIPTION", "BRANDVARIANT", "BRANDVARIANTDESCRIPTION",
+    "PACKSIZE", "PACKSIZEDESCRIPTION", "MARKETSKU", "MARKETSKUDESCRIPTION",
     "SUPPLY_FAMILY",
-    "NETWEIGHT",             "WEIGHTUNIT",
-    "LENGTH",                "WIDTH",                 "HEIGHT",
 ]
 
-# All fields that appear in the Summary sheet (order matters)
+# Defines ALL fields that appear in the Summary (order matters).
+# MATERIALTYPE and IBPSTATUS are appended after the 25 NOT_BLANK_FIELDS.
 ALL_SUMMARY_FIELDS = NOT_BLANK_FIELDS + ["MATERIALTYPE", "IBPSTATUS"]
 
 RULES_CONTENT = {
@@ -57,23 +51,24 @@ RULES_CONTENT = {
     ],
 }
 
+# Centralised reason messages (matches what the Summary Reason column shows)
 FIELD_REASON_MAP = {
     **{f: f"{f}: is blank for FERT/HAWA material types." for f in NOT_BLANK_FIELDS},
-    "MATERIALTYPE": "MATERIALTYPE: is blank or not FERT/HAWA.",
+    "MATERIALTYPE": "MATERIALTYPE: is blank for FERT/HAWA material types",
     "IBPSTATUS":    "IBPSTATUS: Invalid value – must be 'IBP' or blank.",
 }
 
 # ─────────────────────────────────────────────
 #  Colours
 # ─────────────────────────────────────────────
-RED_FILL       = PatternFill("solid", fgColor="FF0000")
-ROW_ERROR_FILL = PatternFill("solid", fgColor="FFF2CC")
-HDR_FILL       = PatternFill("solid", fgColor="D9E1F2")
-RULE_FILL      = PatternFill("solid", fgColor="E2EFDA")
-TITLE_FILL     = PatternFill("solid", fgColor="BDD7EE")
-WHITE_FILL     = PatternFill("solid", fgColor="FFFFFF")
-TOTAL_FILL     = PatternFill("solid", fgColor="F2F2F2")
-STATS_FILL     = PatternFill("solid", fgColor="EDEDED")
+RED_FILL       = PatternFill("solid", start_color="FF0000", end_color="FF0000")
+ROW_ERROR_FILL = PatternFill("solid", start_color="FFF2CC", end_color="FFF2CC")
+HDR_FILL       = PatternFill("solid", start_color="D9E1F2", end_color="D9E1F2")
+RULE_FILL      = PatternFill("solid", start_color="E2EFDA", end_color="E2EFDA")
+TITLE_FILL     = PatternFill("solid", start_color="BDD7EE", end_color="BDD7EE")
+WHITE_FILL     = PatternFill("solid", start_color="FFFFFF", end_color="FFFFFF")
+TOTAL_FILL     = PatternFill("solid", start_color="F2F2F2", end_color="F2F2F2")
+STATS_FILL     = PatternFill("solid", start_color="EDEDED", end_color="EDEDED")
 
 HDR_FONT    = Font(bold=True, name="Arial")
 BODY_FONT   = Font(name="Arial", size=10)
@@ -130,7 +125,8 @@ class NotBlankValidator(FieldValidator):
         mat_type = str(row.get("MATERIALTYPE", "")).strip().upper()
         if mat_type not in VALID_MATERIAL_TYPES:
             return None
-        if is_blank(row.get(self.field)):
+        value = row.get(self.field)
+        if is_blank(value):
             return FIELD_REASON_MAP.get(self.field, f"{self.field}: is blank for FERT/HAWA material types.")
         return None
 
@@ -146,8 +142,8 @@ class MaterialTypeValidator(FieldValidator):
 class IBPStatusValidator(FieldValidator):
     def validate(self, row: pd.Series) -> Optional[str]:
         raw   = row.get("IBPSTATUS", "")
-        value = "" if is_blank(raw) else str(raw).strip().upper()
-        if value not in {"IBP", ""}:
+        value = "" if is_blank(raw) else str(raw).strip()
+        if value not in VALID_IBP_STATUSES and value.upper() not in VALID_IBP_STATUSES:
             return FIELD_REASON_MAP["IBPSTATUS"]
         return None
 
@@ -173,16 +169,17 @@ class ProductHierarchyValidator:
     def validate_row(self, row: pd.Series) -> list[str]:
         errors = []
         for v in self.validators:
-            result = v.validate(row)
-            if result:
-                errors.append(result)
+            if v.field in row.index or v.field in ("MATERIALTYPE", "IBPSTATUS"):
+                result = v.validate(row)
+                if result:
+                    errors.append(result)
         return errors
 
     def validate_dataframe(self, df: pd.DataFrame) -> pd.DataFrame:
-        df         = df.copy()
+        df = df.copy()
         df.columns = df.columns.str.strip().str.upper()
 
-        # Keep only FERT and HAWA rows — entire analysis is scoped to these types
+        # FILTER: Keep only FERT and HAWA
         df["MATERIALTYPE"] = df["MATERIALTYPE"].str.strip().str.upper()
         df = df[df["MATERIALTYPE"].isin(VALID_MATERIAL_TYPES)].copy()
 
@@ -236,7 +233,7 @@ class ExcelReportBuilder:
         self.wb.save(self.output)
         print(f"\n✅  Report saved → {self.output}")
 
-    # ── Sheet 1: PRODUCTHIERARCHY_FG ─────────────────────
+    # ── Sheet 1: PRODUCTHIERARCHY_FG ────────────────────
 
     def _write_main_sheet(self):
         ws         = self.wb.create_sheet("PRODUCTHIERARCHY_FG")
@@ -268,7 +265,7 @@ class ExcelReportBuilder:
         auto_width(ws)
         ws.row_dimensions[1].height = 30
 
-    # ── Sheet 2: Summary ──────────────────────────────────
+    # ── Sheet 2: Summary ─────────────────────────────────
 
     def _write_summary_sheet(self):
         ws = self.wb.create_sheet("Summary")
@@ -277,12 +274,13 @@ class ExcelReportBuilder:
         records_with_errors = len(self.error_df)
         records_passing     = total_rows - records_with_errors
 
+        # Build per-field error counts from validated data
         field_counts: dict[str, int] = defaultdict(int)
         for fields_set in self.error_fields:
             for f in fields_set:
                 field_counts[f] += 1
 
-        # Title
+        # ── Title ──
         ws.merge_cells("A1:G1")
         title_cell           = ws.cell(row=1, column=1, value="ProductHierarchy FG Validation Summary")
         title_cell.font      = Font(name="Arial", bold=True, size=14)
@@ -290,7 +288,7 @@ class ExcelReportBuilder:
         title_cell.alignment = Alignment(horizontal="center", vertical="center")
         ws.row_dimensions[1].height = 24
 
-        # Column headers
+        # ── Column headers ──
         headers = ["#", "Field Name", "Error Count", "Record Count", "% Health", "% of Error", "Reason"]
         for c_idx, h in enumerate(headers, start=1):
             cell           = ws.cell(row=2, column=c_idx, value=h)
@@ -299,13 +297,19 @@ class ExcelReportBuilder:
             cell.border    = THIN_BORDER
             cell.alignment = Alignment(horizontal="center", vertical="center")
 
-        # Per-field data rows
+        # ── Per-field data rows: ALL 27 fields always written ──
         row_num = 3
         for field_num, col_name in enumerate(ALL_SUMMARY_FIELDS, start=1):
             count      = field_counts.get(col_name, 0)
             pct_error  = round((count / total_rows) * 100, 2) if total_rows else 0
             pct_health = round(100 - pct_error, 2)
-            reason     = FIELD_REASON_MAP.get(col_name, f"{col_name}: is blank for FERT/HAWA material types.") if count > 0 else ""
+
+            # Reason only populated when this field has actual errors
+            reason = (
+                FIELD_REASON_MAP.get(col_name, f"{col_name}: is blank for FERT/HAWA material types.")
+                if count > 0
+                else ""
+            )
 
             ws.cell(row=row_num, column=1, value=field_num)
             ws.cell(row=row_num, column=2, value=col_name)
@@ -316,9 +320,9 @@ class ExcelReportBuilder:
             ws.cell(row=row_num, column=7, value=reason)
 
             for c in range(1, 8):
-                cell           = ws.cell(row=row_num, column=c)
-                cell.font      = BODY_FONT
-                cell.border    = THIN_BORDER
+                cell        = ws.cell(row=row_num, column=c)
+                cell.font   = BODY_FONT
+                cell.border = THIN_BORDER
                 cell.alignment = (
                     Alignment(horizontal="left", vertical="center", wrap_text=True)
                     if c == 7
@@ -327,7 +331,7 @@ class ExcelReportBuilder:
 
             row_num += 1
 
-        # TOTAL row
+        # ── TOTAL row ──
         total_errors       = sum(field_counts.values())
         total_record_count = total_rows * len(ALL_SUMMARY_FIELDS)
         total_pct_error    = round((total_errors / total_record_count) * 100, 2) if total_record_count else 0
@@ -346,7 +350,7 @@ class ExcelReportBuilder:
 
         row_num += 2
 
-        # Stats block
+        # ── Stats block ──
         for label, value in [
             ("Total Records:",       total_rows),
             ("Records with Errors:", records_with_errors),
@@ -368,7 +372,7 @@ class ExcelReportBuilder:
 
         auto_width(ws, min_w=8, max_w=70)
 
-    # ── Sheet 3: Rule_Set ─────────────────────────────────
+    # ── Sheet 3: Rule_Set ────────────────────────────────
 
     def _write_ruleset_sheet(self):
         ws = self.wb.create_sheet("Rule_Set")
@@ -425,7 +429,7 @@ class ExcelReportBuilder:
         ws.column_dimensions["B"].width = 30
         ws.column_dimensions["C"].width = 65
 
-    # ── Per-field error sheets ────────────────────────────
+    # ── Per-field error sheets ───────────────────────────
 
     def _write_per_field_error_sheets(self):
         if self.error_df.empty:
@@ -447,9 +451,9 @@ class ExcelReportBuilder:
                 sheet_name = f"{base_name[:28]}_{counter}"
                 counter   += 1
 
-            ws     = self.wb.create_sheet(sheet_name)
-            subset = self.df.loc[row_indices, display_cols].copy()
+            ws = self.wb.create_sheet(sheet_name)
 
+            subset = self.df.loc[row_indices, display_cols].copy()
             subset["ERROR_COLUMNS"] = FIELD_REASON_MAP.get(
                 field, f"{field}: is blank for FERT/HAWA material types."
             )
@@ -503,7 +507,6 @@ class ValidationPipeline:
 
         error_count = (df_validated["ERROR_COLUMNS"] != "").sum()
         print(f"⚠️   Errors found in {error_count} row(s)")
-        print(f"    Total rows after FERT/HAWA filter : {len(df_validated)}")
 
         print("📝  Building Excel report …")
         builder = ExcelReportBuilder(df_validated, self.output_path)
