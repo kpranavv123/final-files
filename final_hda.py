@@ -57,19 +57,28 @@ site_df.columns = site_df.columns.str.strip().str.upper()
 site_set = set(site_df["PLANT"].dropna().str.strip())
 
 # ======================================================
-# Validation rules
-# (chunk processing removed — full file loaded at once
-#  to enable accurate duplicate detection across all rows)
+# Validation rules — ORDER HERE drives Summary, Rulesets,
+# and the error-column block in every error sheet.
 # ======================================================
 rules = [
-     ("MATERIAL_PLANT",    "ERROR_MATERIAL_PLANT",     "Material-Plant combination not present in the Part master."),
-    ("Plant",             "ERROR_PLANT",             "Plant is not present in site master."),
-    ("PLANT_SOLDTOPARTY", "ERROR_PLANT_SOLDTOPARTY",  "Plant-Soldtoparty combination is not present in customer master."),
-    ("BILLING_DATE",      "ERROR_BILLING_DATE",       "Must not be blank and must be in YYYYMMDD format."),
-    ("DUPLICATE_CHECK",   "ERROR_DUPLICATE",          "Duplicate record: MATERIAL-PLANT-SOLDTOPARTY-BILLINGDATE combination already exists."),
+    ("MATERIAL_PLANT",    "ERROR_MATERIAL_PLANT",    "Material-Plant combination not present in the Part master."),
+    ("PLANT",             "ERROR_PLANT",             "Plant is not present in site master."),
+    ("PLANT_SOLDTOPARTY", "ERROR_PLANT_SOLDTOPARTY", "Plant-Soldtoparty combination is not present in customer master."),
+    ("BILLING_DATE",      "ERROR_BILLING_DATE",      "Must not be blank and must be in YYYYMMDD format."),
+    ("DUPLICATE_CHECK",   "ERROR_DUPLICATE",         "Duplicate record: MATERIAL-PLANT-SOLDTOPARTY-BILLINGDATE combination already exists."),
 ]
 
-ERROR_MESSAGES = {col: reason for field, col, reason in rules}
+# ── Canonical column order for every error sheet ──────────────────────────
+# Data (key) columns first, then error-flag columns in the same sequence.
+DATA_COLS_ORDER  = [field for field, _, _ in rules]          # 5 data cols
+ERROR_COLS_ORDER = [col   for _, col, _ in rules]            # 5 error cols
+ERROR_SHEET_COL_ORDER = DATA_COLS_ORDER + ERROR_COLS_ORDER
+# Result:
+#   MATERIAL_PLANT, PLANT, PLANT_SOLDTOPARTY, BILLING_DATE, DUPLICATE_CHECK,
+#   ERROR_MATERIAL_PLANT, ERROR_PLANT, ERROR_PLANT_SOLDTOPARTY,
+#   ERROR_BILLING_DATE, ERROR_DUPLICATE
+
+ERROR_MESSAGES = {col: reason for _, col, reason in rules}
 
 ERROR_SHEETS = {
     "ERROR_MATERIAL_PLANT":    ("MATERIAL_PLANT",    ERROR_MESSAGES["ERROR_MATERIAL_PLANT"]),
@@ -82,23 +91,28 @@ ERROR_SHEETS = {
 # ======================================================
 # Constants
 # ======================================================
-EXCEL_MAX_ROWS  = 1_048_576
-date_pattern    = re.compile(r"^\d{8}$|^\d{4}-\d{2}-\d{2}$")
-
-# Duplicate key columns
+EXCEL_MAX_ROWS     = 1_048_576
+date_pattern       = re.compile(r"^\d{8}$|^\d{4}-\d{2}-\d{2}$")
 DUPLICATE_KEY_COLS = ["MATERIAL", "PLANT", "SOLDTOPARTY", "BILLING_DATE"]
+
+# Sort once — longer base-sheet names matched before shorter ones
+sorted_error_sheets = sorted(
+    ERROR_SHEETS.items(),
+    key=lambda x: len(x[1][0]),
+    reverse=True,
+)
 
 sheet_tracker = {
     sheet: {"sheet_no": 1, "current_row": 0}
     for sheet, _ in ERROR_SHEETS.values()
 }
 
-error_counts      = {field: 0 for field, _, _ in rules}
-total_records     = 0
+error_counts        = {field: 0 for field, _, _ in rules}
+total_records       = 0
 records_with_errors = 0
 
 # ======================================================
-# LOAD FULL HDA FILE (no chunking — required for duplicate detection)
+# LOAD FULL HDA FILE
 # ======================================================
 print("📂 Loading full HDA file for validation...")
 hda_df = pd.read_csv(HDA_FILE, sep="\t", dtype=str)
@@ -123,6 +137,9 @@ if "PLANT_SOLDTOPARTY" not in hda_df.columns:
         hda_df["SOLDTOPARTY"].astype(str).str.strip()
     )
 
+# DUPLICATE_CHECK column (needed as a data column in the output)
+hda_df["DUPLICATE_CHECK"] = ""   # filled after duplicate detection below
+
 # ======================================================
 # RUN VALIDATION CHECKS
 # ======================================================
@@ -141,14 +158,16 @@ hda_df["ERROR_BILLING_DATE"] = hda_df["BILLING_DATE"].apply(
     lambda x: "Yes" if pd.isna(x) or not date_pattern.match(str(x)) else ""
 )
 
-
-# Duplicate check: flag ALL occurrences of duplicate key combinations
-# (MATERIAL + PLANT + SOLDTOPARTY + BILLING_DATE)
+# Duplicate check — flag ALL occurrences
 available_dup_cols = [c for c in DUPLICATE_KEY_COLS if c in hda_df.columns]
 if len(available_dup_cols) == len(DUPLICATE_KEY_COLS):
-    hda_df["ERROR_DUPLICATE"] = hda_df.duplicated(
-        subset=available_dup_cols, keep=False
-    ).map({True: "Yes", False: ""})
+    dup_mask = hda_df.duplicated(subset=available_dup_cols, keep=False)
+    hda_df["ERROR_DUPLICATE"]  = dup_mask.map({True: "Yes", False: ""})
+    # Populate DUPLICATE_CHECK display column for flagged rows
+    hda_df.loc[dup_mask, "DUPLICATE_CHECK"] = (
+        hda_df.loc[dup_mask, available_dup_cols]
+        .apply(lambda r: "_".join(r.values.astype(str)), axis=1)
+    )
 else:
     missing = set(DUPLICATE_KEY_COLS) - set(available_dup_cols)
     print(f"⚠️  Warning: Duplicate check skipped — missing columns: {missing}")
@@ -168,14 +187,13 @@ records_passing     = total_records - records_with_errors
 
 # ======================================================
 # WRITE ERROR SHEETS TO EXCEL
+# The columns written to every sheet follow ERROR_SHEET_COL_ORDER.
+# Any column in the order list that doesn't exist in hda_df is silently skipped.
 # ======================================================
 print("📝 Writing error data to Excel...")
 
-sorted_error_sheets = sorted(
-    ERROR_SHEETS.items(),
-    key=lambda x: len(x[1][0]),
-    reverse=True
-)
+# Build the final ordered column list (only columns that exist in hda_df)
+available_ordered_cols = [c for c in ERROR_SHEET_COL_ORDER if c in hda_df.columns]
 
 with pd.ExcelWriter(OUTPUT_EXCEL, engine="openpyxl") as writer:
     pd.DataFrame({"_": ["placeholder"]}).to_excel(
@@ -187,7 +205,10 @@ with pd.ExcelWriter(OUTPUT_EXCEL, engine="openpyxl") as writer:
         if error_rows.empty:
             continue
 
-        error_rows["ERROR_COLUMNS"] = error_msg
+        # Reorder columns to the canonical order
+        write_cols = [c for c in available_ordered_cols if c in error_rows.columns]
+        error_rows = error_rows[write_cols]
+
         tracker = sheet_tracker[base_sheet]
         start   = 0
 
@@ -238,8 +259,6 @@ blue_header_fill = PatternFill("solid", fgColor="BDD7EE")
 
 # ======================================================
 # APPLY STYLING TO ERROR SHEETS
-# Sort by base_sheet name length descending so longer names
-# (e.g. "PLANT_SOLDTOPARTY") match before shorter ones ("PLANT")
 # ======================================================
 all_error_sheet_names = set()
 for error_col, (base_sheet, _) in sorted_error_sheets:
@@ -250,6 +269,7 @@ for error_col, (base_sheet, _) in sorted_error_sheets:
 for sheet_name in all_error_sheet_names:
     ws = wb[sheet_name]
 
+    # Identify which base sheet this belongs to
     matched_base = None
     for error_col, (base_sheet, _) in sorted_error_sheets:
         if sheet_name == base_sheet or sheet_name.startswith(base_sheet + "_"):
@@ -258,6 +278,7 @@ for sheet_name in all_error_sheet_names:
     if matched_base is None:
         continue
 
+    # Find the data column to highlight red (the field being validated)
     highlight_col_idx = None
     for cell in list(ws.iter_rows(min_row=1, max_row=1))[0]:
         if cell.value == matched_base:
@@ -284,6 +305,7 @@ for sheet_name in all_error_sheet_names:
 
 # ======================================================
 # SUMMARY SHEET
+# Rows follow the same order as `rules` — which is DATA_COLS_ORDER.
 # ======================================================
 ws = wb.create_sheet("Summary")
 
@@ -303,9 +325,9 @@ for col in range(1, 8):
 
 row = 3
 for idx, (field, _, reason) in enumerate(rules, start=1):
-    cnt           = error_counts[field]
-    pct_error     = round((cnt / total_records) * 100, 2) if total_records else 0
-    pct_health    = round(100 - pct_error, 2)
+    cnt            = error_counts[field]
+    pct_error      = round((cnt / total_records) * 100, 2) if total_records else 0
+    pct_health     = round(100 - pct_error, 2)
     display_reason = reason if cnt > 0 else ""
     ws.append([idx, field, cnt, total_records, f"{pct_health}%", f"{pct_error}%", display_reason])
     for col in range(1, 8):
@@ -327,6 +349,7 @@ for col in range(1, 8):
 row += 1
 
 row += 1
+stats_fill = PatternFill("solid", fgColor="EDEDED")
 for label, value in [
     ("Total Records",        total_records),
     ("Records with Errors",  records_with_errors),
@@ -334,11 +357,14 @@ for label, value in [
 ]:
     ws.cell(row=row, column=1).value = label
     ws.cell(row=row, column=1).font  = bold
+    ws.cell(row=row, column=1).fill  = stats_fill
     ws.cell(row=row, column=2).value = value
+    ws.cell(row=row, column=2).fill  = stats_fill
     row += 1
 
 # ======================================================
 # RULESETS SHEET
+# Rows follow the same order as `rules` — which is DATA_COLS_ORDER.
 # ======================================================
 wsr = wb.create_sheet("Rulesets")
 wsr.merge_cells("A1:C1")
@@ -372,6 +398,15 @@ for sheet in wb.sheetnames:
         wsx.column_dimensions[get_column_letter(col_idx)].width = (
             max(len(str(c.value)) if c.value else 0 for c in col_cells) + 3
         )
+
+# ======================================================
+# SHEET ORDER: Summary → Rulesets → error sheets
+# ======================================================
+desired_order = ["Summary", "Rulesets"] + [
+    sname for sname in wb.sheetnames
+    if sname not in ("Summary", "Rulesets")
+]
+wb._sheets = [wb[s] for s in desired_order if s in wb.sheetnames]
 
 wb.save(OUTPUT_EXCEL)
 print(f"✅ ALL FEATURES INCLUDED — script completed successfully → {OUTPUT_EXCEL}")
