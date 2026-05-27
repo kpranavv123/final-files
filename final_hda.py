@@ -7,8 +7,8 @@ from openpyxl.utils import get_column_letter
 # ======================================================
 # File paths
 # ======================================================
-HDA_FILE         = r"C:\Users\SW526XH\Downloads\Go Live-1\HDA\HDA_2026-05-20-2012.tab"
-SUMMARY_HDA_FILE = r"C:\Users\SW526XH\Downloads\Go Live-1\HDA\HDA_Validated2.tab"
+HDA_FILE         = r"C:\Users\SW526XH\Downloads\Go Live-1\HDA\BillingDocument(HDA)_2026-05-22-1152.tab"
+SUMMARY_HDA_FILE = r"C:\Users\SW526XH\Downloads\Go Live-1\HDA\HDA_Validated.tab"
 
 PART_FILE     = r"C:\Users\SW526XH\Downloads\Go Live-1\Part\Part_Site_2026-05-21-1510.tab"
 CUSTOMER_FILE = r"C:\Users\SW526XH\Downloads\Go Live-1\Customer\Cutomer_2026-05-20-1205.tab"
@@ -62,20 +62,20 @@ site_set = set(site_df["PLANT"].dropna().str.strip())
 #  to enable accurate duplicate detection across all rows)
 # ======================================================
 rules = [
+     ("MATERIAL_PLANT",    "ERROR_MATERIAL_PLANT",     "Material-Plant combination not present in the Part master."),
     ("Plant",             "ERROR_PLANT",             "Plant is not present in site master."),
-    ("BILLING_DATE",      "ERROR_BILLING_DATE",       "Must not be blank and must be in YYYYMMDD format."),
-    ("MATERIAL_PLANT",    "ERROR_MATERIAL_PLANT",     "Material-Plant combination not present in the Part master."),
     ("PLANT_SOLDTOPARTY", "ERROR_PLANT_SOLDTOPARTY",  "Plant-Soldtoparty combination is not present in customer master."),
+    ("BILLING_DATE",      "ERROR_BILLING_DATE",       "Must not be blank and must be in YYYYMMDD format."),
     ("DUPLICATE_CHECK",   "ERROR_DUPLICATE",          "Duplicate record: MATERIAL-PLANT-SOLDTOPARTY-BILLINGDATE combination already exists."),
 ]
 
 ERROR_MESSAGES = {col: reason for field, col, reason in rules}
 
 ERROR_SHEETS = {
-    "ERROR_PLANT":             ("PLANT",             ERROR_MESSAGES["ERROR_PLANT"]),
-    "ERROR_BILLING_DATE":      ("BILLING_DATE",      ERROR_MESSAGES["ERROR_BILLING_DATE"]),
     "ERROR_MATERIAL_PLANT":    ("MATERIAL_PLANT",    ERROR_MESSAGES["ERROR_MATERIAL_PLANT"]),
+    "ERROR_PLANT":             ("PLANT",             ERROR_MESSAGES["ERROR_PLANT"]),
     "ERROR_PLANT_SOLDTOPARTY": ("PLANT_SOLDTOPARTY", ERROR_MESSAGES["ERROR_PLANT_SOLDTOPARTY"]),
+    "ERROR_BILLING_DATE":      ("BILLING_DATE",      ERROR_MESSAGES["ERROR_BILLING_DATE"]),
     "ERROR_DUPLICATE":         ("DUPLICATE_CHECK",   ERROR_MESSAGES["ERROR_DUPLICATE"]),
 }
 
@@ -128,21 +128,19 @@ if "PLANT_SOLDTOPARTY" not in hda_df.columns:
 # ======================================================
 print("🔍 Running validation checks...")
 
+hda_df["ERROR_MATERIAL_PLANT"] = hda_df["MATERIAL_PLANT"].apply(
+    lambda x: "Yes" if pd.isna(x) or x not in part_set else ""
+)
 hda_df["ERROR_PLANT"] = hda_df["PLANT"].apply(
     lambda x: "Yes" if pd.isna(x) or x not in site_set else ""
 )
-
+hda_df["ERROR_PLANT_SOLDTOPARTY"] = hda_df["PLANT_SOLDTOPARTY"].apply(
+    lambda x: "Yes" if pd.isna(x) or x not in customer_set else ""
+)
 hda_df["ERROR_BILLING_DATE"] = hda_df["BILLING_DATE"].apply(
     lambda x: "Yes" if pd.isna(x) or not date_pattern.match(str(x)) else ""
 )
 
-hda_df["ERROR_MATERIAL_PLANT"] = hda_df["MATERIAL_PLANT"].apply(
-    lambda x: "Yes" if pd.isna(x) or x not in part_set else ""
-)
-
-hda_df["ERROR_PLANT_SOLDTOPARTY"] = hda_df["PLANT_SOLDTOPARTY"].apply(
-    lambda x: "Yes" if pd.isna(x) or x not in customer_set else ""
-)
 
 # Duplicate check: flag ALL occurrences of duplicate key combinations
 # (MATERIAL + PLANT + SOLDTOPARTY + BILLING_DATE)
