@@ -1,30 +1,3 @@
-#updated
-# CUSTOMER
-# CUSTOMERNAME
-# SUPPLYINGPLANT
-# CUSTOMERGROUP
-# CUSTOMERGROUPNAME
-# ADDITIONALCUSTOMERGROUP1
-# ADDITIONALCUSTOMERGROUP1NAME
-# COUNTRY
-# COUNTRYNAME
-# DISTRIBUTIONCHANNEL
-# L1_GLOBAL_CHANNEL_CODE
-# L1_GLOBAL_CHANNEL_DESC
-# CHANNEL
-# CHANNELDESC
-# SUB_CHANNEL_CODE_JDA_REPORTING
-# SUB_CHANNEL_DESC_JDA_REPORTING
-# REGION_CODE
-# REGION_NAME
-# AREA_CODE
-# AREA_NAME
-# CLUSTER
-# CLUSTER_NAME
-# SALESHIERARCHY
-# STATE_CODE
-# STATE_NAME
-
 import pandas as pd
 from openpyxl import Workbook
 from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
@@ -61,20 +34,62 @@ THIN_BORDER = Border(
 
 
 # ══════════════════════════════════════════════
+#  FIELD ORDER — single source of truth
+#  Used by Summary, Rulesets, and Error sheets.
+# ══════════════════════════════════════════════
+FIELD_ORDER = [
+    "CUSTOMER",
+    "CUSTOMERNAME",
+    "SUPPLYINGPLANT",
+    "CUSTOMERGROUP",
+    "CUSTOMERGROUPNAME",
+    "ADDITIONALCUSTOMERGROUP1",
+    "ADDITIONALCUSTOMERGROUP1NAME",
+    "COUNTRY",
+    "COUNTRYNAME",
+    "DISTRIBUTIONCHANNEL",
+    "L1_GLOBAL_CHANNEL_CODE",
+    "L1_GLOBAL_CHANNEL_DESC",
+    "CHANNEL",
+    "CHANNELDESC",
+    "SUB_CHANNEL_CODE_JDA_REPORTING",
+    "SUB_CHANNEL_DESC_JDA_REPORTING",
+    "REGION_CODE",
+    "REGION_NAME",
+    "AREA_CODE",
+    "AREA_NAME",
+    "CLUSTER",
+    "CLUSTER_NAME",
+    "SALESHIERARCHY",
+    "STATE_CODE",
+    "STATE_NAME",
+    "DUPLICATE_CHECK",   # always last
+]
+
+
+# ══════════════════════════════════════════════
 #  Technical Ruleset Info
 # ══════════════════════════════════════════════
 SUMMARY_RULESET_INFO = {
+    # Only the "is blank" sub-rule is active for CUSTOMER.
+    # The "not found in HDA / IndependentDemand" sub-rule is intentionally
+    # commented out below — remove the comment markers to re-enable it.
     "CUSTOMER": [
         "CUSTOMER is blank",
-        "CUSTOMER not found in either HDA or IndependentDemand",
+        # "CUSTOMER not found in either HDA or IndependentDemand",  # ← disabled
     ],
+    "CUSTOMERNAME":                   ["CUSTOMERNAME is blank"],
     "SUPPLYINGPLANT": [
         "SUPPLYINGPLANT is blank",
         "SUPPLYINGPLANT not found in Site master",
     ],
-    "AREA_CODE":                      ["AREA_CODE is blank"],
-    "AREA_NAME":                      ["AREA_NAME is blank"],
-    "SALESHIERARCHY":                 ["SALESHIERARCHY is blank"],
+    "CUSTOMERGROUP":                  ["CUSTOMERGROUP is blank"],
+    "CUSTOMERGROUPNAME":              ["CUSTOMERGROUPNAME is blank"],
+    "ADDITIONALCUSTOMERGROUP1":       ["ADDITIONALCUSTOMERGROUP1 is blank"],
+    "ADDITIONALCUSTOMERGROUP1NAME":   ["ADDITIONALCUSTOMERGROUP1NAME is blank"],
+    "COUNTRY":                        ["COUNTRY is blank"],
+    "COUNTRYNAME":                    ["COUNTRYNAME is blank"],
+    "DISTRIBUTIONCHANNEL":            ["DISTRIBUTIONCHANNEL is blank"],
     "L1_GLOBAL_CHANNEL_CODE":         ["L1_GLOBAL_CHANNEL_CODE is blank"],
     "L1_GLOBAL_CHANNEL_DESC":         ["L1_GLOBAL_CHANNEL_DESC is blank"],
     "CHANNEL":                        ["CHANNEL is blank"],
@@ -83,23 +98,15 @@ SUMMARY_RULESET_INFO = {
     "SUB_CHANNEL_DESC_JDA_REPORTING": ["SUB_CHANNEL_DESC_JDA_REPORTING is blank"],
     "REGION_CODE":                    ["REGION_CODE is blank"],
     "REGION_NAME":                    ["REGION_NAME is blank"],
+    "AREA_CODE":                      ["AREA_CODE is blank"],
+    "AREA_NAME":                      ["AREA_NAME is blank"],
     "CLUSTER":                        ["CLUSTER is blank"],
     "CLUSTER_NAME":                   ["CLUSTER_NAME is blank"],
+    "SALESHIERARCHY":                 ["SALESHIERARCHY is blank"],
     "STATE_CODE":                     ["STATE_CODE is blank"],
     "STATE_NAME":                     ["STATE_NAME is blank"],
-    "ADDITIONALCUSTOMERGROUP1":       ["ADDITIONALCUSTOMERGROUP1 is blank"],
-    "ADDITIONALCUSTOMERGROUP1NAME":   ["ADDITIONALCUSTOMERGROUP1NAME is blank"],
-    "COUNTRY":                        ["COUNTRY is blank"],
-    "CUSTOMERGROUP":                  ["CUSTOMERGROUP is blank"],
-    "CUSTOMERGROUPNAME":              ["CUSTOMERGROUPNAME is blank"],
-    "CUSTOMERNAME":                   ["CUSTOMERNAME is blank"],
-    "COUNTRYNAME":                    ["COUNTRYNAME is blank"],
-    "DIVISION":                       ["DIVISION is blank"],
-    "DIVISIONDESC":                   ["DIVISIONDESC is blank"],
-    "DISTRIBUTIONCHANNEL":            ["DISTRIBUTIONCHANNEL is blank"],
-    # ── NEW ──
     "DUPLICATE_CHECK": [
-        "Duplicate row: CUSTOMER + SUPPLYINGPLANT combination appears more than once in the extract",
+        "Duplicate row: CUSTOMER + SUPPLYINGPLANT + DISTRIBUTIONCHANNEL combination appears more than once in the extract",
     ],
 }
 
@@ -110,11 +117,12 @@ SUMMARY_RULESET_INFO = {
 class CustomerRuleEngine:
 
     def __init__(self, site_plants: set, hda_customers: set,
-                 ind_demand_customers: set, duplicate_pairs: set):   # ← NEW param
+                 ind_demand_customers: set, duplicate_triples: set):
         self.site_plants          = set(str(p).strip() for p in site_plants)
         self.hda_customers        = set(str(p).strip() for p in hda_customers)
         self.ind_demand_customers = set(str(p).strip() for p in ind_demand_customers)
-        self.duplicate_pairs      = duplicate_pairs                  # set of (customer, plant) tuples
+        # Set of (customer, supplyingplant, distributionchannel) tuples that are duplicates
+        self.duplicate_triples    = duplicate_triples
 
     @staticmethod
     def _is_blank(value) -> bool:
@@ -127,10 +135,14 @@ class CustomerRuleEngine:
         val = row.get("CUSTOMER", None)
         if self._is_blank(val):
             return False, "CUSTOMER is blank"
-        val_str = str(val).strip()
-        if val_str in self.hda_customers or val_str in self.ind_demand_customers:
-            return True, ""
-        return False, "CUSTOMER not found in either HDA or IndependentDemand"
+        # ── DISABLED: cross-reference check against HDA / IndependentDemand ──
+        # Uncomment the block below to re-enable this sub-rule.
+        # val_str = str(val).strip()
+        # if val_str in self.hda_customers or val_str in self.ind_demand_customers:
+        #     return True, ""
+        # return False, "CUSTOMER not found in either HDA or IndependentDemand"
+        # ─────────────────────────────────────────────────────────────────────
+        return True, ""
 
     def validate_supplyingplant(self, row) -> tuple:
         val = row.get("SUPPLYINGPLANT", None)
@@ -140,58 +152,68 @@ class CustomerRuleEngine:
             return True, ""
         return False, "SUPPLYINGPLANT not found in Site master"
 
-    # ── NEW ──────────────────────────────────
     def validate_duplicate_check(self, row) -> tuple:
-        cust  = str(row.get("CUSTOMER",       "")).strip()
-        plant = str(row.get("SUPPLYINGPLANT", "")).strip()
-        # Only flag if both values are present; blanks are already caught separately
-        if cust and cust != "nan" and plant and plant != "nan":
-            if (cust, plant) in self.duplicate_pairs:
+        """
+        Duplicate key: CUSTOMER + SUPPLYINGPLANT + DISTRIBUTIONCHANNEL.
+        All three must be non-blank for the check to apply; blanks are
+        already caught by their own individual rules.
+        """
+        cust    = str(row.get("CUSTOMER",           "")).strip()
+        plant   = str(row.get("SUPPLYINGPLANT",     "")).strip()
+        distch  = str(row.get("DISTRIBUTIONCHANNEL","")).strip()
+
+        if (cust and cust != "nan"
+                and plant and plant != "nan"
+                and distch and distch != "nan"):
+            if (cust, plant, distch) in self.duplicate_triples:
                 return False, (
                     f"Duplicate row: CUSTOMER '{cust}' + SUPPLYINGPLANT '{plant}' "
-                    "combination appears more than once in the extract"
+                    f"+ DISTRIBUTIONCHANNEL '{distch}' combination appears more than once in the extract"
                 )
         return True, ""
-    # ─────────────────────────────────────────
 
     def _validate_not_blank_field(self, row, field_name):
         if self._check_not_blank(row.get(field_name, None)):
             return True, ""
         return False, f"{field_name} is blank"
 
-    def validate_area_code(self, row):                      return self._validate_not_blank_field(row, "AREA_CODE")
-    def validate_area_name(self, row):                      return self._validate_not_blank_field(row, "AREA_NAME")
-    def validate_saleshierarchy(self, row):                 return self._validate_not_blank_field(row, "SALESHIERARCHY")
-    def validate_l1_global_channel_code(self, row):        return self._validate_not_blank_field(row, "L1_GLOBAL_CHANNEL_CODE")
-    def validate_l1_global_channel_desc(self, row):        return self._validate_not_blank_field(row, "L1_GLOBAL_CHANNEL_DESC")
+    def validate_customername(self, row):                   return self._validate_not_blank_field(row, "CUSTOMERNAME")
+    def validate_customergroup(self, row):                  return self._validate_not_blank_field(row, "CUSTOMERGROUP")
+    def validate_customergroupname(self, row):              return self._validate_not_blank_field(row, "CUSTOMERGROUPNAME")
+    def validate_additionalcustomergroup1(self, row):       return self._validate_not_blank_field(row, "ADDITIONALCUSTOMERGROUP1")
+    def validate_additionalcustomergroup1name(self, row):   return self._validate_not_blank_field(row, "ADDITIONALCUSTOMERGROUP1NAME")
+    def validate_country(self, row):                        return self._validate_not_blank_field(row, "COUNTRY")
+    def validate_countryname(self, row):                    return self._validate_not_blank_field(row, "COUNTRYNAME")
+    def validate_distributionchannel(self, row):            return self._validate_not_blank_field(row, "DISTRIBUTIONCHANNEL")
+    def validate_l1_global_channel_code(self, row):         return self._validate_not_blank_field(row, "L1_GLOBAL_CHANNEL_CODE")
+    def validate_l1_global_channel_desc(self, row):         return self._validate_not_blank_field(row, "L1_GLOBAL_CHANNEL_DESC")
     def validate_channel(self, row):                        return self._validate_not_blank_field(row, "CHANNEL")
     def validate_channeldesc(self, row):                    return self._validate_not_blank_field(row, "CHANNELDESC")
     def validate_sub_channel_code_jda_reporting(self, row): return self._validate_not_blank_field(row, "SUB_CHANNEL_CODE_JDA_REPORTING")
     def validate_sub_channel_desc_jda_reporting(self, row): return self._validate_not_blank_field(row, "SUB_CHANNEL_DESC_JDA_REPORTING")
     def validate_region_code(self, row):                    return self._validate_not_blank_field(row, "REGION_CODE")
     def validate_region_name(self, row):                    return self._validate_not_blank_field(row, "REGION_NAME")
+    def validate_area_code(self, row):                      return self._validate_not_blank_field(row, "AREA_CODE")
+    def validate_area_name(self, row):                      return self._validate_not_blank_field(row, "AREA_NAME")
     def validate_cluster(self, row):                        return self._validate_not_blank_field(row, "CLUSTER")
     def validate_cluster_name(self, row):                   return self._validate_not_blank_field(row, "CLUSTER_NAME")
+    def validate_saleshierarchy(self, row):                 return self._validate_not_blank_field(row, "SALESHIERARCHY")
     def validate_state_code(self, row):                     return self._validate_not_blank_field(row, "STATE_CODE")
     def validate_state_name(self, row):                     return self._validate_not_blank_field(row, "STATE_NAME")
-    def validate_additionalcustomergroup1(self, row):       return self._validate_not_blank_field(row, "ADDITIONALCUSTOMERGROUP1")
-    def validate_additionalcustomergroup1name(self, row):   return self._validate_not_blank_field(row, "ADDITIONALCUSTOMERGROUP1NAME")
-    def validate_country(self, row):                        return self._validate_not_blank_field(row, "COUNTRY")
-    def validate_customergroup(self, row):                  return self._validate_not_blank_field(row, "CUSTOMERGROUP")
-    def validate_customergroupname(self, row):              return self._validate_not_blank_field(row, "CUSTOMERGROUPNAME")
-    def validate_customername(self, row):                   return self._validate_not_blank_field(row, "CUSTOMERNAME")
-    def validate_countryname(self, row):                    return self._validate_not_blank_field(row, "COUNTRYNAME")
-    def validate_division(self, row):                       return self._validate_not_blank_field(row, "DIVISION")
-    def validate_divisiondesc(self, row):                   return self._validate_not_blank_field(row, "DIVISIONDESC")
-    def validate_distributionchannel(self, row):            return self._validate_not_blank_field(row, "DISTRIBUTIONCHANNEL")
 
     def get_rules(self) -> dict:
+        """Returns rules in FIELD_ORDER so iteration is always consistent."""
         return {
             "CUSTOMER":                        self.validate_customer,
+            "CUSTOMERNAME":                    self.validate_customername,
             "SUPPLYINGPLANT":                  self.validate_supplyingplant,
-            "AREA_CODE":                       self.validate_area_code,
-            "AREA_NAME":                       self.validate_area_name,
-            "SALESHIERARCHY":                  self.validate_saleshierarchy,
+            "CUSTOMERGROUP":                   self.validate_customergroup,
+            "CUSTOMERGROUPNAME":               self.validate_customergroupname,
+            "ADDITIONALCUSTOMERGROUP1":        self.validate_additionalcustomergroup1,
+            "ADDITIONALCUSTOMERGROUP1NAME":    self.validate_additionalcustomergroup1name,
+            "COUNTRY":                         self.validate_country,
+            "COUNTRYNAME":                     self.validate_countryname,
+            "DISTRIBUTIONCHANNEL":             self.validate_distributionchannel,
             "L1_GLOBAL_CHANNEL_CODE":          self.validate_l1_global_channel_code,
             "L1_GLOBAL_CHANNEL_DESC":          self.validate_l1_global_channel_desc,
             "CHANNEL":                         self.validate_channel,
@@ -200,21 +222,14 @@ class CustomerRuleEngine:
             "SUB_CHANNEL_DESC_JDA_REPORTING":  self.validate_sub_channel_desc_jda_reporting,
             "REGION_CODE":                     self.validate_region_code,
             "REGION_NAME":                     self.validate_region_name,
+            "AREA_CODE":                       self.validate_area_code,
+            "AREA_NAME":                       self.validate_area_name,
             "CLUSTER":                         self.validate_cluster,
             "CLUSTER_NAME":                    self.validate_cluster_name,
+            "SALESHIERARCHY":                  self.validate_saleshierarchy,
             "STATE_CODE":                      self.validate_state_code,
             "STATE_NAME":                      self.validate_state_name,
-            "ADDITIONALCUSTOMERGROUP1":        self.validate_additionalcustomergroup1,
-            "ADDITIONALCUSTOMERGROUP1NAME":    self.validate_additionalcustomergroup1name,
-            "COUNTRY":                         self.validate_country,
-            "CUSTOMERGROUP":                   self.validate_customergroup,
-            "CUSTOMERGROUPNAME":               self.validate_customergroupname,
-            "CUSTOMERNAME":                    self.validate_customername,
-            "COUNTRYNAME":                     self.validate_countryname,
-            "DIVISION":                        self.validate_division,
-            "DIVISIONDESC":                    self.validate_divisiondesc,
-            "DISTRIBUTIONCHANNEL":             self.validate_distributionchannel,
-            "DUPLICATE_CHECK":                 self.validate_duplicate_check,   # ← NEW
+            "DUPLICATE_CHECK":                 self.validate_duplicate_check,
         }
 
 
@@ -283,35 +298,50 @@ class CustomerTableValidator:
         print(f"    IndependentDemand.tab – SOLDTOPARTY values loaded: {len(self.ind_demand_customers)}")
 
     def validate(self):
-        # ── Pre-compute composite duplicates (CUSTOMER + SUPPLYINGPLANT) ──
-        has_cust  = "CUSTOMER"       in self.df.columns
-        has_plant = "SUPPLYINGPLANT" in self.df.columns
+        # ── Pre-compute duplicate triples: CUSTOMER + SUPPLYINGPLANT + DISTRIBUTIONCHANNEL ──
+        has_cust   = "CUSTOMER"            in self.df.columns
+        has_plant  = "SUPPLYINGPLANT"      in self.df.columns
+        has_distch = "DISTRIBUTIONCHANNEL" in self.df.columns
 
-        if has_cust and has_plant:
+        if has_cust and has_plant and has_distch:
             combo = (
                 self.df["CUSTOMER"].fillna("").str.strip()
                 + "|||"
                 + self.df["SUPPLYINGPLANT"].fillna("").str.strip()
+                + "|||"
+                + self.df["DISTRIBUTIONCHANNEL"].fillna("").str.strip()
             )
-            dup_mask       = combo.duplicated(keep=False)
-            dup_combos_raw = combo[dup_mask & (combo != "|||")].tolist()
-            duplicate_pairs = set(
-                tuple(c.split("|||", 1)) for c in dup_combos_raw
+            dup_mask   = combo.duplicated(keep=False)
+            # Exclude rows where any part is blank (they have their own rules)
+            valid_mask = (
+                (self.df["CUSTOMER"].fillna("").str.strip() != "") &
+                (self.df["SUPPLYINGPLANT"].fillna("").str.strip() != "") &
+                (self.df["DISTRIBUTIONCHANNEL"].fillna("").str.strip() != "")
+            )
+            dup_combos_raw  = combo[dup_mask & valid_mask].tolist()
+            duplicate_triples = set(
+                tuple(c.split("|||", 2)) for c in dup_combos_raw
             )
         else:
-            duplicate_pairs = set()
+            missing_cols = [c for c, f in [
+                ("CUSTOMER", has_cust),
+                ("SUPPLYINGPLANT", has_plant),
+                ("DISTRIBUTIONCHANNEL", has_distch)
+            ] if not f]
+            print(f"⚠️  Duplicate check skipped — missing columns: {missing_cols}")
+            duplicate_triples = set()
 
         engine = CustomerRuleEngine(
             self.site_plants,
             self.hda_customers,
             self.ind_demand_customers,
-            duplicate_pairs,             # ← passed in
+            duplicate_triples,
         )
         rules = engine.get_rules()
 
         for idx, row in self.df.iterrows():
             for col, rule_fn in rules.items():
-                # DUPLICATE_CHECK is virtual — no real column in the dataframe
+                # DUPLICATE_CHECK is a virtual rule — no real column in the dataframe
                 if col != "DUPLICATE_CHECK" and col not in self.df.columns:
                     continue
                 try:
@@ -339,9 +369,9 @@ class CustomerReportWriter:
     SHEET_RULESETS = "Rulesets"
 
     def __init__(self, validator: CustomerTableValidator, output_path: str):
-        self.validator            = validator
-        self.output_path          = output_path
-        self._summary_fields_order = []
+        self.validator             = validator
+        self.output_path           = output_path
+        self._summary_fields_order = list(FIELD_ORDER)   # driven by FIELD_ORDER constant
 
     def _safe_sheet_name(self, wb, base_name: str) -> str:
         invalid_chars = ["/", "\\", "*", "?", ":", "[", "]"]
@@ -377,34 +407,13 @@ class CustomerReportWriter:
             ws.column_dimensions[get_column_letter(col[0].column)].width = max(12, min(max_len + 4, 60))
 
     def _get_ruleset_columns(self):
-        fields = [
-            "CUSTOMER", "SUPPLYINGPLANT", "AREA_CODE", "AREA_NAME",
-            "SALESHIERARCHY", "L1_GLOBAL_CHANNEL_CODE", "L1_GLOBAL_CHANNEL_DESC",
-            "CHANNEL", "CHANNELDESC", "SUB_CHANNEL_CODE_JDA_REPORTING",
-            "SUB_CHANNEL_DESC_JDA_REPORTING", "REGION_CODE", "REGION_NAME",
-            "CLUSTER", "CLUSTER_NAME", "STATE_CODE", "STATE_NAME",
-            "ADDITIONALCUSTOMERGROUP1", "ADDITIONALCUSTOMERGROUP1NAME",
-            "COUNTRY", "CUSTOMERGROUP", "CUSTOMERGROUPNAME", "CUSTOMERNAME",
-            "COUNTRYNAME", "DIVISION", "DIVISIONDESC", "DISTRIBUTIONCHANNEL",
-        ]
-        cols = [col for col in fields if col in self.validator.df.columns]
+        """Columns written to every error sheet — FIELD_ORDER (minus DUPLICATE_CHECK) + ERROR_FIELDS."""
+        cols = [col for col in FIELD_ORDER
+                if col != "DUPLICATE_CHECK" and col in self.validator.df.columns]
         cols.append("ERROR_FIELDS")
         return cols
 
-    def _summary_order(self):
-        return [
-            "CUSTOMER", "SUPPLYINGPLANT", "AREA_CODE", "AREA_NAME",
-            "SALESHIERARCHY", "L1_GLOBAL_CHANNEL_CODE", "L1_GLOBAL_CHANNEL_DESC",
-            "CHANNEL", "CHANNELDESC", "SUB_CHANNEL_CODE_JDA_REPORTING",
-            "SUB_CHANNEL_DESC_JDA_REPORTING", "REGION_CODE", "REGION_NAME",
-            "CLUSTER", "CLUSTER_NAME", "STATE_CODE", "STATE_NAME",
-            "ADDITIONALCUSTOMERGROUP1", "ADDITIONALCUSTOMERGROUP1NAME",
-            "COUNTRY", "CUSTOMERGROUP", "CUSTOMERGROUPNAME", "CUSTOMERNAME",
-            "COUNTRYNAME", "DIVISION", "DIVISIONDESC", "DISTRIBUTIONCHANNEL",
-            "DUPLICATE_CHECK",   # ← NEW — always last
-        ]
-
-    def _write_ruleset_sheet(self, wb, summary_fields=None):
+    def _write_ruleset_sheet(self, wb):
         ws = wb.create_sheet(self.SHEET_RULESETS, 1)
 
         ws.merge_cells("A1:C1")
@@ -421,11 +430,19 @@ class CustomerReportWriter:
             cell.alignment = Alignment(horizontal="center")
 
         ruleset_info = {
-            "CUSTOMER":                        "Customer in HDA or Independent Demand must be present in this Customer master. Field should not be blank.",
-            "SUPPLYINGPLANT":                  "Must be present in the Site master. Field should not be blank.",
-            "AREA_CODE":                       "Field should not be blank.",
-            "AREA_NAME":                       "Field should not be blank.",
-            "SALESHIERARCHY":                  "Field should not be blank.",
+            "CUSTOMER": (
+                "Must not be blank."
+                # Disabled: "Must also be found in HDA (SOLDTOPARTY) or IndependentDemand (SOLDTOPARTY)."
+            ),
+            "CUSTOMERNAME":                    "Field should not be blank.",
+            "SUPPLYINGPLANT":                  "Must not be blank. Must be present in the Site master.",
+            "CUSTOMERGROUP":                   "Field should not be blank.",
+            "CUSTOMERGROUPNAME":               "Field should not be blank.",
+            "ADDITIONALCUSTOMERGROUP1":        "Field should not be blank.",
+            "ADDITIONALCUSTOMERGROUP1NAME":    "Field should not be blank.",
+            "COUNTRY":                         "Field should not be blank.",
+            "COUNTRYNAME":                     "Field should not be blank.",
+            "DISTRIBUTIONCHANNEL":             "Field should not be blank.",
             "L1_GLOBAL_CHANNEL_CODE":          "Field should not be blank.",
             "L1_GLOBAL_CHANNEL_DESC":          "Field should not be blank.",
             "CHANNEL":                         "Field should not be blank.",
@@ -434,32 +451,22 @@ class CustomerReportWriter:
             "SUB_CHANNEL_DESC_JDA_REPORTING":  "Field should not be blank.",
             "REGION_CODE":                     "Field should not be blank.",
             "REGION_NAME":                     "Field should not be blank.",
+            "AREA_CODE":                       "Field should not be blank.",
+            "AREA_NAME":                       "Field should not be blank.",
             "CLUSTER":                         "Field should not be blank.",
             "CLUSTER_NAME":                    "Field should not be blank.",
+            "SALESHIERARCHY":                  "Field should not be blank.",
             "STATE_CODE":                      "Field should not be blank.",
             "STATE_NAME":                      "Field should not be blank.",
-            "ADDITIONALCUSTOMERGROUP1":        "Field should not be blank.",
-            "ADDITIONALCUSTOMERGROUP1NAME":    "Field should not be blank.",
-            "COUNTRY":                         "Field should not be blank.",
-            "CUSTOMERGROUP":                   "Field should not be blank.",
-            "CUSTOMERGROUPNAME":               "Field should not be blank.",
-            "CUSTOMERNAME":                    "Field should not be blank.",
-            "COUNTRYNAME":                     "Field should not be blank.",
-            "DIVISION":                        "Field should not be blank.",
-            "DIVISIONDESC":                    "Field should not be blank.",
-            "DISTRIBUTIONCHANNEL":             "Field should not be blank.",
-            # ── NEW ──
             "DUPLICATE_CHECK": (
-                "The combination of CUSTOMER + SUPPLYINGPLANT must be unique across the entire "
-                "extract. If the same CUSTOMER and SUPPLYINGPLANT values appear together in more "
-                "than one row, all such rows are flagged as duplicates."
+                "The combination of CUSTOMER + SUPPLYINGPLANT + DISTRIBUTIONCHANNEL must be unique "
+                "across the entire extract. If the same values for all three columns appear together "
+                "in more than one row, all such rows are flagged as duplicates."
             ),
         }
 
-        ordered_fields = summary_fields or list(ruleset_info.keys())
-        current_row    = 4
-
-        for rule_num, field in enumerate(ordered_fields, start=1):
+        current_row = 4
+        for rule_num, field in enumerate(FIELD_ORDER, start=1):
             if field not in ruleset_info:
                 continue
 
@@ -475,9 +482,9 @@ class CustomerReportWriter:
                     vertical="center",
                     wrap_text=True,
                 )
-                cell.font = Font(name="Arial", size=10, bold=(c in [1, 2]))
                 if c in [1, 2]:
                     cell.fill = RULE_FILL
+                    cell.font = Font(name="Arial", size=10, bold=True)
                 else:
                     cell.font = BODY_FONT
 
@@ -507,8 +514,7 @@ class CustomerReportWriter:
             cell.border    = THIN_BORDER
             cell.alignment = Alignment(horizontal="center", vertical="center")
 
-        field_order      = self._summary_order()
-        col_error_counts = {col: 0 for col in field_order}
+        col_error_counts  = {col: 0 for col in FIELD_ORDER}
         rule_error_counts = {}
 
         for bad_cols in error_map.values():
@@ -518,36 +524,40 @@ class CustomerReportWriter:
                 col_error_counts[col] += 1
                 rule_error_counts[(col, reason)] = rule_error_counts.get((col, reason), 0) + 1
 
-        sorted_fields              = [(field, col_error_counts.get(field, 0)) for field in field_order]
-        self._summary_fields_order = [field for field, _ in sorted_fields]
-
         row_num      = 4
         item_counter = 1
 
-        for col_name, field_total_errs in sorted_fields:
-            reasons        = SUMMARY_RULESET_INFO.get(col_name, [])
-            actual_reasons = set(r for (f, r) in rule_error_counts.keys() if f == col_name)
-            all_reasons    = list(reasons) + list(actual_reasons - set(reasons))
-            is_multi       = len(all_reasons) > 1
-            if col_name=="DUPLICATE_CHECK":
-                all_reasons=["Dupliacte row:CUSTOMER+SUPPLYINGPLANT combination appears more than once in extract"]
-                is_multi=False
+        for col_name in FIELD_ORDER:
+            field_total_errs = col_error_counts.get(col_name, 0)
+            reasons          = SUMMARY_RULESET_INFO.get(col_name, [])
+            actual_reasons   = set(r for (f, r) in rule_error_counts.keys() if f == col_name)
+            all_reasons      = list(reasons) + list(actual_reasons - set(reasons))
+            is_multi         = len(all_reasons) > 1
+
+            if col_name == "DUPLICATE_CHECK":
+                all_reasons = [
+                    "Duplicate row: CUSTOMER + SUPPLYINGPLANT + DISTRIBUTIONCHANNEL "
+                    "combination appears more than once in extract"
+                ]
+                is_multi = False
 
             if is_multi:
-                ws.cell(row=row_num, column=1, value=item_counter).font = BODY_FONT
-                ws.cell(row=row_num, column=2, value=col_name).font     = BODY_FONT
-                ws.cell(row=row_num, column=3, value=field_total_errs).font = BODY_FONT
-                ws.cell(row=row_num, column=4, value=total_rows).font   = BODY_FONT
+                ws.cell(row=row_num, column=1, value=item_counter)
+                ws.cell(row=row_num, column=2, value=col_name)
+                ws.cell(row=row_num, column=3, value=field_total_errs)
+                ws.cell(row=row_num, column=4, value=total_rows)
 
                 err_pct = field_total_errs / total_rows if total_rows else 0
                 ws.cell(row=row_num, column=5, value=1 - err_pct).number_format = "0.00%"
                 ws.cell(row=row_num, column=6, value=err_pct).number_format     = "0.00%"
-                ws.cell(row=row_num, column=7, value="").font = BODY_FONT
+                ws.cell(row=row_num, column=7, value="")
 
                 for c in range(1, 8):
                     ws.cell(row=row_num, column=c).border    = THIN_BORDER
-                    ws.cell(row=row_num, column=c).alignment = Alignment(horizontal="center" if c != 7 else "left")
-                    ws.cell(row=row_num, column=c).font      = BODY_FONT
+                    ws.cell(row=row_num, column=c).alignment = Alignment(
+                        horizontal="center" if c != 7 else "left"
+                    )
+                    ws.cell(row=row_num, column=c).font = BODY_FONT
 
                 row_num += 1
 
@@ -555,13 +565,13 @@ class CustomerReportWriter:
                     count   = rule_error_counts.get((col_name, reason), 0)
                     sub_pct = count / total_rows if total_rows else 0
 
-                    ws.cell(row=row_num, column=1, value="").font           = BODY_FONT
-                    ws.cell(row=row_num, column=2, value=f"↳ {reason}").font = BODY_FONT
-                    ws.cell(row=row_num, column=3, value=count).font         = BODY_FONT
-                    ws.cell(row=row_num, column=4, value=total_rows).font    = BODY_FONT
+                    ws.cell(row=row_num, column=1, value="")
+                    ws.cell(row=row_num, column=2, value=f"↳ {reason}")
+                    ws.cell(row=row_num, column=3, value=count)
+                    ws.cell(row=row_num, column=4, value=total_rows)
                     ws.cell(row=row_num, column=5, value=1 - sub_pct).number_format = "0.00%"
                     ws.cell(row=row_num, column=6, value=sub_pct).number_format     = "0.00%"
-                    ws.cell(row=row_num, column=7, value=reason if count > 0 else "").font = BODY_FONT
+                    ws.cell(row=row_num, column=7, value=reason if count > 0 else "")
 
                     for c in range(1, 8):
                         ws.cell(row=row_num, column=c).border    = THIN_BORDER
@@ -603,15 +613,15 @@ class CustomerReportWriter:
 
             item_counter += 1
 
-        # TOTAL row
+        # ── TOTAL row ──
         total_errors        = sum(col_error_counts.values())
         total_fill          = PatternFill("solid", start_color="F2F2F2", end_color="F2F2F2")
-        sum_record_counts   = len(sorted_fields) * total_rows
+        sum_record_counts   = len(FIELD_ORDER) * total_rows
         total_error_percent = total_errors / sum_record_counts if sum_record_counts else 0
 
-        ws.cell(row=row_num, column=2, value="TOTAL").font       = Font(name="Arial", bold=True)
-        ws.cell(row=row_num, column=3, value=total_errors).font  = Font(name="Arial", bold=True)
-        ws.cell(row=row_num, column=4, value=sum_record_counts).font = Font(name="Arial", bold=True)
+        ws.cell(row=row_num, column=2, value="TOTAL")
+        ws.cell(row=row_num, column=3, value=total_errors)
+        ws.cell(row=row_num, column=4, value=sum_record_counts)
         ws.cell(row=row_num, column=5, value=1 - total_error_percent).number_format = "0.00%"
         ws.cell(row=row_num, column=6, value=total_error_percent).number_format     = "0.00%"
 
@@ -634,16 +644,16 @@ class CustomerReportWriter:
             ("Records Passing:",     records_passing),
         ]:
             ws.merge_cells(start_row=row_num, start_column=1, end_row=row_num, end_column=2)
-            label_cell           = ws.cell(row=row_num, column=1, value=label)
-            label_cell.font      = Font(name="Arial", bold=True, size=10)
-            label_cell.fill      = stats_fill
-            label_cell.border    = THIN_BORDER
-            label_cell.alignment = Alignment(horizontal="left")
+            lc           = ws.cell(row=row_num, column=1, value=label)
+            lc.font      = Font(name="Arial", bold=True, size=10)
+            lc.fill      = stats_fill
+            lc.border    = THIN_BORDER
+            lc.alignment = Alignment(horizontal="left")
 
-            value_cell           = ws.cell(row=row_num, column=3, value=value)
-            value_cell.font      = Font(name="Arial", size=10)
-            value_cell.border    = THIN_BORDER
-            value_cell.alignment = Alignment(horizontal="center")
+            vc           = ws.cell(row=row_num, column=3, value=value)
+            vc.font      = Font(name="Arial", size=10)
+            vc.border    = THIN_BORDER
+            vc.alignment = Alignment(horizontal="center")
 
             row_num += 1
 
@@ -656,7 +666,8 @@ class CustomerReportWriter:
         for errdict in v.error_map.values():
             all_fields.update(errdict.keys())
 
-        fields_to_process = [f for f in self._summary_fields_order if f in all_fields]
+        # Error sheets follow FIELD_ORDER
+        fields_to_process = [f for f in FIELD_ORDER if f in all_fields]
 
         for field_name in fields_to_process:
             row_indices = [idx for idx, errdict in v.error_map.items() if field_name in errdict]
@@ -683,8 +694,8 @@ class CustomerReportWriter:
 
                 # ── Highlight logic ───────────────────────────────────────
                 if field_name == "DUPLICATE_CHECK":
-                    # Highlight both CUSTOMER and SUPPLYINGPLANT columns in red
-                    for highlight_col in ("CUSTOMER", "SUPPLYINGPLANT"):
+                    # Highlight all three key columns in red
+                    for highlight_col in ("CUSTOMER", "SUPPLYINGPLANT", "DISTRIBUTIONCHANNEL"):
                         if highlight_col in col_idx_map:
                             cell      = ws.cell(row=excel_row, column=col_idx_map[highlight_col])
                             cell.fill = RED_FILL
@@ -709,11 +720,12 @@ class CustomerReportWriter:
         v  = self.validator
         df = v.df.copy()
 
-        error_series    = v.get_error_series()
+        error_series       = v.get_error_series()
         df["ERROR_FIELDS"] = df.index.map(
             lambda i: error_series.get(i, "") if i in error_series.index else ""
         )
 
+        # Keep only FIELD_ORDER columns (excluding the virtual DUPLICATE_CHECK) + ERROR_FIELDS
         ruleset_columns = self._get_ruleset_columns()
         filtered_cols   = [col for col in df.columns if col in ruleset_columns]
         df              = df[filtered_cols]
@@ -723,7 +735,7 @@ class CustomerReportWriter:
             del wb["Sheet"]
 
         self._write_summary_sheet(wb, v.error_map, len(df))
-        self._write_ruleset_sheet(wb, self._summary_fields_order)
+        self._write_ruleset_sheet(wb)
         self._write_field_error_sheets(wb, df)
 
         wb.save(self.output_path)
