@@ -91,15 +91,15 @@ SUMMARY_RULESET_INFO = {
         "PLANT is blank",
         "PLANT not found in site master",
     ],
+        "CONVERSIONFACTOR": [
+        "CONVERSIONFACTOR is blank",
+        "CONVERSIONFACTOR is not numeric",
+        "CONVERSIONFACTOR must be non-zero",
+    ],
     "ALTERNATIVEUNIT": [
         "ALTERNATIVEUNIT is blank",
         # Exactly ONE canonical label for all "missing units" errors
         MISSING_UNITS_SUMMARY_LABEL,
-    ],
-    "CONVERSIONFACTOR": [
-        "CONVERSIONFACTOR is blank",
-        "CONVERSIONFACTOR is not numeric",
-        "CONVERSIONFACTOR must be non-zero",
     ],
     # New field — single sub-rule
     "DUPLICATE_CHECK": [
@@ -288,8 +288,9 @@ class PartUOMTechnicalRuleEngine:
         return {
             "PRODUCT":          self.validate_product,
             "PLANT":            self.validate_plant,
+             "CONVERSIONFACTOR": self.validate_conversionfactor,
             "ALTERNATIVEUNIT":  self.validate_alternativeunit,
-            "CONVERSIONFACTOR": self.validate_conversionfactor,
+
             # DUPLICATE_CHECK is handled separately (needs idx) in the main loop
         }
 
@@ -503,14 +504,14 @@ class PartUOMTechnicalReportWriter:
                 "Must not be blank.",
                 "Must exist in site master.",
             ],
-            "ALTERNATIVEUNIT": [
-                "Must not be blank.",
-                "Each PRODUCT must contain all three required units: KG, CV, and PAC.",
-            ],
             "CONVERSIONFACTOR": [
                 "Must not be blank.",
                 "Must be numeric.",
                 "Must be non-zero.",
+            ],
+            "ALTERNATIVEUNIT": [
+                "Must not be blank.",
+                "Each PRODUCT must contain all three required units: KG, CV, and PAC.",
             ],
             "DUPLICATE_CHECK": [
                 (
