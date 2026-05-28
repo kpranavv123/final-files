@@ -63,9 +63,15 @@ part_df = read_input(PART_FILE)
 part_df.columns = part_df.columns.str.strip().str.upper()
 part_set = set(part_df["MATERIALNUMBER"].dropna().str.strip())
 
+# Build (CUSTOMER, SUPPLYINGPLANT) combo set from Customer master
 customer_df = read_input(CUSTOMER_FILE)
 customer_df.columns = customer_df.columns.str.strip().str.upper()
-customer_set = set(customer_df["CUSTOMER"].dropna().str.strip())
+customer_set = set(
+    zip(
+        customer_df["CUSTOMER"].fillna("").str.strip(),
+        customer_df["SUPPLYINGPLANT"].fillna("").str.strip(),
+    )
+)
 
 site_df = read_input(SITE_FILE)
 site_df.columns = site_df.columns.str.strip().str.upper()
@@ -79,7 +85,7 @@ date_pattern = re.compile(r"^\d{8}$")
 
 ERROR_REASON_MAP = {
     "ERROR_CSKU":             "CSKU: CSKU missing in Part master",
-    "ERROR_DISTRIBUTOR_CODE": "DISTRIBUTOR_CODE: Distributor code is missing in Customer master",
+    "ERROR_DISTRIBUTOR_CODE": "DISTRIBUTOR_CODE: DISTRIBUTOR_CODE + PLANT combination does not exist in Customer master (CUSTOMER + SUPPLYINGPLANT)",
     "ERROR_INVOICE_DATE":     "INVOICE_DATE: Invoice week start is blank or not in YYYYMMDD format",
     "ERROR_PLANT":            "PLANT: Plant does not exist in Site master or is blank",
     "ERROR_DUPLICATE":        "DUPLICATE_CHECK: Duplicate record — DISTRIBUTOR_CODE, PLANT, INVOICE_DATE, CSKU combination already exists.",
@@ -97,7 +103,10 @@ SUMMARY_RULES = [
 
 RULESET_DESCRIPTIONS = {
     "CSKU":             ["Must not be blank.", "Must exist as MATERIALNUMBER in Part master."],
-    "DISTRIBUTOR_CODE": ["Must not be blank.", "Must exist as CUSTOMER in Customer master."],
+    "DISTRIBUTOR_CODE": [
+        "Must not be blank.",
+        "DISTRIBUTOR_CODE + PLANT combination must exist as CUSTOMER + SUPPLYINGPLANT in Customer master.",
+    ],
     "INVOICE_DATE":     ["Must not be blank.", "Must strictly be in YYYYMMDD format."],
     "PLANT":            ["Must not be blank.", "Must exist in Site master."],
     "DUPLICATE_CHECK":  [
@@ -147,8 +156,16 @@ hda_df["ERROR_CSKU"] = hda_df["CSKU"].apply(
     lambda x: "Yes" if pd.isna(x) or x == "" or x not in part_set else ""
 )
 
-hda_df["ERROR_DISTRIBUTOR_CODE"] = hda_df["DISTRIBUTOR_CODE"].apply(
-    lambda x: "Yes" if pd.isna(x) or x == "" or x not in customer_set else ""
+# DISTRIBUTOR_CODE + PLANT combo must exist in Customer master as CUSTOMER + SUPPLYINGPLANT
+hda_df["ERROR_DISTRIBUTOR_CODE"] = hda_df.apply(
+    lambda row: "Yes"
+    if (
+        pd.isna(row["DISTRIBUTOR_CODE"]) or str(row["DISTRIBUTOR_CODE"]).strip() == ""
+        or pd.isna(row["PLANT"]) or str(row["PLANT"]).strip() == ""
+        or (str(row["DISTRIBUTOR_CODE"]).strip(), str(row["PLANT"]).strip()) not in customer_set
+    )
+    else "",
+    axis=1,
 )
 
 hda_df["ERROR_INVOICE_DATE"] = hda_df["INVOICE_DATE"].apply(
