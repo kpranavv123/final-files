@@ -38,6 +38,7 @@ THIN_BORDER = Border(
     top=Side(style="thin"),   bottom=Side(style="thin"),
 )
 
+
 # ====================================================
 # Helper: Universal loader
 # ====================================================
@@ -84,49 +85,22 @@ ERROR_REASON_MAP = {
     "ERROR_DUPLICATE":        "DUPLICATE_CHECK: Duplicate record — DISTRIBUTOR_CODE, PLANT, INVOICE_DATE, CSKU combination already exists.",
 }
 
-# ── CANONICAL ORDER ────────────────────────────────────────────────────────
-# This single list drives the order of:
-#   1. Data columns written to every error sheet
-#   2. Rows in the Summary sheet
-#   3. Rows in the Rulesets sheet
-# ──────────────────────────────────────────────────────────────────────────
+ERROR_COLUMNS = list(ERROR_REASON_MAP.keys())
+
 SUMMARY_RULES = [
     ("CSKU",             "ERROR_CSKU",             ERROR_REASON_MAP["ERROR_CSKU"]),
     ("DISTRIBUTOR_CODE", "ERROR_DISTRIBUTOR_CODE",  ERROR_REASON_MAP["ERROR_DISTRIBUTOR_CODE"]),
-    ("INVOICE_DATE",     "ERROR_INVOICE_DATE",      ERROR_REASON_MAP["ERROR_INVOICE_DATE"]),
-    ("PLANT",            "ERROR_PLANT",             ERROR_REASON_MAP["ERROR_PLANT"]),
-    ("DUPLICATE_CHECK",  "ERROR_DUPLICATE",         ERROR_REASON_MAP["ERROR_DUPLICATE"]),
+    ("INVOICE_DATE",     "ERROR_INVOICE_DATE",       ERROR_REASON_MAP["ERROR_INVOICE_DATE"]),
+    ("PLANT",            "ERROR_PLANT",              ERROR_REASON_MAP["ERROR_PLANT"]),
+    ("DUPLICATE_CHECK",  "ERROR_DUPLICATE",          ERROR_REASON_MAP["ERROR_DUPLICATE"]),
 ]
 
-# Derived helpers — kept in sync with SUMMARY_RULES automatically
-DATA_COLS_ORDER  = [field for field, _, _ in SUMMARY_RULES]   # 5 data cols
-ERROR_COLS_ORDER = [col   for _, col, _ in SUMMARY_RULES]     # 5 error cols
-ALL_ERROR_FLAG_COLS = ERROR_COLS_ORDER                         # alias for drop
-
-# Final column order for every error sheet:
-#   CSKU, DISTRIBUTOR_CODE, INVOICE_DATE, PLANT, DUPLICATE_CHECK,
-#   ERROR_CSKU, ERROR_DISTRIBUTOR_CODE, ERROR_INVOICE_DATE, ERROR_PLANT, ERROR_DUPLICATE
-ERROR_SHEET_COL_ORDER = DATA_COLS_ORDER + ERROR_COLS_ORDER
-
-# ── Rulesets — same order as SUMMARY_RULES ────────────────────────────────
 RULESET_DESCRIPTIONS = {
-    "CSKU": [
-        "Must not be blank.",
-        "Must exist as MATERIALNUMBER in Part master.",
-    ],
-    "DISTRIBUTOR_CODE": [
-        "Must not be blank.",
-        "Must exist as CUSTOMER in Customer master.",
-    ],
-    "INVOICE_DATE": [
-        "Must not be blank.",
-        "Must strictly be in YYYYMMDD format.",
-    ],
-    "PLANT": [
-        "Must not be blank.",
-        "Must exist in Site master.",
-    ],
-    "DUPLICATE_CHECK": [
+    "CSKU":             ["Must not be blank.", "Must exist as MATERIALNUMBER in Part master."],
+    "DISTRIBUTOR_CODE": ["Must not be blank.", "Must exist as CUSTOMER in Customer master."],
+    "INVOICE_DATE":     ["Must not be blank.", "Must strictly be in YYYYMMDD format."],
+    "PLANT":            ["Must not be blank.", "Must exist in Site master."],
+    "DUPLICATE_CHECK":  [
         "Must not be blank.",
         "No duplicate combinations of DISTRIBUTOR_CODE + PLANT + INVOICE_DATE + CSKU allowed.",
         "All occurrences of a duplicate group are flagged as errors.",
@@ -136,14 +110,14 @@ RULESET_DESCRIPTIONS = {
 ATTRIBUTE_SHEETS = {
     "ERROR_CSKU":             ("CSKU",             ERROR_REASON_MAP["ERROR_CSKU"]),
     "ERROR_DISTRIBUTOR_CODE": ("DISTRIBUTOR_CODE",  ERROR_REASON_MAP["ERROR_DISTRIBUTOR_CODE"]),
-    "ERROR_INVOICE_DATE":     ("INVOICE_DATE",      ERROR_REASON_MAP["ERROR_INVOICE_DATE"]),
-    "ERROR_PLANT":            ("PLANT",             ERROR_REASON_MAP["ERROR_PLANT"]),
-    "ERROR_DUPLICATE":        ("DUPLICATE_CHECK",   ERROR_REASON_MAP["ERROR_DUPLICATE"]),
+    "ERROR_INVOICE_DATE":     ("INVOICE_DATE",       ERROR_REASON_MAP["ERROR_INVOICE_DATE"]),
+    "ERROR_PLANT":            ("PLANT",              ERROR_REASON_MAP["ERROR_PLANT"]),
+    "ERROR_DUPLICATE":        ("DUPLICATE_CHECK",    ERROR_REASON_MAP["ERROR_DUPLICATE"]),
 }
 
 attribute_sheet_rows = {
     base: {"sheet_no": 1, "row": 0}
-    for base in DATA_COLS_ORDER          # same order: CSKU, DISTRIBUTOR_CODE, INVOICE_DATE, PLANT, DUPLICATE_CHECK
+    for base in ["CSKU", "DISTRIBUTOR_CODE", "INVOICE_DATE", "PLANT", "DUPLICATE_CHECK"]
 }
 
 error_counts        = {field: 0 for field, _, _ in SUMMARY_RULES}
@@ -153,6 +127,7 @@ records_with_errors = 0
 
 # ====================================================
 # LOAD FULL FILE
+# (chunking removed — full load required for duplicate detection)
 # ====================================================
 print("📂 Loading full HDA Secondary file for validation...")
 hda_df = pd.read_csv(HDA_FILE, sep="\t", dtype=str)
@@ -161,9 +136,6 @@ hda_df.columns = hda_df.columns.str.strip().str.upper()
 
 total_records = len(hda_df)
 print(f"   → {total_records:,} records loaded.")
-
-# Ensure DUPLICATE_CHECK column exists as a data column (filled after dup detection)
-hda_df["DUPLICATE_CHECK"] = ""
 
 
 # ====================================================
@@ -187,17 +159,13 @@ hda_df["ERROR_PLANT"] = hda_df["PLANT"].apply(
     lambda x: "Yes" if pd.isna(x) or x == "" or x not in site_set else ""
 )
 
-# Duplicate check — flag ALL occurrences
+# Duplicate check: flag ALL occurrences of duplicate key combinations
+# (DISTRIBUTOR_CODE + PLANT + INVOICE_DATE + CSKU)
 available_dup_cols = [c for c in DUPLICATE_KEY_COLS if c in hda_df.columns]
 if len(available_dup_cols) == len(DUPLICATE_KEY_COLS):
-    dup_mask = hda_df.duplicated(subset=available_dup_cols, keep=False)
-    hda_df["ERROR_DUPLICATE"] = dup_mask.map({True: "Yes", False: ""})
-    # Populate the DUPLICATE_CHECK display column for flagged rows so users
-    # can see which composite key value is duplicated
-    hda_df.loc[dup_mask, "DUPLICATE_CHECK"] = (
-        hda_df.loc[dup_mask, available_dup_cols]
-        .apply(lambda r: "_".join(r.values.astype(str)), axis=1)
-    )
+    hda_df["ERROR_DUPLICATE"] = hda_df.duplicated(
+        subset=available_dup_cols, keep=False
+    ).map({True: "Yes", False: ""})
 else:
     missing = set(DUPLICATE_KEY_COLS) - set(available_dup_cols)
     print(f"⚠️  Warning: Duplicate check skipped — missing columns: {missing}")
@@ -218,15 +186,8 @@ records_with_errors = int(row_has_error.sum())
 
 # ====================================================
 # WRITE ERROR SHEETS TO EXCEL
-# Columns in every sheet follow ERROR_SHEET_COL_ORDER:
-#   CSKU, DISTRIBUTOR_CODE, INVOICE_DATE, PLANT, DUPLICATE_CHECK,
-#   ERROR_CSKU, ERROR_DISTRIBUTOR_CODE, ERROR_INVOICE_DATE, ERROR_PLANT, ERROR_DUPLICATE
-# Any column in the order list absent from hda_df is silently skipped.
 # ====================================================
 print("📝 Writing error data to Excel...")
-
-# Build the final ordered column list restricted to what exists in hda_df
-available_ordered_cols = [c for c in ERROR_SHEET_COL_ORDER if c in hda_df.columns]
 
 with pd.ExcelWriter(OUTPUT_EXCEL, engine="openpyxl") as writer:
 
@@ -235,9 +196,9 @@ with pd.ExcelWriter(OUTPUT_EXCEL, engine="openpyxl") as writer:
         if error_rows.empty:
             continue
 
-        # Reorder to canonical column order (no drop — error flag cols are included)
-        write_cols = [c for c in available_ordered_cols if c in error_rows.columns]
-        error_rows = error_rows[write_cols]
+        # Drop all error flag columns, then append the human-readable reason
+        error_rows = error_rows.drop(columns=ERROR_COLUMNS, errors="ignore")
+        error_rows["ERROR_COLUMNS"] = reason_text
 
         state = attribute_sheet_rows[base_name]
         start = 0
@@ -269,7 +230,7 @@ print("📝 Generating standardized reports...")
 
 
 # ====================================================
-# STYLING & REPORTS
+# STYLING & RULESETS
 # ====================================================
 wb = load_workbook(OUTPUT_EXCEL)
 if "Sheet" in wb.sheetnames:
@@ -293,13 +254,11 @@ for c_idx, h in enumerate(headers, start=1):
     cell.border    = THIN_BORDER
     cell.alignment = Alignment(horizontal="center", vertical="center")
 
-# Rows written in SUMMARY_RULES order:
-#   CSKU → DISTRIBUTOR_CODE → INVOICE_DATE → PLANT → DUPLICATE_CHECK
 row_num = 3
 for idx, (field, _, reason) in enumerate(SUMMARY_RULES, start=1):
-    cnt            = error_counts[field]
-    pct_error      = round((cnt / total_records) * 100, 2) if total_records else 0
-    pct_health     = round(100 - pct_error, 2)
+    cnt           = error_counts[field]
+    pct_error     = round((cnt / total_records) * 100, 2) if total_records else 0
+    pct_health    = round(100 - pct_error, 2)
     display_reason = reason if cnt > 0 else ""
 
     ws_sum.cell(row=row_num, column=1, value=idx)
@@ -367,8 +326,6 @@ for col in ws_sum.columns:
 
 
 # ── Ruleset Sheet ──────────────────────────────────
-# Rows written in SUMMARY_RULES order:
-#   CSKU → DISTRIBUTOR_CODE → INVOICE_DATE → PLANT → DUPLICATE_CHECK
 wsr = wb.create_sheet("Rule_Set", 1)
 
 wsr.merge_cells("A1:C1")
@@ -388,9 +345,8 @@ for c_idx, h in enumerate(["#", "Field", "Rule Description"], start=1):
 current_row = 4
 rule_num    = 1
 
-for field, _, _ in SUMMARY_RULES:                    # iterate in canonical order
-    rules_list = RULESET_DESCRIPTIONS.get(field, [])
-    num_rules  = len(rules_list)
+for field, rules_list in RULESET_DESCRIPTIONS.items():
+    num_rules = len(rules_list)
 
     for r_idx, rule_text in enumerate(rules_list):
         num_cell           = wsr.cell(row=current_row, column=1, value=rule_num if r_idx == 0 else "")
@@ -425,14 +381,14 @@ wsr.column_dimensions["B"].width = 30
 wsr.column_dimensions["C"].width = 65
 
 
-# ── Restyle Data (Error) Sheets ────────────────────
-attribute_base_names = set(DATA_COLS_ORDER)
+# ── Restyle Data Sheets ────────────────────────────
+attribute_base_names = set(attribute_sheet_rows.keys())
 
 attr_sheets_in_wb = []
 for sname in wb.sheetnames:
     if sname in ("Summary", "Rule_Set"):
         continue
-    for base in DATA_COLS_ORDER:          # check in canonical order
+    for base in attribute_base_names:
         if sname == base or sname.startswith(base + "_"):
             attr_sheets_in_wb.append((sname, base))
             break
@@ -440,12 +396,10 @@ for sname in wb.sheetnames:
 for sheet_name, base_col in attr_sheets_in_wb:
     ws = wb[sheet_name]
 
-    # Highlight the data column for this sheet's field in red
     highlight_col_idx = None
     for cell in ws[1]:
         if cell.value == base_col:
             highlight_col_idx = cell.column
-            break
 
     max_row = ws.max_row
     max_col = ws.max_column
@@ -473,12 +427,6 @@ for sheet_name, base_col in attr_sheets_in_wb:
         ws.column_dimensions[get_column_letter(col[0].column)].width = min(max(length + 3, 10), 60)
 
     ws.freeze_panes = "A2"
-
-# ── Final sheet order: Summary → Rule_Set → error sheets ──
-desired_order = ["Summary", "Rule_Set"] + [
-    s for s in wb.sheetnames if s not in ("Summary", "Rule_Set")
-]
-wb._sheets = [wb[s] for s in desired_order if s in wb.sheetnames]
 
 wb.save(OUTPUT_EXCEL)
 print(f"✅ Final processing complete. Saved to: {OUTPUT_EXCEL}")
