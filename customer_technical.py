@@ -1,3 +1,4 @@
+#updated
 import pandas as pd
 from openpyxl import Workbook
 from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
@@ -9,9 +10,9 @@ from openpyxl.utils import get_column_letter
 # ─────────────────────────────────────────────
 CUSTOMER_INPUT_FILE      = r"C:\Users\SW526XH\Downloads\Go Live-1\Customer\Cutomer_2026-05-20-1205.tab"
 SITE_INPUT_FILE          = r"C:\Users\SW526XH\Downloads\Go Live-1\Site\Site_2026-05-20-1153.tab"
-HDA_INPUT_FILE           = r"C:\Users\SW526XH\Downloads\Go Live-1\HDA\HDA_2026-05-20-2012.tab"
+HDA_INPUT_FILE           = r"C:\Users\SW526XH\Downloads\Go Live-1\HDA\BillingDocument(HDA)_2026-05-22-1152.tab"
 INDEPENDENT_DEMAND_FILE  = r"C:\Users\SW526XH\Downloads\Go Live-1\ID\Independent Demand_2026-05-20-1754.tab"
-OUTPUT_FILE              = r"C:\Users\SW526XH\Downloads\Go Live-1\Customer\Validated_Customer_Technical2.xlsx"
+OUTPUT_FILE              = r"C:\Users\SW526XH\Downloads\Go Live-1\Customer\Validated_Customer_Technical3.xlsx"
 
 
 # ─────────────────────────────────────────────
@@ -502,6 +503,9 @@ class CustomerReportWriter:
             actual_reasons = set(r for (f, r) in rule_error_counts.keys() if f == col_name)
             all_reasons    = list(reasons) + list(actual_reasons - set(reasons))
             is_multi       = len(all_reasons) > 1
+            if col_name=="DUPLICATE_CHECK":
+                all_reasons=["Dupliacte row:CUSTOMER+SUPPLYINGPLANT combination appears more than once in extract"]
+                is_multi=False
 
             if is_multi:
                 ws.cell(row=row_num, column=1, value=item_counter).font = BODY_FONT
