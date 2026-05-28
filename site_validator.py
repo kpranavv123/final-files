@@ -40,7 +40,8 @@ VALID_PLANTS = [
     "1589","1658","5123296","1518","1455","1196","1441","1190","1593"
 ]
 
-KEEP_COLS = ["PLANT", "NAME", "ADDRESS", "TCPL_PLANTTYPE"]
+# Columns carried into every error sheet
+KEEP_COLS = ["PLANT", "NAME", "ADDRESS", "TCPL_PLANTTYPE", "REGIONID", "REGION_DESCRIPTION"]
 
 # ─────────────────────────────────────────────
 #  Colours / Styles
@@ -65,17 +66,29 @@ THIN_BORDER = Border(
     top=Side(style="thin"),  bottom=Side(style="thin"),
 )
 
-# Canonical field order
-FIELD_ORDER = ["PLANT", "NAME", "ADDRESS", "TCPL_PLANTTYPE", "DUPLICATE_CHECK"]
+# ─────────────────────────────────────────────
+#  Canonical field order — drives Summary, Rules, and error sheet sequence
+# ─────────────────────────────────────────────
+FIELD_ORDER = [
+    "PLANT",
+    "NAME",
+    "ADDRESS",
+    "TCPL_PLANTTYPE",
+    "REGIONID",             # NEW
+    "REGION_DESCRIPTION",   # NEW
+    "DUPLICATE_CHECK",
+]
 
 # ─────────────────────────────────────────────
-#  Per-field single-line reason shown in summary
+#  Per-field single-line reason shown in Summary
 # ─────────────────────────────────────────────
 FIELD_REASON = {
-    "NAME":            "NAME: Field is blank — site name is mandatory",
-    "ADDRESS":         "ADDRESS: Field is blank — address is mandatory",
-    "TCPL_PLANTTYPE":  "TCPL_PLANTTYPE: Field is blank",
-    "DUPLICATE_CHECK": "DUPLICATE_CHECK: PLANT value appears more than once in the extract",
+    "NAME":                 "NAME: Field is blank — site name is mandatory",
+    "ADDRESS":              "ADDRESS: Field is blank — address is mandatory",
+    "TCPL_PLANTTYPE":       "TCPL_PLANTTYPE: Field is blank",
+    "REGIONID":             "REGIONID: Field is blank — region ID is mandatory",          # NEW
+    "REGION_DESCRIPTION":   "REGION_DESCRIPTION: Field is blank — region description is mandatory",  # NEW
+    "DUPLICATE_CHECK":      "DUPLICATE_CHECK: PLANT value appears more than once in the extract",
 }
 
 
@@ -118,6 +131,18 @@ class SiteRuleEngine:
             return "TCPL_PLANTTYPE: Field is blank"
         return ""
 
+    # ── NEW ──────────────────────────────────────────────────────────────────
+    def validate_regionid(self, row) -> str:
+        if self._is_blank(row.get("REGIONID")):
+            return "REGIONID: Field is blank — region ID is mandatory"
+        return ""
+
+    def validate_region_description(self, row) -> str:
+        if self._is_blank(row.get("REGION_DESCRIPTION")):
+            return "REGION_DESCRIPTION: Field is blank — region description is mandatory"
+        return ""
+    # ─────────────────────────────────────────────────────────────────────────
+
     def validate_duplicate_plant(self, row) -> str:
         val = str(row.get("PLANT", "")).strip()
         if val and val != "nan" and val in self.duplicate_plants:
@@ -126,11 +151,13 @@ class SiteRuleEngine:
 
     def get_rules(self) -> dict:
         return {
-            "PLANT":            self.validate_plant,
-            "NAME":             self.validate_name,
-            "ADDRESS":          self.validate_address,
-            "TCPL_PLANTTYPE":   self.validate_tcpl_planttype,
-            "DUPLICATE_CHECK":  self.validate_duplicate_plant,
+            "PLANT":              self.validate_plant,
+            "NAME":               self.validate_name,
+            "ADDRESS":            self.validate_address,
+            "TCPL_PLANTTYPE":     self.validate_tcpl_planttype,
+            "REGIONID":           self.validate_regionid,           # NEW
+            "REGION_DESCRIPTION": self.validate_region_description, # NEW
+            "DUPLICATE_CHECK":    self.validate_duplicate_plant,
         }
 
 
@@ -162,11 +189,10 @@ class SiteTableValidator:
         print(f"    Part table plants loaded  : {len(self.part_plants)} unique values")
 
     def validate(self):
-        # Pre-compute which PLANT values appear more than once across the extract
         if "PLANT" in self.df.columns:
             plant_series     = self.df["PLANT"].fillna("").str.strip()
             duplicate_plants = set(plant_series[plant_series.duplicated(keep=False)].tolist())
-            duplicate_plants.discard("")   # blanks are already caught by validate_plant
+            duplicate_plants.discard("")
         else:
             duplicate_plants = set()
 
@@ -178,7 +204,7 @@ class SiteTableValidator:
             col_reason_map = {}
 
             for col, rule_fn in rules.items():
-                # DUPLICATE_CHECK is a virtual field — no real column in the dataframe
+                # DUPLICATE_CHECK is virtual — skip column-existence check
                 if col != "DUPLICATE_CHECK" and col not in self.df.columns:
                     continue
                 try:
@@ -237,6 +263,7 @@ class SiteReportWriter:
     SHEET_SUMMARY = "Summary"
     SHEET_RULES   = "Rules"
 
+    # Rules content — ordered to match FIELD_ORDER
     RULES_CONTENT = {
         "PLANT": [
             "Must not be blank.",
@@ -246,6 +273,12 @@ class SiteReportWriter:
         "NAME":           ["Must not be blank."],
         "ADDRESS":        ["Must not be blank."],
         "TCPL_PLANTTYPE": ["Must not be blank."],
+        "REGIONID": [                                                    # NEW
+            "Must not be blank — region ID is mandatory for every site.",
+        ],
+        "REGION_DESCRIPTION": [                                          # NEW
+            "Must not be blank — region description is mandatory for every site.",
+        ],
         "DUPLICATE_CHECK": [
             "PLANT must be unique across the entire extract — duplicate PLANT codes are not allowed.",
         ],
@@ -263,12 +296,6 @@ class SiteReportWriter:
             cell.font      = HDR_FONT
             cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
             cell.border    = THIN_BORDER
-
-    def _write_rows(self, ws, df: pd.DataFrame):
-        for r_idx, (_, row) in enumerate(df.iterrows(), start=2):
-            for c_idx, value in enumerate(row, start=1):
-                cell      = ws.cell(row=r_idx, column=c_idx, value=value)
-                cell.font = BODY_FONT
 
     def _set_widths(self, ws):
         for col in ws.columns:
@@ -328,12 +355,7 @@ class SiteReportWriter:
             pct_error  = round((count / total_rows) * 100, 2) if total_rows else 0
             pct_health = round(100 - pct_error, 2)
 
-            if col_name == "PLANT":
-                reason_text = ""
-            elif has_errors:
-                reason_text = FIELD_REASON.get(col_name, "")
-            else:
-                reason_text = ""
+            reason_text = "" if col_name == "PLANT" else (FIELD_REASON.get(col_name, "") if has_errors else "")
 
             ws.cell(row=row_num, column=1, value=field_num)
             ws.cell(row=row_num, column=2, value=col_name)
@@ -344,7 +366,6 @@ class SiteReportWriter:
             ws.cell(row=row_num, column=7, value=reason_text)
 
             self._style_summary_data_row(ws, row_num, fill=WHITE_FILL)
-
             ws.cell(row=row_num, column=7).alignment = Alignment(
                 horizontal="left", vertical="center", wrap_text=True
             )
@@ -379,7 +400,6 @@ class SiteReportWriter:
                     ws.cell(row=row_num, column=7, value=sub_reason)
 
                     self._style_summary_data_row(ws, row_num, fill=PLANT_SUB_FILL, italic=True)
-
                     ws.cell(row=row_num, column=2).alignment = Alignment(
                         horizontal="left", vertical="center", indent=1
                     )
@@ -436,7 +456,6 @@ class SiteReportWriter:
 
             row_num += 1
 
-        # Column widths
         col_widths = [6, 30, 14, 16, 12, 12, 65]
         for c_idx, width in enumerate(col_widths, start=1):
             ws.column_dimensions[get_column_letter(c_idx)].width = width
@@ -473,7 +492,7 @@ class SiteReportWriter:
                     cell.fill      = ROW_FILL
                     cell.border    = THIN_BORDER
 
-                # For DUPLICATE_CHECK, highlight the PLANT column (since that's the offending field)
+                # Highlight the offending column in red
                 highlight_col = "PLANT" if field_name == "DUPLICATE_CHECK" else field_name
                 if highlight_col in col_idx_map:
                     target_cell      = ws.cell(row=excel_row, column=col_idx_map[highlight_col])
