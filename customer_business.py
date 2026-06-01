@@ -7,8 +7,8 @@ from openpyxl.utils import get_column_letter
 # ─────────────────────────────────────────────
 #  FILE PATHS  –  update these
 # ─────────────────────────────────────────────
-CUSTOMER_INPUT_FILE = r"C:\Users\JE179KY\Downloads\Data_rulesets_check - Copy\Excel_Files\Customer.xlsx"
-OUTPUT_FILE         = r"C:\Users\JE179KY\Downloads\Data_rulesets_check - Copy\Output_Files\Validated_Customer_Business.xlsx"
+CUSTOMER_INPUT_FILE = r"C:\Users\SW526XH\Downloads\Go Live-1\Customer\Cutomer_2026-05-20-1205.tab"
+OUTPUT_FILE         = r"C:\Users\SW526XH\Downloads\Go Live-1\Customer\Validated_Customer_Business2.xlsx"
 
 
 # ─────────────────────────────────────────────
@@ -34,26 +34,28 @@ THIN_BORDER = Border(
 #  Business Ruleset Info
 # ══════════════════════════════════════════════
 BUSINESS_RULESET_INFO = {
+
+        "REGION_CODE": [
+        "One region is mapped to multiple clusters.",
+    ],
+        "AREA_CODE": [
+        "One area is mapped to multiple regions.",
+    ],
+        "SALESHIERARCHY": [
+        "One territory is mapped to multiple areas.",
+    ],
+        "SUB_CHANNEL_CODE_JDA_REPORTING": [
+        "One sub-channel is mapped to multiple channels.",
+    ],
     "CUSTOMER": [
         "One customer is mapped to multiple territories",
         "One customer is mapped to multiple sub-channels",
         "One customer is mapped to multiple states",
     ],
-    "AREA_CODE": [
-        "One area is mapped to multiple regions.",
-    ],
-    "SALESHIERARCHY": [
-        "One territory is mapped to multiple areas.",
-    ],
-    "SUB_CHANNEL_CODE_JDA_REPORTING": [
-        "One sub-channel is mapped to multiple channels.",
-    ],
-    "REGION_CODE": [
-        "One region is mapped to multiple clusters.",
-    ],
-    "DUPLICATE_RECORDS": [
-        "Duplicate records are not allowed",
-    ],
+
+    # "DUPLICATE_RECORDS": [
+    #     "Duplicate records are not allowed",
+    # ],
 }
 
 
@@ -123,15 +125,9 @@ class CustomerBusinessValidator:
 
     @staticmethod
     def _clean(value) -> str:
-        """Strip whitespace and normalise to uppercase string.
-
-        Both child and parent values are normalised the same way so that
-        variations like leading/trailing spaces or mixed case cannot make
-        one logical parent value look like two distinct values.
-        """
         if pd.isna(value):
             return ""
-        return str(value).strip().upper()          # ← uppercase added
+        return str(value).strip()
 
     @staticmethod
     def _find_column(df: pd.DataFrame, candidates):
@@ -158,14 +154,14 @@ class CustomerBusinessValidator:
             self.error_map[idx][field_name] = reason
 
     def load(self):
-        self.df = pd.read_excel(self.customer_path, dtype=str)
+        self.df = pd.read_csv(self.customer_path, sep="\t", dtype=str)
         self.df.columns = [str(c).strip().upper() for c in self.df.columns]
         print(f"    Customer rows loaded: {len(self.df)}")
 
     def validate(self):
         print("🔍 Validating customer business rules …")
         self.validate_parent_child_rules()
-        self.validate_duplicate_records()
+        # self.validate_duplicate_records()
 
     def validate_parent_child_rules(self):
         for ruleset, child_candidates, parent_candidates, rule in PARENT_CHILD_RULESET_INFO:
@@ -178,53 +174,24 @@ class CustomerBusinessValidator:
             sheet_name = f"{child_col}_{parent_col}"
 
             hierarchy_df = self.df[[child_col, parent_col]].copy()
-
-            # ── FIX: normalise both columns before any comparison ──────────
-            # Previously only _clean() was applied but the result was not
-            # uppercased, meaning "cs1" and "CS1" would appear as two distinct
-            # parent values, incorrectly flagging a child as multi-mapped.
-            hierarchy_df[child_col]  = hierarchy_df[child_col].apply(self._clean)
+            hierarchy_df[child_col] = hierarchy_df[child_col].apply(self._clean)
             hierarchy_df[parent_col] = hierarchy_df[parent_col].apply(self._clean)
 
-            # Drop rows where either key is blank
             hierarchy_df = hierarchy_df[
-                (hierarchy_df[child_col]  != "") &
+                (hierarchy_df[child_col] != "") &
                 (hierarchy_df[parent_col] != "")
             ]
 
-            # ── FIX: deduplicate (child, parent) pairs BEFORE counting ─────
-            # Without this step, repeated identical rows (not true duplicates
-            # in a logical sense) can still produce a correct nunique=1, but
-            # any accidental whitespace/case difference in a repeated row
-            # inflates the count.  Deduplication makes the mapping check
-            # purely structural: does this child value point to more than one
-            # distinct parent value?
-            unique_pairs = hierarchy_df.drop_duplicates(
-                subset=[child_col, parent_col]
-            )
-
-            parent_count_by_child = (
-                unique_pairs
-                .groupby(child_col)[parent_col]
-                .nunique()                         # now counts truly distinct parents
-            )
-
-            invalid_children = set(
-                parent_count_by_child[parent_count_by_child > 1].index
-            )
+            parent_count_by_child = hierarchy_df.groupby(child_col)[parent_col].nunique(dropna=True)
+            invalid_children = set(parent_count_by_child[parent_count_by_child > 1].index)
 
             for child_value in sorted(invalid_children):
                 affected_rows = self.df.index[
                     self.df[child_col].apply(self._clean) == child_value
                 ].tolist()
 
-                # Mapped parents are already normalised strings in unique_pairs
                 mapped_parents = sorted(
-                    set(
-                        unique_pairs.loc[
-                            unique_pairs[child_col] == child_value, parent_col
-                        ]
-                    ) - {""}
+                    set(hierarchy_df.loc[hierarchy_df[child_col] == child_value, parent_col]) - {""}
                 )
 
                 self.parent_child_error_rows.append({
@@ -239,9 +206,7 @@ class CustomerBusinessValidator:
                 })
 
                 for row_index in affected_rows:
-                    self.parent_child_error_detail_rows_by_sheet.setdefault(
-                        sheet_name, []
-                    ).append({
+                    self.parent_child_error_detail_rows_by_sheet.setdefault(sheet_name, []).append({
                         "row_index": row_index,
                         "ruleset": ruleset,
                         "rule": rule,
@@ -363,12 +328,12 @@ class CustomerBusinessReportWriter:
 
     def _summary_order(self):
         return [
-            "CUSTOMER",
+            "REGION_CODE",
             "AREA_CODE",
             "SALESHIERARCHY",
             "SUB_CHANNEL_CODE_JDA_REPORTING",
-            "REGION_CODE",
-            "DUPLICATE_RECORDS",
+            "CUSTOMER",
+            # "DUPLICATE_RECORDS",
         ]
 
     def _write_ruleset_sheet(self, wb, summary_fields=None):
@@ -388,12 +353,13 @@ class CustomerBusinessReportWriter:
             cell.alignment = Alignment(horizontal="center")
 
         ruleset_info = {
-            "CUSTOMER": "One Customer should be mapped to one Territory only. One Customer should be mapped to one Sub Channel only. One Customer should be mapped to one State only.",
+            "REGION_CODE": "One Region should be mapped to one Cluster only.",
             "AREA_CODE": "One Area should be mapped to one Region only.",
             "SALESHIERARCHY": "One Territory should be mapped to one Area only.",
             "SUB_CHANNEL_CODE_JDA_REPORTING": "One Sub Channel should be mapped to one Channel only.",
-            "REGION_CODE": "One Region should be mapped to one Cluster only.",
-            "DUPLICATE_RECORDS": "Duplicate records are not allowed.",
+            "CUSTOMER": "One Customer should be mapped to one Territory only. One Customer should be mapped to one Sub Channel only. One Customer should be mapped to one State only.",
+
+            # "DUPLICATE_RECORDS": "Duplicate records are not allowed.",
         }
 
         ordered_fields = summary_fields or list(ruleset_info.keys())
@@ -460,10 +426,10 @@ class CustomerBusinessReportWriter:
                 col_error_counts[col] += 1
                 rule_error_counts[(col, reason)] = rule_error_counts.get((col, reason), 0) + 1
 
-        if self.validator.duplicate_summary_count:
-            duplicate_reason = "Duplicate records are not allowed"
-            col_error_counts["DUPLICATE_RECORDS"] = self.validator.duplicate_summary_count
-            rule_error_counts[("DUPLICATE_RECORDS", duplicate_reason)] = self.validator.duplicate_summary_count
+        # if self.validator.duplicate_summary_count:
+        #     duplicate_reason = "Duplicate records are not allowed"
+        #     col_error_counts["DUPLICATE_RECORDS"] = self.validator.duplicate_summary_count
+        #     rule_error_counts[("DUPLICATE_RECORDS", duplicate_reason)] = self.validator.duplicate_summary_count
 
         sorted_fields = [(field, col_error_counts.get(field, 0)) for field in field_order]
         self._summary_fields_order = [field for field, _ in sorted_fields]
@@ -568,9 +534,7 @@ class CustomerBusinessReportWriter:
 
         row_num += 2
 
-        records_with_errors = len(
-            set(self.validator.error_map.keys()).union(self.validator.duplicate_error_indices)
-        )
+        records_with_errors = len(set(self.validator.error_map.keys()).union(self.validator.duplicate_error_indices))
         records_passing = total_rows - records_with_errors
 
         stats = [
@@ -696,7 +660,7 @@ class CustomerBusinessReportWriter:
         self._write_summary_sheet(wb, len(df))
         self._write_ruleset_sheet(wb, self._summary_fields_order)
         self._write_parent_child_errors_sheet(wb, df)
-        self._write_duplicate_records_sheet(wb)
+        # self._write_duplicate_records_sheet(wb)
 
         wb.save(self.output_path)
 
@@ -704,7 +668,7 @@ class CustomerBusinessReportWriter:
         print(f"   Total rows                    : {len(df)}")
         print(f"   Business error rows           : {len(set(v.error_map.keys()).union(v.duplicate_error_indices))}")
         print(f"   Parent-child hierarchy issues : {len(v.parent_child_error_rows)}")
-        print(f"   Duplicate record rows         : {len(v.duplicate_error_rows)}")
+        # print(f"   Duplicate record rows         : {len(v.duplicate_error_rows)}")
 
 
 # ══════════════════════════════════════════════
