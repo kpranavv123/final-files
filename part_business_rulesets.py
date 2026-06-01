@@ -11,7 +11,7 @@ OUTPUT_FILE = r"C:\Users\SW526XH\Downloads\Go Live-1\Part\Validated_Part_Busines
 
 
 # ─────────────────────────────────────────────
-#  STYLING CONSTANTS  (identical to technical script)
+#  STYLING CONSTANTS
 # ─────────────────────────────────────────────
 RED_FILL   = PatternFill("solid", fgColor="FF0000")
 ROW_FILL   = PatternFill("solid", fgColor="FFF2CC")
@@ -33,32 +33,42 @@ THIN_BORDER = Border(
 
 # ─────────────────────────────────────────────
 #  BUSINESS RULE IDENTIFIERS
-#  Rule 1 : DUPLICATE_ROW
-#  Rule 2 : MATERIALNUMBER  → mapped to single PRODUCTDESCRIPTION
-#  Rule 3 : BASEUNIT        → consistent UOM per MATERIALNUMBER across sites
-#  Rule 4 : MINREMSHELFLIFE → not blank for FERT/HAWA; must be > 0
-#  Rule 5 : PROCUREMENTTYPE → must be E / F / X
 # ─────────────────────────────────────────────
-# RULE1_KEY = "DUPLICATE_ROW"
 RULE2_KEY = "MATERIALNUMBER"
 RULE3_KEY = "BASEUNIT"
 RULE4_KEY = "MINREMSHELFLIFE"
 RULE5_KEY = "PROCUREMENTTYPE"
-RULE6_KEY = "IBPSTATUTS"
+RULE6_KEY = "IBPSTATUS"
+RULE7_KEY = "INTERVALSTOEXPIRYDAYS"
 
-VALID_PROCUREMENT_TYPES = {"E", "F", "X"}
+VALID_PROCUREMENT_TYPES  = {"E", "F", "X"}
 SHELF_LIFE_MATERIAL_TYPES = {"FERT", "HAWA"}
 
+# ── Sub-rule keys for INTERVALSTOEXPIRYDAYS ──
+RULE7_SUB1 = "INTERVALSTOEXPIRYDAYS_BLANK"       # must not be blank
+RULE7_SUB2 = "INTERVALSTOEXPIRYDAYS_ZERO"         # must be > 0
+RULE7_SUB3 = "INTERVALSTOEXPIRYDAYS_VS_MINREM"    # must be > MINREMSHELFLIFE
+
 # Error-sheet creation order
-ERROR_SHEET_PRIORITY = [RULE2_KEY, RULE3_KEY, RULE4_KEY, RULE5_KEY,RULE6_KEY]
+ERROR_SHEET_PRIORITY = [RULE2_KEY, RULE3_KEY, RULE4_KEY, RULE5_KEY, RULE6_KEY, RULE7_KEY]
 
 # Summary / Rules sheet labels
-RULES_FIELDS_ORDERED = [RULE2_KEY, RULE3_KEY, RULE4_KEY, RULE5_KEY,RULE6_KEY]
+RULES_FIELDS_ORDERED = [RULE2_KEY, RULE3_KEY, RULE4_KEY, RULE5_KEY, RULE6_KEY, RULE7_KEY]
+
+# ── Sub-rule reasons (used in error sheets and Summary sub-rows) ──
+RULE7_SUB_REASONS = {
+    RULE7_SUB1: (
+        "INTERVALSTOEXPIRYDAYS: Field is blank for material type FERT / HAWA — must be present"
+    ),
+    RULE7_SUB2: (
+        "INTERVALSTOEXPIRYDAYS: Value is 0 or negative for material type FERT / HAWA — must be greater than zero"
+    ),
+    RULE7_SUB3: (
+        "INTERVALSTOEXPIRYDAYS: Value must be greater than MINREMSHELFLIFE"
+    ),
+}
 
 REASON_MAP = {
-    # RULE1_KEY: (
-    #     "DUPLICATE_ROW: The entire row is an exact duplicate of another row in the extract"
-    # ),
     RULE2_KEY: (
         "MATERIALNUMBER: MATERIALNUMBER is mapped to more than one PRODUCTDESCRIPTION"
     ),
@@ -73,37 +83,46 @@ REASON_MAP = {
     RULE5_KEY: (
         "PROCUREMENTTYPE: Invalid or blank value — must be one of E / F / X"
     ),
-    
-RULE6_KEY: (
+    RULE6_KEY: (
         "IBPSTATUS: Must be 'IBP' — blank or unexpected value found"
     ),
+    # Parent-level reason for INTERVALSTOEXPIRYDAYS (used in Summary parent row)
+    RULE7_KEY: (
+        "INTERVALSTOEXPIRYDAYS: One or more sub-rules failed — see sub-rows for details"
+    ),
+    **RULE7_SUB_REASONS,
+}
 
+# ── Sub-rule labels shown in Summary sub-rows ──
+RULE7_SUMMARY_SUB_LABELS = {
+    RULE7_SUB1: "↳ INTERVALSTOEXPIRYDAYS is blank",
+    RULE7_SUB2: "↳ INTERVALSTOEXPIRYDAYS is ≤ 0",
+    RULE7_SUB3: "↳ INTERVALSTOEXPIRYDAYS is not greater than MINREMSHELFLIFE",
 }
 
 RULES_CONTENT = {
-    # RULE1_KEY: [
-    #     "No duplicate rows are allowed in the extract.",
-    # ],
     RULE2_KEY: [
         "MATERIALNUMBER column should be mapped to single description.",
-        
     ],
     RULE3_KEY: [
         "BASEUNIT (Base UOM) must be consistent for the same MATERIALNUMBER across all sites.",
     ],
     RULE4_KEY: [
         "MINREMSHELFLIFE field must not be blank for material types FERT and HAWA.",
-        "MINREMSHELFLIFE must be greater than 0",
+        "MINREMSHELFLIFE must be greater than 0.",
     ],
     RULE5_KEY: [
-        "Field should be E/F/X",
+        "Field should be E / F / X.",
     ],
-    
-RULE6_KEY: [
-        "Field value must be 'IBP'.",
+    RULE6_KEY: [
+        "Field value must be 'IBP' for material types FERT and HAWA.",
         "Blank or any other value is treated as an error.",
     ],
-
+    RULE7_KEY: [
+        "Field must not be blank for material types FERT and HAWA.",
+        "Field must be greater than 0.",
+        "Field value must be greater than MINREMSHELFLIFE.",
+    ],
 }
 
 
@@ -114,6 +133,9 @@ class BusinessRuleEngine:
     """
     Returns error_map:
         { row_index : { rule_key : { "reason": str, "highlight_cols": [col, ...] } } }
+
+    For INTERVALSTOEXPIRYDAYS each sub-rule is stored under its own sub-key so the
+    Summary sheet can display individual sub-row counts.
     """
 
     @staticmethod
@@ -123,20 +145,13 @@ class BusinessRuleEngine:
     def run(self, df: pd.DataFrame) -> dict:
         error_map: dict = {}
 
-        # ── Rule 1: Fully identical duplicate rows ──────────────────────────
-        # dup_mask = df.duplicated(keep=False)          # marks ALL occurrences
-        # for idx in df[dup_mask].index:
-        #     error_map.setdefault(idx, {})[RULE1_KEY] = {
-        #         "reason":         REASON_MAP[RULE1_KEY],
-        #         "highlight_cols": [],                  # whole row is the issue
-        #     }
+        # ── FILTER: only FERT and HAWA rows are analysed ────────────────────
+        if "MATERIALTYPE" in df.columns:
+            df = df[df["MATERIALTYPE"].str.strip().str.upper().isin(SHELF_LIFE_MATERIAL_TYPES)].copy()
 
-        # ── Rule 2: MaterialNumber → multiple descriptions ──────────────────
+        # ── Rule 2: MaterialNumber → multiple descriptions ───────────────────
         if "MATERIALNUMBER" in df.columns and "PRODUCTDESCRIPTION" in df.columns:
-            multi_desc = (
-                df.groupby("MATERIALNUMBER")["PRODUCTDESCRIPTION"]
-                .nunique()
-            )
+            multi_desc    = df.groupby("MATERIALNUMBER")["PRODUCTDESCRIPTION"].nunique()
             bad_materials = set(multi_desc[multi_desc > 1].index)
             for idx, row in df.iterrows():
                 mat = str(row.get("MATERIALNUMBER", "")).strip()
@@ -146,12 +161,9 @@ class BusinessRuleEngine:
                         "highlight_cols": ["MATERIALNUMBER", "PRODUCTDESCRIPTION"],
                     }
 
-        # ── Rule 3: BASEUNIT consistency per MATERIALNUMBER ─────────────────
+        # ── Rule 3: BASEUNIT consistency per MATERIALNUMBER ──────────────────
         if "MATERIALNUMBER" in df.columns and "BASEUNIT" in df.columns:
-            multi_uom = (
-                df.groupby("MATERIALNUMBER")["BASEUNIT"]
-                .nunique()
-            )
+            multi_uom         = df.groupby("MATERIALNUMBER")["BASEUNIT"].nunique()
             bad_uom_materials = set(multi_uom[multi_uom > 1].index)
             for idx, row in df.iterrows():
                 mat = str(row.get("MATERIALNUMBER", "")).strip()
@@ -161,13 +173,9 @@ class BusinessRuleEngine:
                         "highlight_cols": ["MATERIALNUMBER", "BASEUNIT"],
                     }
 
-        # ── Rule 4: MINREMSHELFLIFE — blank / ≤ 0 for FERT and HAWA ────────
-        if "MINREMSHELFLIFE" in df.columns and "MATERIALTYPE" in df.columns:
+        # ── Rule 4: MINREMSHELFLIFE — blank / ≤ 0 for FERT and HAWA ─────────
+        if "MINREMSHELFLIFE" in df.columns:
             for idx, row in df.iterrows():
-                mat_type = str(row.get("MATERIALTYPE", "")).strip().upper()
-                if mat_type not in SHELF_LIFE_MATERIAL_TYPES:
-                    continue                           # rule only applies to FERT / HAWA
-
                 val = row.get("MINREMSHELFLIFE")
 
                 if self._is_blank(val):
@@ -178,44 +186,86 @@ class BusinessRuleEngine:
                     continue
 
                 try:
-                    numeric_val = float(str(val).strip())
-                    if numeric_val <= 0:
+                    if float(str(val).strip()) <= 0:
                         error_map.setdefault(idx, {})[RULE4_KEY] = {
                             "reason":         REASON_MAP[RULE4_KEY],
                             "highlight_cols": ["MINREMSHELFLIFE"],
                         }
                 except ValueError:
-                    # Non-numeric value in the field
                     error_map.setdefault(idx, {})[RULE4_KEY] = {
                         "reason":         REASON_MAP[RULE4_KEY],
                         "highlight_cols": ["MINREMSHELFLIFE"],
                     }
 
-        # ── Rule 5: PROCUREMENTTYPE — must be E / F / X ─────────────────────
+        # ── Rule 5: PROCUREMENTTYPE — must be E / F / X ──────────────────────
         if "PROCUREMENTTYPE" in df.columns:
             for idx, row in df.iterrows():
                 val = row.get("PROCUREMENTTYPE")
                 if self._is_blank(val):
                     continue
-                is_invalid = str(val).strip().upper() not in VALID_PROCUREMENT_TYPES
-
-                if is_invalid:
+                if str(val).strip().upper() not in VALID_PROCUREMENT_TYPES:
                     error_map.setdefault(idx, {})[RULE5_KEY] = {
                         "reason":         REASON_MAP[RULE5_KEY],
                         "highlight_cols": ["PROCUREMENTTYPE"],
                     }
+
+        # ── Rule 6: IBPSTATUS — must be 'IBP' (FERT / HAWA only) ────────────
+        # NOTE: df is already filtered to FERT/HAWA above, so no extra check needed.
         if "IBPSTATUS" in df.columns:
-           for idx, row in df.iterrows():
-               val = row.get("IBPSTATUS")
+            for idx, row in df.iterrows():
+                val = row.get("IBPSTATUS")
+                if self._is_blank(val) or str(val).strip().upper() != "IBP":
+                    error_map.setdefault(idx, {})[RULE6_KEY] = {
+                        "reason":         REASON_MAP[RULE6_KEY],
+                        "highlight_cols": ["IBPSTATUS"],
+                    }
 
-               if self._is_blank(val) or str(val).strip().upper() != "IBP":
-                error_map.setdefault(idx, {})[RULE6_KEY] = {
-                "reason": REASON_MAP[RULE6_KEY],
-                "highlight_cols": ["IBPSTATUS"],
-             }
-               
+        # ── Rule 7: INTERVALSTOEXPIRYDAYS — 3 sub-rules ──────────────────────
+        if "INTERVALSTOEXPIRYDAYS" in df.columns:
+            for idx, row in df.iterrows():
+                val      = row.get("INTERVALSTOEXPIRYDAYS")
+                minrem   = row.get("MINREMSHELFLIFE")
+
+                # Sub-rule 1: must not be blank
+                if self._is_blank(val):
+                    error_map.setdefault(idx, {})[RULE7_SUB1] = {
+                        "reason":         RULE7_SUB_REASONS[RULE7_SUB1],
+                        "highlight_cols": ["INTERVALSTOEXPIRYDAYS"],
+                    }
+                    # If blank, sub-rules 2 & 3 cannot be evaluated
+                    continue
+
+                try:
+                    numeric_val = float(str(val).strip())
+                except ValueError:
+                    # Non-numeric — treat as blank-equivalent
+                    error_map.setdefault(idx, {})[RULE7_SUB1] = {
+                        "reason":         RULE7_SUB_REASONS[RULE7_SUB1],
+                        "highlight_cols": ["INTERVALSTOEXPIRYDAYS"],
+                    }
+                    continue
+
+                # Sub-rule 2: must be > 0
+                if numeric_val <= 0:
+                    error_map.setdefault(idx, {})[RULE7_SUB2] = {
+                        "reason":         RULE7_SUB_REASONS[RULE7_SUB2],
+                        "highlight_cols": ["INTERVALSTOEXPIRYDAYS"],
+                    }
+
+                # Sub-rule 3: must be > MINREMSHELFLIFE
+                # (MINREMSHELFLIFE is guaranteed numeric per the assumption)
+                if not self._is_blank(minrem):
+                    try:
+                        minrem_val = float(str(minrem).strip())
+                        if numeric_val <= minrem_val:
+                            error_map.setdefault(idx, {})[RULE7_SUB3] = {
+                                "reason":         RULE7_SUB_REASONS[RULE7_SUB3],
+                                "highlight_cols": ["INTERVALSTOEXPIRYDAYS", "MINREMSHELFLIFE"],
+                            }
+                    except ValueError:
+                        pass   # MINREMSHELFLIFE non-numeric — skip comparison
+
         return error_map
-
 
 
 # ══════════════════════════════════════════════
@@ -234,11 +284,8 @@ class PartBusinessValidator:
             self.df = pd.read_csv(self.filepath, dtype=str)
         elif path.endswith(".tab") or path.endswith(".tsv"):
             self.df = pd.read_csv(
-                self.filepath,
-                sep="\t",
-                dtype=str,
-                encoding="utf-8",
-                engine="python",
+                self.filepath, sep="\t", dtype=str,
+                encoding="utf-8", engine="python",
             )
         elif path.endswith(".xlsx") or path.endswith(".xls"):
             self.df = pd.read_excel(self.filepath, dtype=str, engine="openpyxl")
@@ -246,6 +293,14 @@ class PartBusinessValidator:
             raise ValueError(f"Unsupported file format: {self.filepath}")
 
         self.df.columns = [c.strip().upper() for c in self.df.columns]
+
+        # ── Filter to FERT / HAWA only before any processing ────────────────
+        if "MATERIALTYPE" in self.df.columns:
+            before = len(self.df)
+            self.df = self.df[
+                self.df["MATERIALTYPE"].str.strip().str.upper().isin(SHELF_LIFE_MATERIAL_TYPES)
+            ].copy()
+            print(f"    Rows after FERT/HAWA filter: {len(self.df)} (dropped {before - len(self.df)})")
 
     def validate(self):
         engine         = BusinessRuleEngine()
@@ -287,14 +342,26 @@ class BusinessReportWriter:
         v          = self.validator
         total_rows = len(v.df)
 
-        # Count error rows per rule
+        # ── Build per-rule error counts ──────────────────────────────────────
+        # For RULE7 we count at sub-rule level; parent count = rows with ANY sub-rule error
         col_error_counts = {r: 0 for r in RULES_FIELDS_ORDERED}
+        rule7_sub_counts = {RULE7_SUB1: 0, RULE7_SUB2: 0, RULE7_SUB3: 0}
+
         for rule_dict in v.error_map.values():
             for rule_key in rule_dict.keys():
                 if rule_key in col_error_counts:
                     col_error_counts[rule_key] += 1
+                if rule_key in rule7_sub_counts:
+                    rule7_sub_counts[rule_key] += 1
 
-        # Title
+        # Parent count for RULE7 = distinct rows that have at least one sub-rule error
+        rule7_parent_count = sum(
+            1 for rd in v.error_map.values()
+            if any(sk in rd for sk in (RULE7_SUB1, RULE7_SUB2, RULE7_SUB3))
+        )
+        col_error_counts[RULE7_KEY] = rule7_parent_count
+
+        # ── Title ────────────────────────────────────────────────────────────
         ws.merge_cells("A1:G1")
         tc           = ws.cell(row=1, column=1,
                                value="Part Master FG – Business Rules Validation Summary")
@@ -303,7 +370,7 @@ class BusinessReportWriter:
         tc.alignment = Alignment(horizontal="left", vertical="center")
         ws.row_dimensions[1].height = 26
 
-        # Header row
+        # ── Column headers ───────────────────────────────────────────────────
         headers = ["#", "Rule Name", "Error Count", "Record Count",
                    "% Health", "% of Error", "Reason"]
         for c_idx, h in enumerate(headers, start=1):
@@ -314,28 +381,72 @@ class BusinessReportWriter:
             cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
         ws.row_dimensions[2].height = 30
 
+        # ── Per-rule rows ────────────────────────────────────────────────────
         row_num = 3
         for rule_num, rule_key in enumerate(RULES_FIELDS_ORDERED, start=1):
             count      = col_error_counts.get(rule_key, 0)
             pct_error  = round((count / total_rows) * 100, 2) if total_rows else 0
             pct_health = round(100 - pct_error, 2)
-            reason     = REASON_MAP.get(rule_key, "") if count > 0 else ""
 
-            values = [rule_num, rule_key, count, total_rows,
-                      f"{pct_health}%", f"{pct_error}%", reason]
-            for c_idx, val in enumerate(values, start=1):
-                cell           = ws.cell(row=row_num, column=c_idx, value=val)
-                cell.font      = BODY_FONT
-                cell.border    = THIN_BORDER
-                cell.fill      = WHITE_FILL
-                cell.alignment = Alignment(
-                    horizontal="left" if c_idx == 7 else "center",
-                    vertical="center",
-                    wrap_text=(c_idx == 7),
-                )
-            row_num += 1
+            # ── RULE7: parent row + 3 sub-rows ───────────────────────────────
+            if rule_key == RULE7_KEY:
+                # Parent row
+                for c_idx, val in enumerate(
+                    [rule_num, rule_key, count, total_rows,
+                     f"{pct_health}%", f"{pct_error}%", ""],
+                    start=1,
+                ):
+                    cell           = ws.cell(row=row_num, column=c_idx, value=val)
+                    cell.font      = Font(name="Arial", bold=True, size=10)
+                    cell.border    = THIN_BORDER
+                    cell.fill      = WHITE_FILL
+                    cell.alignment = Alignment(horizontal="center", vertical="center")
+                row_num += 1
 
-        # TOTAL row
+                # Sub-rows
+                for sub_key in (RULE7_SUB1, RULE7_SUB2, RULE7_SUB3):
+                    sub_count      = rule7_sub_counts.get(sub_key, 0)
+                    sub_pct_err    = round((sub_count / total_rows) * 100, 2) if total_rows else 0
+                    sub_pct_health = round(100 - sub_pct_err, 2)
+                    sub_reason     = RULE7_SUB_REASONS[sub_key] if sub_count > 0 else ""
+
+                    for c_idx, val in enumerate(
+                        ["", RULE7_SUMMARY_SUB_LABELS[sub_key], sub_count, total_rows,
+                         f"{sub_pct_health}%", f"{sub_pct_err}%", sub_reason],
+                        start=1,
+                    ):
+                        cell        = ws.cell(row=row_num, column=c_idx, value=val)
+                        cell.font   = BODY_FONT
+                        cell.border = THIN_BORDER
+                        cell.fill   = WHITE_FILL
+                        cell.alignment = Alignment(
+                            horizontal="left" if c_idx in (2, 7) else "center",
+                            vertical="center",
+                            wrap_text=(c_idx == 7),
+                            indent=(1 if c_idx == 2 else 0),
+                        )
+                    row_num += 1
+
+            else:
+                # Standard single row
+                reason = REASON_MAP.get(rule_key, "") if count > 0 else ""
+                for c_idx, val in enumerate(
+                    [rule_num, rule_key, count, total_rows,
+                     f"{pct_health}%", f"{pct_error}%", reason],
+                    start=1,
+                ):
+                    cell           = ws.cell(row=row_num, column=c_idx, value=val)
+                    cell.font      = BODY_FONT
+                    cell.border    = THIN_BORDER
+                    cell.fill      = WHITE_FILL
+                    cell.alignment = Alignment(
+                        horizontal="left" if c_idx == 7 else "center",
+                        vertical="center",
+                        wrap_text=(c_idx == 7),
+                    )
+                row_num += 1
+
+        # ── TOTAL row ────────────────────────────────────────────────────────
         total_errors       = sum(col_error_counts.values())
         total_record_count = total_rows * len(RULES_FIELDS_ORDERED)
         total_pct_error    = round((total_errors / total_record_count) * 100, 2) if total_record_count else 0
@@ -354,6 +465,7 @@ class BusinessReportWriter:
 
         row_num += 2
 
+        # ── Stats block ──────────────────────────────────────────────────────
         records_with_errors = len(v.error_map)
         records_passing     = total_rows - records_with_errors
 
@@ -376,7 +488,7 @@ class BusinessReportWriter:
             vc.alignment = Alignment(horizontal="center", vertical="center")
             row_num += 1
 
-        col_widths = [6, 24, 14, 16, 12, 12, 70]
+        col_widths = [6, 50, 14, 16, 12, 12, 80]
         for c_idx, width in enumerate(col_widths, start=1):
             ws.column_dimensions[get_column_letter(c_idx)].width = width
 
@@ -403,15 +515,15 @@ class BusinessReportWriter:
         for rule_num, (rule_key, rules_list) in enumerate(RULES_CONTENT.items(), start=1):
             num_rules = len(rules_list)
             for r_idx, rule_text in enumerate(rules_list):
-                nc           = ws.cell(row=current_row, column=1,
-                                       value=rule_num if r_idx == 0 else "")
+                nc = ws.cell(row=current_row, column=1,
+                             value=rule_num if r_idx == 0 else "")
                 nc.fill      = RULE_FILL
                 nc.font      = Font(name="Arial", size=10, bold=(r_idx == 0))
                 nc.border    = THIN_BORDER
                 nc.alignment = Alignment(horizontal="center", vertical="center")
 
-                fc           = ws.cell(row=current_row, column=2,
-                                       value=rule_key if r_idx == 0 else "")
+                fc = ws.cell(row=current_row, column=2,
+                             value=rule_key if r_idx == 0 else "")
                 fc.fill      = RULE_FILL
                 fc.font      = Font(name="Arial", size=10, bold=(r_idx == 0))
                 fc.border    = THIN_BORDER
@@ -437,34 +549,45 @@ class BusinessReportWriter:
 
     # ── Error Sheets ──────────────────────────
     def _write_error_sheets(self, wb):
-        """
-        One sheet per business rule.
-        ALL columns from the input file are shown.
-        Highlighted columns per rule:
-          DUPLICATE_ROW    → no specific column (whole row in yellow)
-          MATERIALNUMBER   → MATERIALNUMBER + PRODUCTDESCRIPTION in red
-          BASEUNIT         → MATERIALNUMBER + BASEUNIT in red
-          MINREMSHELFLIFE  → MINREMSHELFLIFE in red
-          PROCUREMENTTYPE  → PROCUREMENTTYPE in red
-        """
         v              = self.validator
         df             = v.df
         all_input_cols = list(df.columns)
 
         for rule_key in ERROR_SHEET_PRIORITY:
-            row_indices = [
-                idx for idx, rule_dict in v.error_map.items()
-                if rule_key in rule_dict
-            ]
+            # For RULE7, collect rows that failed ANY of the 3 sub-rules
+            if rule_key == RULE7_KEY:
+                row_indices = [
+                    idx for idx, rule_dict in v.error_map.items()
+                    if any(sk in rule_dict for sk in (RULE7_SUB1, RULE7_SUB2, RULE7_SUB3))
+                ]
+            else:
+                row_indices = [
+                    idx for idx, rule_dict in v.error_map.items()
+                    if rule_key in rule_dict
+                ]
+
             if not row_indices:
                 continue
 
             subset = df.loc[row_indices, all_input_cols].copy()
-            subset["ERROR_REASON"] = subset.index.map(
-                lambda i: v.error_map.get(i, {}).get(rule_key, {}).get("reason", "")
-            )
 
-            # Safe sheet name (Excel max 31 chars)
+            # Build a specific per-row reason string
+            if rule_key == RULE7_KEY:
+                def _rule7_reason(i):
+                    rd      = v.error_map.get(i, {})
+                    reasons = [
+                        RULE7_SUB_REASONS[sk]
+                        for sk in (RULE7_SUB1, RULE7_SUB2, RULE7_SUB3)
+                        if sk in rd
+                    ]
+                    return " | ".join(reasons)
+                subset["ERROR_REASON"] = subset.index.map(_rule7_reason)
+            else:
+                subset["ERROR_REASON"] = subset.index.map(
+                    lambda i: v.error_map.get(i, {}).get(rule_key, {}).get("reason", "")
+                )
+
+            # Safe sheet name
             sheet_name = rule_key[:31]
             existing   = [s.title for s in wb.worksheets]
             counter    = 1
@@ -478,10 +601,12 @@ class BusinessReportWriter:
 
             col_idx_map = {col: i for i, col in enumerate(subset.columns, start=1)}
 
-            # Determine highlight columns for this rule from first error row
-            highlight_cols: list = v.error_map[row_indices[0]][rule_key].get(
-                "highlight_cols", []
-            )
+            # Determine highlight columns
+            if rule_key == RULE7_KEY:
+                # highlight cols depend on which sub-rules fired per row
+                highlight_cols = None   # handled per row below
+            else:
+                highlight_cols = v.error_map[row_indices[0]][rule_key].get("highlight_cols", [])
 
             for r_idx, (orig_idx, row_data) in enumerate(subset.iterrows(), start=2):
                 for col, value in zip(subset.columns, row_data):
@@ -494,12 +619,24 @@ class BusinessReportWriter:
                     )
                     cell.fill = ROW_FILL
 
-                # Red overlay on the specific failing column(s)
-                for h_col in highlight_cols:
-                    if h_col in col_idx_map:
-                        tc      = ws.cell(row=r_idx, column=col_idx_map[h_col])
-                        tc.fill = RED_FILL
-                        tc.font = ERR_FONT
+                # Red highlight
+                if rule_key == RULE7_KEY:
+                    rd           = v.error_map.get(orig_idx, {})
+                    cols_to_flag = set()
+                    for sk in (RULE7_SUB1, RULE7_SUB2, RULE7_SUB3):
+                        if sk in rd:
+                            cols_to_flag.update(rd[sk].get("highlight_cols", []))
+                    for h_col in cols_to_flag:
+                        if h_col in col_idx_map:
+                            tc      = ws.cell(row=r_idx, column=col_idx_map[h_col])
+                            tc.fill = RED_FILL
+                            tc.font = ERR_FONT
+                else:
+                    for h_col in highlight_cols:
+                        if h_col in col_idx_map:
+                            tc      = ws.cell(row=r_idx, column=col_idx_map[h_col])
+                            tc.fill = RED_FILL
+                            tc.font = ERR_FONT
 
             self._auto_width(ws, min_w=10, max_w=60)
             ws.freeze_panes = "A2"
@@ -523,22 +660,28 @@ class BusinessReportWriter:
 
         wb.save(self.output_path)
 
-        # rule1_errors = sum(1 for rd in v.error_map.values() if RULE1_KEY in rd)
         rule2_errors = sum(1 for rd in v.error_map.values() if RULE2_KEY in rd)
         rule3_errors = sum(1 for rd in v.error_map.values() if RULE3_KEY in rd)
         rule4_errors = sum(1 for rd in v.error_map.values() if RULE4_KEY in rd)
         rule5_errors = sum(1 for rd in v.error_map.values() if RULE5_KEY in rd)
         rule6_errors = sum(1 for rd in v.error_map.values() if RULE6_KEY in rd)
+        rule7_errors = sum(
+            1 for rd in v.error_map.values()
+            if any(sk in rd for sk in (RULE7_SUB1, RULE7_SUB2, RULE7_SUB3))
+        )
 
         print(f"\n✅  Output saved  → {self.output_path}")
-        print(f"   Total rows                        : {len(v.df)}")
-        print(f"   Rows with any error               : {len(v.error_map)}")
-        # print(f"   DUPLICATE_ROW errors              : {rule1_errors}")
-        print(f"   MATERIALNUMBER errors             : {rule2_errors}")
-        print(f"   BASEUNIT errors                   : {rule3_errors}")
-        print(f"   MINREMSHELFLIFE errors            : {rule4_errors}")
-        print(f"   PROCUREMENTTYPE errors            : {rule5_errors}")
-        print(f"   IBPSTATUS errors                : {rule6_errors}")
+        print(f"   Total rows                              : {len(v.df)}")
+        print(f"   Rows with any error                     : {len(v.error_map)}")
+        print(f"   MATERIALNUMBER errors                   : {rule2_errors}")
+        print(f"   BASEUNIT errors                         : {rule3_errors}")
+        print(f"   MINREMSHELFLIFE errors                  : {rule4_errors}")
+        print(f"   PROCUREMENTTYPE errors                  : {rule5_errors}")
+        print(f"   IBPSTATUS errors                        : {rule6_errors}")
+        print(f"   INTERVALSTOEXPIRYDAYS errors            : {rule7_errors}")
+        print(f"     ↳ blank                               : {sum(1 for rd in v.error_map.values() if RULE7_SUB1 in rd)}")
+        print(f"     ↳ ≤ 0                                 : {sum(1 for rd in v.error_map.values() if RULE7_SUB2 in rd)}")
+        print(f"     ↳ not > MINREMSHELFLIFE               : {sum(1 for rd in v.error_map.values() if RULE7_SUB3 in rd)}")
 
 
 # ══════════════════════════════════════════════
