@@ -6,8 +6,8 @@ from openpyxl.utils import get_column_letter
 # ─────────────────────────────────────────────
 #  FILE PATHS
 # ─────────────────────────────────────────────
-INPUT_FILE  = r"C:\Users\SW526XH\Downloads\Go Live-1\Part\PartFG_2026-05-05-1948.tab"
-OUTPUT_FILE = r"C:\Users\SW526XH\Downloads\Go Live-1\Part\Validated_Part_Business_Rulesets.xlsx"
+INPUT_FILE  = r"C:\Users\SW526XH\Downloads\Go Live-1\Part\Part_Site_2026-05-28-1951.tab"
+OUTPUT_FILE = r"C:\Users\SW526XH\Downloads\Go Live-1\Part\Validated_Part_Business_Rulesets_with_IBPStatus.xlsx"
 
 
 # ─────────────────────────────────────────────
@@ -39,25 +39,26 @@ THIN_BORDER = Border(
 #  Rule 4 : MINREMSHELFLIFE → not blank for FERT/HAWA; must be > 0
 #  Rule 5 : PROCUREMENTTYPE → must be E / F / X
 # ─────────────────────────────────────────────
-RULE1_KEY = "DUPLICATE_ROW"
+# RULE1_KEY = "DUPLICATE_ROW"
 RULE2_KEY = "MATERIALNUMBER"
 RULE3_KEY = "BASEUNIT"
 RULE4_KEY = "MINREMSHELFLIFE"
 RULE5_KEY = "PROCUREMENTTYPE"
+RULE6_KEY = "IBPSTATUTS"
 
 VALID_PROCUREMENT_TYPES = {"E", "F", "X"}
 SHELF_LIFE_MATERIAL_TYPES = {"FERT", "HAWA"}
 
 # Error-sheet creation order
-ERROR_SHEET_PRIORITY = [RULE1_KEY, RULE2_KEY, RULE3_KEY, RULE4_KEY, RULE5_KEY]
+ERROR_SHEET_PRIORITY = [RULE2_KEY, RULE3_KEY, RULE4_KEY, RULE5_KEY,RULE6_KEY]
 
 # Summary / Rules sheet labels
-RULES_FIELDS_ORDERED = [RULE1_KEY, RULE2_KEY, RULE3_KEY, RULE4_KEY, RULE5_KEY]
+RULES_FIELDS_ORDERED = [RULE2_KEY, RULE3_KEY, RULE4_KEY, RULE5_KEY,RULE6_KEY]
 
 REASON_MAP = {
-    RULE1_KEY: (
-        "DUPLICATE_ROW: The entire row is an exact duplicate of another row in the extract"
-    ),
+    # RULE1_KEY: (
+    #     "DUPLICATE_ROW: The entire row is an exact duplicate of another row in the extract"
+    # ),
     RULE2_KEY: (
         "MATERIALNUMBER: MATERIALNUMBER is mapped to more than one PRODUCTDESCRIPTION"
     ),
@@ -72,32 +73,37 @@ REASON_MAP = {
     RULE5_KEY: (
         "PROCUREMENTTYPE: Invalid or blank value — must be one of E / F / X"
     ),
+    
+RULE6_KEY: (
+        "IBPSTATUS: Must be 'IBP' — blank or unexpected value found"
+    ),
+
 }
 
 RULES_CONTENT = {
-    RULE1_KEY: [
-        "No duplicate rows are allowed in the extract.",
-        "A duplicate is defined as a row where ALL column values are identical to another row.",
-    ],
+    # RULE1_KEY: [
+    #     "No duplicate rows are allowed in the extract.",
+    # ],
     RULE2_KEY: [
-        "Each MATERIALNUMBER must map to exactly one PRODUCTDESCRIPTION.",
-        "If a MATERIALNUMBER has more than one distinct PRODUCTDESCRIPTION, all such rows are flagged.",
+        "MATERIALNUMBER column should be mapped to single description.",
+        
     ],
     RULE3_KEY: [
         "BASEUNIT (Base UOM) must be consistent for the same MATERIALNUMBER across all sites.",
-        "If the same MATERIALNUMBER has more than one distinct BASEUNIT value, all such rows are flagged.",
-        "Key columns considered: MATERIALNUMBER and BASEUNIT.",
     ],
     RULE4_KEY: [
         "MINREMSHELFLIFE field must not be blank for material types FERT and HAWA.",
-        "MINREMSHELFLIFE value must be greater than 0 for material types FERT and HAWA.",
-        "Rows with material type other than FERT / HAWA are not evaluated by this rule.",
+        "MINREMSHELFLIFE must be greater than 0",
     ],
     RULE5_KEY: [
-        "PROCUREMENTTYPE field must not be blank.",
-        "Allowed values are: E, F, or X (case-insensitive).",
-        "Any other value (including free-text or typos) is treated as an error.",
+        "Field should be E/F/X",
     ],
+    
+RULE6_KEY: [
+        "Field value must be 'IBP'.",
+        "Blank or any other value is treated as an error.",
+    ],
+
 }
 
 
@@ -118,12 +124,12 @@ class BusinessRuleEngine:
         error_map: dict = {}
 
         # ── Rule 1: Fully identical duplicate rows ──────────────────────────
-        dup_mask = df.duplicated(keep=False)          # marks ALL occurrences
-        for idx in df[dup_mask].index:
-            error_map.setdefault(idx, {})[RULE1_KEY] = {
-                "reason":         REASON_MAP[RULE1_KEY],
-                "highlight_cols": [],                  # whole row is the issue
-            }
+        # dup_mask = df.duplicated(keep=False)          # marks ALL occurrences
+        # for idx in df[dup_mask].index:
+        #     error_map.setdefault(idx, {})[RULE1_KEY] = {
+        #         "reason":         REASON_MAP[RULE1_KEY],
+        #         "highlight_cols": [],                  # whole row is the issue
+        #     }
 
         # ── Rule 2: MaterialNumber → multiple descriptions ──────────────────
         if "MATERIALNUMBER" in df.columns and "PRODUCTDESCRIPTION" in df.columns:
@@ -190,17 +196,26 @@ class BusinessRuleEngine:
             for idx, row in df.iterrows():
                 val = row.get("PROCUREMENTTYPE")
                 if self._is_blank(val):
-                    is_invalid = True
-                else:
-                    is_invalid = str(val).strip().upper() not in VALID_PROCUREMENT_TYPES
+                    continue
+                is_invalid = str(val).strip().upper() not in VALID_PROCUREMENT_TYPES
 
                 if is_invalid:
                     error_map.setdefault(idx, {})[RULE5_KEY] = {
                         "reason":         REASON_MAP[RULE5_KEY],
                         "highlight_cols": ["PROCUREMENTTYPE"],
                     }
+        if "IBPSTATUS" in df.columns:
+           for idx, row in df.iterrows():
+               val = row.get("IBPSTATUS")
 
+               if self._is_blank(val) or str(val).strip().upper() != "IBP":
+                error_map.setdefault(idx, {})[RULE6_KEY] = {
+                "reason": REASON_MAP[RULE6_KEY],
+                "highlight_cols": ["IBPSTATUS"],
+             }
+               
         return error_map
+
 
 
 # ══════════════════════════════════════════════
@@ -222,7 +237,7 @@ class PartBusinessValidator:
                 self.filepath,
                 sep="\t",
                 dtype=str,
-                encoding="cp1252",
+                encoding="utf-8",
                 engine="python",
             )
         elif path.endswith(".xlsx") or path.endswith(".xls"):
@@ -508,20 +523,22 @@ class BusinessReportWriter:
 
         wb.save(self.output_path)
 
-        rule1_errors = sum(1 for rd in v.error_map.values() if RULE1_KEY in rd)
+        # rule1_errors = sum(1 for rd in v.error_map.values() if RULE1_KEY in rd)
         rule2_errors = sum(1 for rd in v.error_map.values() if RULE2_KEY in rd)
         rule3_errors = sum(1 for rd in v.error_map.values() if RULE3_KEY in rd)
         rule4_errors = sum(1 for rd in v.error_map.values() if RULE4_KEY in rd)
         rule5_errors = sum(1 for rd in v.error_map.values() if RULE5_KEY in rd)
+        rule6_errors = sum(1 for rd in v.error_map.values() if RULE6_KEY in rd)
 
         print(f"\n✅  Output saved  → {self.output_path}")
         print(f"   Total rows                        : {len(v.df)}")
         print(f"   Rows with any error               : {len(v.error_map)}")
-        print(f"   DUPLICATE_ROW errors              : {rule1_errors}")
+        # print(f"   DUPLICATE_ROW errors              : {rule1_errors}")
         print(f"   MATERIALNUMBER errors             : {rule2_errors}")
         print(f"   BASEUNIT errors                   : {rule3_errors}")
         print(f"   MINREMSHELFLIFE errors            : {rule4_errors}")
         print(f"   PROCUREMENTTYPE errors            : {rule5_errors}")
+        print(f"   IBPSTATUS errors                : {rule6_errors}")
 
 
 # ══════════════════════════════════════════════
