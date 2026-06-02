@@ -34,7 +34,6 @@ THIN_BORDER = Border(
 #  Business Ruleset Info
 # ══════════════════════════════════════════════
 BUSINESS_RULESET_INFO = {
-    # ── UPDATED: REGION_CODE rule replaced with CHANNEL+REGION_CODE combo ──
     "CHANNEL_REGION_CODE": [
         "One CLUSTER should be mapped to a single CHANNEL-REGION_CODE combination.",
     ],
@@ -63,9 +62,6 @@ CHANNEL_REGION_RULE_TEXT = (
     "One CLUSTER should be mapped to a single CHANNEL-REGION_CODE combination."
 )
 
-# Format:
-# Summary Field, Child Column Candidates, Parent Column Candidates, Rule Text
-# NOTE: CHANNEL_REGION_CODE rule is handled separately in validate(); not listed here.
 PARENT_CHILD_RULESET_INFO = [
     (
         "AREA_CODE",
@@ -112,9 +108,12 @@ PARENT_CHILD_RULESET_INFO = [
 class CustomerBusinessValidator:
     """Loads Customer file and validates business rules only."""
 
+    # Name of the column as it exists in the input file
+    COMPUTED_CHANNEL_REGION_COL = "CHANNEL_REGION_CODE"
+
     def __init__(self, customer_path: str):
         self.customer_path = customer_path
-        self.df = pd.DataFrame()
+        self.df = pd.DataFrame()           # raw input — never modified
         self.error_map = {}
         self.parent_child_error_rows = []
         self.parent_child_error_detail_rows_by_sheet = {}
@@ -159,53 +158,53 @@ class CustomerBusinessValidator:
 
     def validate(self):
         print("🔍 Validating customer business rules …")
-        self.validate_channel_region_cluster()   # NEW rule replacing old REGION_CODE rule
+        self.validate_channel_region_cluster()
         self.validate_parent_child_rules()
-        # self.validate_duplicate_records()
 
-    # ── NEW: CHANNEL-REGION_CODE combination uniqueness per CLUSTER ──────────
+    # ── CHANNEL_REGION_CODE uniqueness per CLUSTER ────────────────────────
     def validate_channel_region_cluster(self):
         """
-        Rule: Each CLUSTER must map to exactly one CHANNEL-REGION_CODE combination.
-        Steps:
-          1. Concatenate CHANNEL + '-' + REGION_CODE → CHANNEL_REGION_CODE (temp column)
-          2. For each CLUSTER, count distinct CHANNEL_REGION_CODE values.
-          3. Flag all rows where the CLUSTER has more than one distinct combo.
-        """
-        channel_col = self._find_column(self.df, ["CHANNEL"])
-        region_col  = self._find_column(self.df, ["REGION_CODE"])
-        cluster_col = self._find_column(self.df, ["CLUSTER"])
+        Rule: Each CLUSTER must map to exactly one CHANNEL_REGION_CODE value.
 
-        if channel_col is None or region_col is None or cluster_col is None:
+        CHANNEL_REGION_CODE already exists in the input file (pre-computed).
+        Values like 'ONLINE_US', 'STORE_NaN', 'NaN_IN', 'NaN_NaN' are read
+        directly — no recomputation is done here.
+
+        Rows where CHANNEL_REGION_CODE contains 'NaN' (i.e. blank source fields)
+        are EXCLUDED from the uniqueness check, same as before when we skipped
+        blank CHANNEL or REGION_CODE values.
+
+        Highlighted columns in the detail sheet: CLUSTER, CHANNEL_REGION_CODE.
+        """
+        channel_region_col = self._find_column(self.df, ["CHANNEL_REGION_CODE"])
+        cluster_col        = self._find_column(self.df, ["CLUSTER"])
+
+        if channel_region_col is None or cluster_col is None:
             missing = [
                 name for name, col in
-                [("CHANNEL", channel_col), ("REGION_CODE", region_col), ("CLUSTER", cluster_col)]
+                [("CHANNEL_REGION_CODE", channel_region_col), ("CLUSTER", cluster_col)]
                 if col is None
             ]
             print(f"    ⚠️  Skipping CHANNEL_REGION_CODE rule — missing columns: {missing}")
             return
 
-        work = self.df[[channel_col, region_col, cluster_col]].copy()
-        work[channel_col] = work[channel_col].apply(self._clean)
-        work[region_col]  = work[region_col].apply(self._clean)
-        work[cluster_col] = work[cluster_col].apply(self._clean)
+        # Work on a temporary copy — original df is never modified
+        work = self.df[[cluster_col, channel_region_col]].copy()
+        work[cluster_col]        = work[cluster_col].apply(self._clean)
+        work[channel_region_col] = work[channel_region_col].apply(self._clean)
 
-        # Build the concatenated combo column (used only internally for comparison)
-        work["_CHANNEL_REGION_CODE"] = (
-            work[channel_col] + "-" + work[region_col]
-        )
-
-        # Filter out rows where any of the three key fields are blank
+        # Exclude rows where CLUSTER is blank OR CHANNEL_REGION_CODE contains 'NaN'
+        # (NaN in the value string means one or both source fields were blank)
         work_filtered = work[
-            (work[channel_col] != "") &
-            (work[region_col]  != "") &
-            (work[cluster_col] != "")
+            (work[cluster_col] != "") &
+            (~work[channel_region_col].str.contains("NaN", na=True)) &
+            (work[channel_region_col] != "")
         ]
 
-        # Count distinct CHANNEL_REGION_CODE combos per CLUSTER
+        # Count distinct CHANNEL_REGION_CODE values per CLUSTER
         combo_count_by_cluster = (
             work_filtered
-            .groupby(cluster_col)["_CHANNEL_REGION_CODE"]
+            .groupby(cluster_col)[channel_region_col]
             .nunique()
         )
         bad_clusters = set(combo_count_by_cluster[combo_count_by_cluster > 1].index)
@@ -223,12 +222,11 @@ class CustomerBusinessValidator:
                 self.df[cluster_col].apply(self._clean) == cluster_value
             ].tolist()
 
-            # Collect all distinct CHANNEL_REGION_CODE values for this cluster
             mapped_combos = sorted(
                 set(
                     work_filtered.loc[
                         work_filtered[cluster_col] == cluster_value,
-                        "_CHANNEL_REGION_CODE",
+                        channel_region_col,
                     ]
                 ) - {""}
             )
@@ -238,7 +236,7 @@ class CustomerBusinessValidator:
                 "Rule":                 CHANNEL_REGION_RULE_TEXT,
                 "Child Column":         cluster_col,
                 "Child Value":          cluster_value,
-                "Parent Column":        "CHANNEL_REGION_CODE (concatenated)",
+                "Parent Column":        self.COMPUTED_CHANNEL_REGION_COL,
                 "Mapped Parent Values": ", ".join(mapped_combos),
                 "Parent Count":         len(mapped_combos),
                 "Excel Row Numbers":    ", ".join(str(i + 2) for i in affected_indices),
@@ -246,12 +244,12 @@ class CustomerBusinessValidator:
 
             for row_index in affected_indices:
                 self.parent_child_error_detail_rows_by_sheet.setdefault(sheet_name, []).append({
-                    "row_index":  row_index,
-                    "ruleset":    CHANNEL_REGION_RULE_KEY,
-                    "rule":       CHANNEL_REGION_RULE_TEXT,
-                    "child_col":  cluster_col,
-                    "parent_col": region_col,      # highlight REGION_CODE in red
-                    "extra_highlight_cols": [channel_col],  # also highlight CHANNEL
+                    "row_index":            row_index,
+                    "ruleset":              CHANNEL_REGION_RULE_KEY,
+                    "rule":                 CHANNEL_REGION_RULE_TEXT,
+                    "child_col":            cluster_col,
+                    "parent_col":           self.COMPUTED_CHANNEL_REGION_COL,
+                    "extra_highlight_cols": [],
                 })
 
                 self._add_error(row_index, CHANNEL_REGION_RULE_KEY, CHANNEL_REGION_RULE_TEXT)
@@ -347,6 +345,14 @@ class CustomerBusinessValidator:
 
         return pd.Series(details, dtype=str)
 
+    def build_output_df(self) -> pd.DataFrame:
+        """
+        Returns a copy of the input DataFrame as-is.
+        CHANNEL_REGION_CODE already exists in the input file — no computation needed.
+        ERROR_FIELDS column is added by the writer after this call.
+        """
+        return self.df.copy()
+
 
 # ══════════════════════════════════════════════
 #  Report Writer
@@ -405,24 +411,26 @@ class CustomerBusinessReportWriter:
             ws.column_dimensions[get_column_letter(col[0].column)].width = max(12, min(max_len + 4, 60))
 
     def _get_ruleset_columns(self):
+        """
+        Returns ordered list of columns to include in detail sheets.
+        CHANNEL_REGION_CODE is already present in the input file — no special handling needed.
+        """
         fields = [
             "CUSTOMER", "SUPPLYINGPLANT", "AREA_CODE", "AREA_NAME",
             "SALESHIERARCHY", "L1_GLOBAL_CHANNEL_CODE", "L1_GLOBAL_CHANNEL_DESC",
             "CHANNEL", "CHANNELDESC", "SUB_CHANNEL_CODE_JDA_REPORTING",
-            "SUB_CHANNEL_DESC_JDA_REPORTING", "REGION_CODE", "REGION_NAME",
-            "CLUSTER", "CLUSTER_NAME", "STATE_CODE", "STATE_NAME",
+            "SUB_CHANNEL_DESC_JDA_REPORTING", "REGION_CODE",
+            "CHANNEL_REGION_CODE",           # ← already in the input file
+            "REGION_NAME", "CLUSTER", "CLUSTER_NAME", "STATE_CODE", "STATE_NAME",
             "ADDITIONALCUSTOMERGROUP1", "ADDITIONALCUSTOMERGROUP1NAME",
             "COUNTRY", "CUSTOMERGROUP", "CUSTOMERGROUPNAME", "CUSTOMERNAME",
             "COUNTRYNAME", "DIVISION", "DIVISIONDESC", "DISTRIBUTIONCHANNEL",
         ]
-
-        cols = [col for col in fields if col in self.validator.df.columns]
-        cols.append("ERROR_FIELDS")
-        return cols
+        return fields
 
     def _summary_order(self):
         return [
-            CHANNEL_REGION_RULE_KEY,   # replaces old "REGION_CODE"
+            CHANNEL_REGION_RULE_KEY,
             "AREA_CODE",
             "SALESHIERARCHY",
             "SUB_CHANNEL_CODE_JDA_REPORTING",
@@ -447,11 +455,12 @@ class CustomerBusinessReportWriter:
             cell.alignment = Alignment(horizontal="center")
 
         ruleset_info = {
-            # ── UPDATED rule ──
             CHANNEL_REGION_RULE_KEY: (
-                "Each CLUSTER must be mapped to exactly one CHANNEL-REGION_CODE combination. "
-                "The CHANNEL_REGION_CODE is derived by concatenating CHANNEL and REGION_CODE. "
-                "If a CLUSTER maps to more than one such combination, all affected rows are flagged."
+                "Each CLUSTER must be mapped to exactly one CHANNEL_REGION_CODE combination. "
+                "CHANNEL_REGION_CODE is a pre-computed column already present in the input file "
+                "(format: CHANNEL_REGION_CODE, with 'NaN' where source fields were blank). "
+                "Rows containing 'NaN' in CHANNEL_REGION_CODE are excluded from the uniqueness check. "
+                "If a CLUSTER maps to more than one valid combination, all affected rows are flagged."
             ),
             "AREA_CODE":                       "One Area should be mapped to one Region only.",
             "SALESHIERARCHY":                  "One Territory should be mapped to one Area only.",
@@ -584,7 +593,6 @@ class CustomerBusinessReportWriter:
                     row_num += 1
 
             else:
-                # Single row (CHANNEL_REGION_CODE falls here — no sub-rows)
                 reason  = all_reasons[0] if all_reasons else ""
                 err_pct = field_total_errs / total_rows if total_rows else 0
 
@@ -615,9 +623,9 @@ class CustomerBusinessReportWriter:
             item_counter += 1
 
         # ── TOTAL row ──────────────────────────────────────────────────────
-        total_errors       = sum(col_error_counts.values())
-        total_fill         = PatternFill("solid", start_color="F2F2F2", end_color="F2F2F2")
-        sum_record_counts  = len(sorted_fields) * total_rows
+        total_errors        = sum(col_error_counts.values())
+        total_fill          = PatternFill("solid", start_color="F2F2F2", end_color="F2F2F2")
+        sum_record_counts   = len(sorted_fields) * total_rows
         total_error_percent = total_errors / sum_record_counts if sum_record_counts else 0
 
         ws.cell(row=row_num, column=2, value="TOTAL").font = Font(name="Arial", bold=True)
@@ -641,7 +649,7 @@ class CustomerBusinessReportWriter:
         )
         records_passing = total_rows - records_with_errors
 
-        stats      = [
+        stats = [
             ("Total Records:",       total_rows),
             ("Records with Errors:", records_with_errors),
             ("Records Passing:",     records_passing),
@@ -671,9 +679,9 @@ class CustomerBusinessReportWriter:
         safe_name = self._safe_sheet_name(wb, sheet_name)
         ws        = wb.create_sheet(safe_name)
 
-        row_indices    = [item["row_index"] for item in detail_rows]
-        subset         = df.loc[row_indices].copy()
-        detail_lookup  = {item["row_index"]: item for item in detail_rows}
+        row_indices   = [item["row_index"] for item in detail_rows]
+        subset        = df.loc[row_indices].copy()
+        detail_lookup = {item["row_index"]: item for item in detail_rows}
 
         subset["ERROR_FIELDS"] = subset.index.map(
             lambda i: detail_lookup.get(i, {}).get("rule", "")
@@ -684,8 +692,8 @@ class CustomerBusinessReportWriter:
         col_idx_map = {col: i for i, col in enumerate(subset.columns, start=1)}
 
         for excel_row, (orig_idx, row_data) in enumerate(subset.iterrows(), start=2):
-            detail    = detail_lookup.get(orig_idx, {})
-            child_col = detail.get("child_col", "")
+            detail     = detail_lookup.get(orig_idx, {})
+            child_col  = detail.get("child_col", "")
             parent_col = detail.get("parent_col", "")
             extra_cols = detail.get("extra_highlight_cols", [])
 
@@ -695,7 +703,7 @@ class CustomerBusinessReportWriter:
                 cell.alignment = Alignment(vertical="center", wrap_text=True)
                 cell.fill      = ROW_FILL
 
-            # Highlight all relevant columns in red
+            # Highlight child + parent columns in red
             for error_col in [child_col, parent_col] + extra_cols:
                 if error_col and error_col in col_idx_map:
                     target_cell      = ws.cell(row=excel_row, column=col_idx_map[error_col])
@@ -743,31 +751,36 @@ class CustomerBusinessReportWriter:
         self._set_widths(ws)
 
     def write(self):
-        v  = self.validator
-        df = v.df.copy()
+        v = self.validator
 
-        error_series       = v.get_error_series()
-        df["ERROR_FIELDS"] = df.index.map(
+        # ── Build output df — CHANNEL_REGION_CODE already in input, no recompute ──
+        df_out = v.build_output_df()
+
+        # Attach error summary column
+        error_series           = v.get_error_series()
+        df_out["ERROR_FIELDS"] = df_out.index.map(
             lambda i: error_series.get(i, "") if i in error_series.index else ""
         )
 
-        ruleset_columns = self._get_ruleset_columns()
-        filtered_cols   = [col for col in df.columns if col in ruleset_columns]
-        df              = df[filtered_cols]
+        # Filter to only the desired columns (preserving order)
+        ruleset_columns = self._get_ruleset_columns() + ["ERROR_FIELDS"]
+        filtered_cols   = [col for col in ruleset_columns if col in df_out.columns]
+        filtered_cols   = list(dict.fromkeys(filtered_cols))   # deduplicate, preserve order
+        df_out          = df_out[filtered_cols]
 
         wb = Workbook()
         if "Sheet" in wb.sheetnames:
             del wb["Sheet"]
 
-        self._write_summary_sheet(wb, len(df))
+        self._write_summary_sheet(wb, len(df_out))
         self._write_ruleset_sheet(wb, self._summary_fields_order)
-        self._write_parent_child_errors_sheet(wb, df)
+        self._write_parent_child_errors_sheet(wb, df_out)
         # self._write_duplicate_records_sheet(wb)
 
         wb.save(self.output_path)
 
         print(f"\n✅ Business output saved → {self.output_path}")
-        print(f"   Total rows                    : {len(df)}")
+        print(f"   Total rows                    : {len(df_out)}")
         print(f"   Business error rows           : {len(set(v.error_map.keys()).union(v.duplicate_error_indices))}")
         print(f"   Parent-child hierarchy issues : {len(v.parent_child_error_rows)}")
 
