@@ -362,24 +362,21 @@ class IndependentDemandBusinessReportWriter:
             ],
             "REQUESTEDDELIVERYDATE": [
                 (
-                    "The year-month of REQUESTEDDELIVERYDATE must not be earlier than "
-                    "2 months before the base date year-month. "
-                    "The day component of both the transaction date and the base date "
-                    "is ignored — only year and month are compared."
+               "Transactions beyond current - 2 months should not be present"
                 ),
-                (
-                    f"Base date: {self.base_date_str}  →  "
-                    f"Cutoff year-month: {self.cutoff_label_str}."
-                ),
-                (
-                    "Dates within the cutoff month are ALLOWED. "
-                    "Only dates whose year-month is strictly before the cutoff are flagged."
-                ),
-                (
-                    "Corner-case example: if base date is 2026-01-06, the cutoff is "
-                    "2025-11 (November 2025). Dates in Nov 2025 are allowed; "
-                    "dates in Oct 2025 or earlier are flagged."
-                ),
+                # (
+                #     f"Base date: {self.base_date_str}  →  "
+                #     f"Cutoff year-month: {self.cutoff_label_str}."
+                # ),
+                # (
+                #     "Dates within the cutoff month are ALLOWED. "
+                #     "Only dates whose year-month is strictly before the cutoff are flagged."
+                # ),
+                # (
+                #     "Corner-case example: if base date is 2026-01-06, the cutoff is "
+                #     "2025-11 (November 2025). Dates in Nov 2025 are allowed; "
+                #     "dates in Oct 2025 or earlier are flagged."
+                # ),
             ],
         }
 
