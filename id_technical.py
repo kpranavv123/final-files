@@ -61,7 +61,7 @@ TECHNICAL_RULESET_INFO = {
     ],
     "SOLDTOPARTY": [
         "SOLDTOPARTY is blank",
-        "SOLDTOPARTY and PRODUCTIONPLANT combination not found in Customer master",
+        # "SOLDTOPARTY and PRODUCTIONPLANT combination not found in Customer master",  ← DISABLED
     ],
     "REQUESTEDDELIVERYDATE": [
         "REQUESTEDDELIVERYDATE is blank",
@@ -81,7 +81,6 @@ TECHNICAL_RULESET_INFO = {
     "SDPROCESSSTATUS": [
         "SDPROCESSSTATUS is blank",
     ],
-    # ── NEW ──
     "DUPLICATE_CHECK": [
         "Duplicate row: SALESORDER + PRODUCTIONPLANT + SALESORDERTYPE + SOLDTOPARTY + MATERIAL combination appears more than once in the extract",
     ],
@@ -94,11 +93,11 @@ TECHNICAL_RULESET_INFO = {
 class IndependentDemandTechnicalRuleEngine:
 
     def __init__(self, site_codes: set, part_site_combos: set,
-                 customer_site_combos: set, duplicate_keys: set):   # ← NEW param
+                 customer_site_combos: set, duplicate_keys: set):
         self.site_codes           = site_codes
         self.part_site_combos     = part_site_combos
         self.customer_site_combos = customer_site_combos
-        self.duplicate_keys       = duplicate_keys                  # set of 5-tuples
+        self.duplicate_keys       = duplicate_keys
 
     @staticmethod
     def _is_blank(value) -> bool:
@@ -128,15 +127,18 @@ class IndependentDemandTechnicalRuleEngine:
         return True, ""
 
     def validate_soldtoparty(self, row) -> tuple:
-        cust_id    = row.get("SOLDTOPARTY")
-        prod_plant = row.get("PRODUCTIONPLANT")
+        cust_id = row.get("SOLDTOPARTY")
         if self._is_blank(cust_id):
             return False, "SOLDTOPARTY is blank"
-        cust_str  = str(cust_id).strip()
-        plant_str = str(prod_plant).strip() if not self._is_blank(prod_plant) else ""
-        if (cust_str, plant_str) in self.customer_site_combos:
-            return True, ""
-        return False, "SOLDTOPARTY and PRODUCTIONPLANT combination not found in Customer master"
+        # ── Rule disabled: site/customer master cross-check ──────────────
+        # cust_str  = str(cust_id).strip()
+        # prod_plant = row.get("PRODUCTIONPLANT")
+        # plant_str = str(prod_plant).strip() if not self._is_blank(prod_plant) else ""
+        # if (cust_str, plant_str) in self.customer_site_combos:
+        #     return True, ""
+        # return False, "SOLDTOPARTY and PRODUCTIONPLANT combination not found in Customer master"
+        # ─────────────────────────────────────────────────────────────────
+        return True, ""
 
     def validate_req_del_date(self, row) -> tuple:
         import re
@@ -181,12 +183,10 @@ class IndependentDemandTechnicalRuleEngine:
             return False, "SDPROCESSSTATUS is blank"
         return True, ""
 
-    # ── NEW ──────────────────────────────────
     def validate_duplicate_check(self, row) -> tuple:
         key = tuple(
             str(row.get(col, "")).strip() for col in DUPLICATE_KEY_COLS
         )
-        # Only flag if ALL key fields are non-empty (blanks caught by their own rules)
         if all(v and v != "nan" for v in key):
             if key in self.duplicate_keys:
                 return False, (
@@ -194,7 +194,6 @@ class IndependentDemandTechnicalRuleEngine:
                     "+ SOLDTOPARTY + MATERIAL combination appears more than once in the extract"
                 )
         return True, ""
-    # ─────────────────────────────────────────
 
     def get_rules(self) -> dict:
         return {
@@ -208,7 +207,7 @@ class IndependentDemandTechnicalRuleEngine:
             "SCHEDULELINEORDERQUANTITY": self.validate_quantity_blank,
             "NETPRICE":                  self.validate_netprice_blank,
             "SDPROCESSSTATUS":           self.validate_status,
-            "DUPLICATE_CHECK":           self.validate_duplicate_check,   # ← NEW
+            "DUPLICATE_CHECK":           self.validate_duplicate_check,
         }
 
 
@@ -268,7 +267,7 @@ class IndependentDemandTechnicalValidator:
             if part_name and part_site:
                 self.part_site_combos.add((part_name, part_site))
 
-        # Customer master
+        # Customer master (loaded but not used for validation — cross-check disabled)
         cust_df = self._read_file(CUSTOMER_REFERENCE_FILE)
         cust_df.columns = [str(c).strip().upper() for c in cust_df.columns]
         for _, row in cust_df.iterrows():
@@ -280,7 +279,7 @@ class IndependentDemandTechnicalValidator:
     def validate(self):
         print("[VALIDATE] Running technical validation rules...")
 
-        # ── Pre-compute composite duplicates ──────────────────────────────
+        # Pre-compute composite duplicates
         present_key_cols = [c for c in DUPLICATE_KEY_COLS if c in self.df.columns]
 
         if len(present_key_cols) == len(DUPLICATE_KEY_COLS):
@@ -294,20 +293,18 @@ class IndependentDemandTechnicalValidator:
             )
         else:
             duplicate_keys = set()
-        # ─────────────────────────────────────────────────────────────────
 
         engine = IndependentDemandTechnicalRuleEngine(
             self.site_codes,
             self.part_site_combos,
             self.customer_site_combos,
-            duplicate_keys,          # ← passed in
+            duplicate_keys,
         )
         rules = engine.get_rules()
 
         for idx, row in self.df.iterrows():
             errors = {}
             for col_name, rule_fn in rules.items():
-                # DUPLICATE_CHECK is virtual — no real column in the dataframe
                 if col_name != "DUPLICATE_CHECK" and col_name not in self.df.columns:
                     continue
                 try:
@@ -360,7 +357,6 @@ class IndependentDemandTechnicalReportWriter:
             "SALESORDERITEM", "SALESORDER", "PRODUCTIONPLANT", "SALESORDERTYPE",
             "SOLDTOPARTY", "REQUESTEDDELIVERYDATE", "MATERIAL",
             "SCHEDULELINEORDERQUANTITY", "NETPRICE", "SDPROCESSSTATUS",
-            # DUPLICATE_CHECK is virtual — not included here (no real column to show)
         ]
         cols = [col for col in ruleset_fields if col in self.validator.df.columns]
         cols.append("ERROR_FIELDS")
@@ -394,7 +390,7 @@ class IndependentDemandTechnicalReportWriter:
             "SALESORDERTYPE":   ["Field should not be blank."],
             "SOLDTOPARTY":      [
                 "Field should not be blank.",
-                "Site customer combination to be present in customer master.",
+                # "Site customer combination to be present in customer master.",  ← DISABLED
             ],
             "REQUESTEDDELIVERYDATE": [
                 "Field should not be blank.",
@@ -408,7 +404,6 @@ class IndependentDemandTechnicalReportWriter:
             "SCHEDULELINEORDERQUANTITY": ["Field should not be blank."],
             "NETPRICE":         ["Field should not be blank."],
             "SDPROCESSSTATUS":  ["Field should not be blank."],
-            # ── NEW ──
             "DUPLICATE_CHECK":  [
                 "The combination of SALESORDER + PRODUCTIONPLANT + SALESORDERTYPE "
                 "+ SOLDTOPARTY + MATERIAL must be unique across the entire extract. "
@@ -487,7 +482,7 @@ class IndependentDemandTechnicalReportWriter:
             "SALESORDERITEM", "SALESORDER", "PRODUCTIONPLANT", "SALESORDERTYPE",
             "SOLDTOPARTY", "REQUESTEDDELIVERYDATE", "MATERIAL",
             "SCHEDULELINEORDERQUANTITY", "NETPRICE", "SDPROCESSSTATUS",
-            "DUPLICATE_CHECK",   # ← NEW — always last
+            "DUPLICATE_CHECK",
         ]
 
         col_error_counts  = {field: 0 for field in ruleset_field_order}
@@ -514,7 +509,6 @@ class IndependentDemandTechnicalReportWriter:
             error_percent  = count / total_rows if total_rows > 0 else 0
             health_percent = 1 - error_percent
 
-            # ── Force DUPLICATE_CHECK to a fixed single-line reason ──────
             if col_name == "DUPLICATE_CHECK":
                 reason_text = (
                     "Duplicate row: SALESORDER + PRODUCTIONPLANT + SALESORDERTYPE "
@@ -525,7 +519,6 @@ class IndependentDemandTechnicalReportWriter:
                 unique_reasons = sorted(set(actual_reasons),
                                         key=actual_reasons.count, reverse=True)
                 reason_text = unique_reasons[0] if unique_reasons else ""
-            # ─────────────────────────────────────────────────────────────
 
             ws.cell(row=row_num, column=1, value=field_num).font  = BODY_FONT
             ws.cell(row=row_num, column=2, value=col_name).font   = BODY_FONT
@@ -552,9 +545,9 @@ class IndependentDemandTechnicalReportWriter:
             row_num += 1
 
         # TOTAL row
-        total_errors        = sum(col_error_counts.values())
-        total_fill          = PatternFill("solid", start_color="F2F2F2", end_color="F2F2F2")
-        sum_record_counts   = len(sorted_fields) * total_rows
+        total_errors         = sum(col_error_counts.values())
+        total_fill           = PatternFill("solid", start_color="F2F2F2", end_color="F2F2F2")
+        sum_record_counts    = len(sorted_fields) * total_rows
         total_error_percent  = total_errors / sum_record_counts if sum_record_counts > 0 else 0
         total_health_percent = 1 - total_error_percent
 
@@ -612,8 +605,8 @@ class IndependentDemandTechnicalReportWriter:
         for err_dict in v.error_map.values():
             all_error_fields.update(err_dict.keys())
 
-        order              = self._summary_fields_order if self._summary_fields_order else list(all_error_fields)
-        fields_to_process  = [f for f in order if f in all_error_fields]
+        order             = self._summary_fields_order if self._summary_fields_order else list(all_error_fields)
+        fields_to_process = [f for f in order if f in all_error_fields]
 
         for field in fields_to_process:
             row_indices = [idx for idx, err in v.error_map.items() if field in err]
@@ -643,9 +636,7 @@ class IndependentDemandTechnicalReportWriter:
                     cell.font = BODY_FONT
                     cell.fill = ROW_FILL
 
-                # ── Highlight logic ───────────────────────────────────────
                 if field == "DUPLICATE_CHECK":
-                    # Highlight all 5 composite-key columns in red
                     for key_col in DUPLICATE_KEY_COLS:
                         if key_col in col_idx_map:
                             cell      = ws.cell(row=excel_row, column=col_idx_map[key_col])
@@ -656,7 +647,6 @@ class IndependentDemandTechnicalReportWriter:
                         target_cell      = ws.cell(row=excel_row, column=col_idx_map[field])
                         target_cell.fill = RED_FILL
                         target_cell.font = ERR_FONT
-                # ─────────────────────────────────────────────────────────
 
             for col in ws.columns:
                 ws.column_dimensions[get_column_letter(col[0].column)].width = 20
@@ -671,7 +661,7 @@ class IndependentDemandTechnicalReportWriter:
         v  = self.validator
         df = v.df.copy()
 
-        error_series    = v.get_error_series()
+        error_series       = v.get_error_series()
         df["ERROR_FIELDS"] = df.index.map(
             lambda i: error_series.get(i, "") if i in error_series.index else ""
         )
