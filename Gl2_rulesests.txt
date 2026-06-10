@@ -28,3 +28,16 @@ Rulesets for GL2:
  6)Combination of SHELFLIFEEXPIRATION and DATEOFMANUFACTURE:
  7)VALUATEDUNRESTRICTEDUSESTOCK:
  8)
+
+
+Allocation
+1)ORDERNUMBER:Field should not be blank
+2)PLANT:1. To be present in the Site master 
+        2. Field should not be blank
+3)BOMITEMNUMBER:1. Field should not be blank
+4)MATERIALNUMBER:1. To be present in either Part(FG) or Part(RM) master
+                 2. Field should not be blank
+5)REQUIREMENTSDATEFORCOMPONENT:1. Field should follow the format :YYYYMMDD
+                              2. Field should not be blank
+6)REMAININGQTY:Field should not be blank
+7)REQUIREMENTQUANTITYINBUOM:Field should not be blank
