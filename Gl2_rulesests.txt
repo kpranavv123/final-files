@@ -69,3 +69,24 @@ ScheduledReceipt (PO_from Vend)
 13)TRANSITTIME:Field should not be blank
 14)POQUANTITYINBU:Field should not be blank
 
+
+BOM:
+1)MATERIAL:
+ a)To be present in either Part(FG) 
+ b)Field should not be blank
+2)PLANT:
+ a)To be present in the Site master 
+ b)Field should not be blank
+3)COMPONENT:
+ a)To be present in either Part(FG) or Part(RMPM) master
+  b)Field should not be blank
+4)VALIDFROM:
+ a)Field should follow the format : YYYYMMDD
+ b)Field should not be blank
+5)VALIDTO:
+  a)Field should follow the format : YYYYMMDD
+ b)Field should not be blank
+6)BASEQUANTITY:Field should not be blank
+7)COMPONENTSCRAP:Field should not be blank
+9)TYPE:Field should not be blank          
+
