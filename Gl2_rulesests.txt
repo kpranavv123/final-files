@@ -138,15 +138,19 @@ b)Field should not be blank
  b)Field should follow the format : YYYYMMDD
 
 
- HSA(Buy)
- 1)MATERIAL:
- a)To be present in either Part(FG)
+ HSA(make)
+ 1)PARTNAME:
+ a)To be present in either Part(FG)-compare MATERIALNUMBER Column in Part tabel
  b)Field should not be blank
  2)ORDERSUPPLIERSITE:
  a)To be present in the Site master 
  b)Field should not be blank
- 3)LATESTDOCKDATE:
- a)Field should follow the format : YYYYMMDD
- b)Field should not be blank
+ 3)MFGORDERITEMACTUALDELIVERYDATE:
+   a)Field should follow the format : YYYYMMDD
+  b)Field should not be blank
  4)QUANTITY:Field should not be blank
+ 5)ACTUALORDERFINISHDATE:
+     a)Field should follow the format : YYYYMMDD
+  b)Field should not be blank
+
 
