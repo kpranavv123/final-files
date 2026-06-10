@@ -1,5 +1,5 @@
 """
-PRODUCTHIERARCHY (FG) - Excel Data Validation Tool
+PRODUCTHIERARCHY (FG) - Excel Data Validation Tool-2
 Validates fields based on material type rules and generates a formatted Excel report.
 """
 
@@ -15,7 +15,7 @@ import os
 # ─────────────────────────────────────────────
 #  FILE PATHS  –  update these
 # ─────────────────────────────────────────────
-INPUT_FILE  = r"C:\Users\SW526XH\Downloads\Go Live-1\ProductH\Product Hierarchy_2026-05-20-1552.tab"
+INPUT_FILE  = r"C:\Users\SW526XH\Downloads\Go Live-1\ProductH\Product Hierarchy_2026-06-04-1750.tab"
 OUTPUT_FILE = r"C:\Users\SW526XH\Downloads\Go Live-1\ProductH\Validated_Product Hierarchy_Technical.xlsx"
 
 # ─────────────────────────────────────────────
@@ -35,7 +35,7 @@ NOT_BLANK_FIELDS = [
     "PACKSIZE", "PACKSIZEDESCRIPTION", "MARKETSKU", "MARKETSKUDESCRIPTION",
     "SUPPLY_FAMILY",
     # ── New not-blank fields ──────────────────
-    "NETWEIGHT", "WEIGHTUNIT", "LENGTH", "WIDTH", "HEIGHT",
+    "WEIGHTUNIT","NETWEIGHT", "LENGTH", "WIDTH", "HEIGHT",
 ]
 
 # Canonical duplicate-check label (single source of truth)
@@ -187,16 +187,16 @@ class ProductHierarchyValidator:
         """
         self._duplicate_indices = set()
 
-        if "PRODUCT" not in df.columns:
+        if "MATERIALNUMBER" not in df.columns:
             return
 
         # Map product value -> list of positional indices in df
         seen: dict = {}
         for pos, (idx, row) in enumerate(df.iterrows()):
-            product = row.get("PRODUCT", "")
-            if is_blank(product):
+            materialnumber = row.get("MATERIALNUMBER", "")
+            if is_blank(materialnumber):
                 continue
-            product_str = str(product).strip()
+            product_str = str(materialnumber).strip()
             seen.setdefault(product_str, []).append(idx)
 
         for product_str, indices in seen.items():
