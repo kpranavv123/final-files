@@ -1,5 +1,5 @@
 """
-Independent Demand Technical Validator
+Independent Demand Technical Validator,updated
 ═════════════════════════════════════════════════════════════════════════════
 """
 
@@ -14,9 +14,9 @@ from datetime import datetime
 #  FILE PATHS
 # ─────────────────────────────────────────────
 INDEPENDENT_DEMAND_INPUT = r"C:\Users\SW526XH\Downloads\Go Live-1\ID\Independent Demand_2026-05-20-1754.tab"
-PART_REFERENCE_FILE      = r"C:\Users\SW526XH\Downloads\Go Live-1\Part\Part_Site_2026-05-21-1510.tab"
+PART_REFERENCE_FILE      = r"C:\Users\SW526XH\Downloads\Go Live-1\Part\Part_Site_2026-06-04-1737.tab"
 SITE_REFERENCE_FILE      = r"C:\Users\SW526XH\Downloads\Go Live-1\Site\Site_2026-05-20-1153.tab"
-CUSTOMER_REFERENCE_FILE  = r"C:\Users\SW526XH\Downloads\Go Live-1\Customer\Cutomer_2026-05-20-1205.tab"
+CUSTOMER_REFERENCE_FILE  = r"C:\Users\SW526XH\Downloads\Go Live-1\Customer\CustomerHierarchy_updated_2026-06-05-0958 1.tab"
 OUTPUT_FILE              = r"C:\Users\SW526XH\Downloads\Go Live-1\ID\Validated_IndependentDemand_Technical2.xlsx"
 
 
