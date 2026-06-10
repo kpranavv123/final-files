@@ -90,3 +90,26 @@ BOM:
 7)COMPONENTSCRAP:Field should not be blank
 9)TYPE:Field should not be blank          
 
+
+ScheduledReceipt (Sub-Con PO)
+1)PURCHASEORDER:Field should not be blank
+2)DESTINATIONPLANT:
+ a)To be present in the Site master 
+ b)Feildd should not be blank
+3)PURCHASINGDOCUMENTTYPE:Field should not be blank
+4)PURCHASEORDERITEM:Field should not be blank
+5)VENDORSACCOUNTNUMBER:Field should not be blank
+6)SOURCEPLANT:Field should not be blank
+7)MATERIALNUMBER:
+ a)To be present in either Part(FG) 
+ b)Field should not be blank
+8)POQUANTITY:Field should not be blank
+9)SCHEDULELINEDELIVERYDATE:
+ a)Field should follow the format :YYYYMMDD
+ b)Field should not be blank
+10)NETPRICEINPURCHASINGDOCUMENTI:Field should not be blank
+11)MATSTAGINGAVAILABILITYDATE:Field should not be blank
+12)TRANSITTIME:
+ a)Field should follow the format :YYYYMMDD
+ b)Field should not be blank
+
