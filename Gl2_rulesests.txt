@@ -113,3 +113,27 @@ ScheduledReceipt (Sub-Con PO)
  a)Field should follow the format :YYYYMMDD
  b)Field should not be blank
 
+
+ScheduledReceipt (STO)
+1)PURCHASEORDER:Field should not be blank
+2)DESTINATIONPLANT:
+ a)To be present in the Site master 
+ b)Field should not be blank
+3)PURCHASINGDOCUMENTTYPE:Field should not be blank
+4)PURCHASEORDERITEM:Field should not be blank
+5)VENDORSACCOUNTNUMBER:Field should not be blank
+6)SOURCEPLANT:Field should not be blank
+7)MATERIALNUMBER:
+a)To be present in Part(FG) 
+b)Field should not be blank
+8)ACTUALDELIVEREDQUANTITYINBU:Field should not be blank
+9)PURCHASEORDERUNITOFMEASURE:Field should not be blank
+10)SCHEDULELINEDELIVERYDATE:
+ a)Field should follow the format :YYYYMMDD
+ b)Field should not be blank
+11)NETPRICEINPURCHASINGDOCUMENTI:Field should not be blank
+12)MATSTAGINGAVAILABILITYDATE:Field should not be blank
+13)TRANSITTIME:
+ )Field should not be blank
+ b)Field should follow the format : YYYYMMDD
+
