@@ -39,7 +39,7 @@ THIN_BORDER = Border(
 )
 
 # Composite key columns for duplicate detection
-DUPLICATE_KEY_COLS = ["SALESORDER", "PRODUCTIONPLANT", "SALESORDERTYPE", "SOLDTOPARTY", "MATERIAL"]
+DUPLICATE_KEY_COLS = ["SALESORDERITEM","SALESORDER", "PRODUCTIONPLANT", "SALESORDERTYPE", "SOLDTOPARTY", "MATERIAL"]
 
 
 # ══════════════════════════════════════════════
