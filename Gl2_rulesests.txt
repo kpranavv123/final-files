@@ -41,3 +41,31 @@ Allocation
                               2. Field should not be blank
 6)REMAININGQTY:Field should not be blank
 7)REQUIREMENTQUANTITYINBUOM:Field should not be blank
+
+
+ScheduledReceipt (PO_from Vend)
+1)PURCHASEORDER:Field should not be blank
+2)DESTINATIONPLANT:
+ a)To be present in the Site master 
+ b)Field should not be blank
+3)PURCHASINGDOCUMENTTYPE:Field should not be blank
+4)PURCHASEORDERITEM:Field should not be blank
+5)VENDORSACCOUNTNUMBER:Field should not be blank
+6)SOURCEPLANT:Field should not be blank
+7)MATERIALNUMBER:
+ a)To be present in either Part(FG)
+ b)Field should not be blank
+8)DESTINATIONPLANT:
+ a)To be present in the Site master 
+ b)Field should not be blank
+9)POQUANTITYINBU:Field should not be blank
+10)SCHEDULELINEDELIVERYDATE:
+ a)Field should follow the format : YYYYMMDD
+ b)Field should not be blank
+11)NETPRICEINPURCHASINGDOCUMENTI:Field should not be blank
+12)MATSTAGINGAVAILABILITYDATE:
+ a)Field should follow the format : YYYYMMDD
+ b)Field should not be blank
+13)TRANSITTIME:Field should not be blank
+14)POQUANTITYINBU:Field should not be blank
+
