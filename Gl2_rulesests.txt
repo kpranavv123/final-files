@@ -1,0 +1,30 @@
+Rulesets for GL2:
+ BATCH
+1)MATERIALNUMBER:
+   a)To be present in either Part(FG) or Part(RMPM) master
+   b)Field should not be blank
+2)PLANT:
+    a)To be present in the Site master 
+    b)Field should not be blank
+3)BATCHNUMBER:
+   a)Field should not be blank
+4)DATEOFMANUFACTURE:
+     a)Field should not be blank
+     b)Field should follow the format: YYYYMMDD
+5)SHELFLIFEEXPIRATION:
+     a)Field should not be blank
+     b)Field should follow the format: YYYYMMDD
+6)VENDORSACCOUNTNUMBER:
+      a)Field should not be blank
+7)SUPPLIERBATCHNUMBER:
+      b)Field should not be blank
+
+ Onhand:
+ 1)STORAGELOCATION:
+ 2)WARENOUSENUMBER:
+ 3)MATERIALNUMBER:
+ 4)PLANT:
+ 5)DATEOFLASTGOODSRECEIPT:
+ 6)Combination of SHELFLIFEEXPIRATION and DATEOFMANUFACTURE:
+ 7)VALUATEDUNRESTRICTEDUSESTOCK:
+ 8)
