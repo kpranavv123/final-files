@@ -8,10 +8,10 @@ from openpyxl.utils import get_column_letter
 # File paths
 # ====================================================
 HDA_FILE      = r"C:\Users\SW526XH\Downloads\Go Live-1\HDA_Secondary\HDA(SecSales)2026-05-06-1606.tab"
-PART_FILE     = r"C:\Users\SW526XH\Downloads\Go Live-1\Part\Part_Site_2026-05-21-1510.tab"
-CUSTOMER_FILE = r"C:\Users\SW526XH\Downloads\Go Live-1\Customer\Cutomer_2026-05-20-1205.tab"
+PART_FILE     = r"C:\Users\SW526XH\Downloads\Go Live-1\Part\Part_Site_2026-06-04-1737.tab"
+CUSTOMER_FILE = r"C:\Users\SW526XH\Downloads\Go Live-1\Customer\CustomerHierarchy_updated_2026-06-05-0958 1.tab"
 SITE_FILE     = r"C:\Users\SW526XH\Downloads\Go Live-1\Site\Site_2026-05-20-1153.tab"
-OUTPUT_EXCEL  = r"C:\Users\SW526XH\Downloads\Go Live-1\HDA_Secondary\Validated_HDA_Secondary_Technical2.xlsx"
+OUTPUT_EXCEL  = r"C:\Users\SW526XH\Downloads\Go Live-1\HDA_Secondary\Validated_HDA_Secondary_Technical.xlsx"
 
 # ====================================================
 # Constants & Styling
