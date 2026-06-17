@@ -61,14 +61,27 @@ FIELD_ORDER = [
     "SHELFLIFEEXPIRATION", "DATEOFMANUFACTURE", "TYPE", "QTY", "STANDARDPRICE",
 ]
 
-# Fields that use sub-rows in the summary (parent reason cell left blank; sub-rows carry reasons)
+# Fields that have MORE THAN ONE distinct failure reason (i.e. 2 rules in
+# RULES_CONTENT). These are the only fields allowed to grow sub-rows in the
+# summary sheet, and only when they actually have at least one error row.
+# A field with a single rule (e.g. BATCHNUMBER, QTY) never gets sub-rows.
 FIELDS_WITH_SUB_ROWS = {
     "MATERIALNUMBER", "PLANT",
     "DATEOFLASTGOODSRECEIPT", "SHELFLIFEEXPIRATION", "DATEOFMANUFACTURE", "TYPE",
 }
 
+# Friendly display labels used only when building sub-row text for the
+# YYYYMMDD-style fields above (keeps "  ↳ Blank ..." readable).
+FRIENDLY_FIELD_LABEL = {
+    "DATEOFLASTGOODSRECEIPT": "Date of Last Goods Receipt",
+    "SHELFLIFEEXPIRATION":    "Shelf Life Expiration",
+    "DATEOFMANUFACTURE":      "Date of Manufacture",
+}
+
 # ─────────────────────────────────────────────
 #  Per-field single-line reason shown in summary
+#  (blank for any field in FIELDS_WITH_SUB_ROWS — those carry their
+#   reason text on the sub-rows instead, never on the parent row)
 # ─────────────────────────────────────────────
 FIELD_REASON = {
     "MATERIALNUMBER":         "",   # sub-rows carry reasons
@@ -83,6 +96,41 @@ FIELD_REASON = {
     "QTY":                    "QTY: Field is blank",
     "STANDARDPRICE":          "STANDARDPRICE: Field is blank",
 }
+
+
+# ─────────────────────────────────────────────
+#  DATA CLEANING HELPERS
+# ─────────────────────────────────────────────
+def _clean_possible_float_string(value):
+    """
+    Some upstream exports store YYYYMMDD-style date columns as floats
+    (e.g. '20260415.0', or occasionally scientific notation) instead of
+    a clean digit string. Even reading the file with dtype=str doesn't
+    fix this if the float representation is already baked into the text
+    of the file itself — pandas just hands back the literal text it sees.
+
+    This normalises any such value back to a clean digit-only string
+    BEFORE validation runs, so the real date value is preserved instead
+    of silently changing. Values that are already clean strings, blank,
+    or genuinely non-numeric (e.g. '_') are returned untouched.
+    """
+    if pd.isna(value):
+        return value
+
+    val = str(value).strip()
+
+    if val == "" or val.isdigit():
+        return val  # already clean (or blank) — nothing to fix
+
+    try:
+        f = float(val)
+    except (ValueError, TypeError):
+        return val  # not numeric at all — leave as-is (e.g. '_', 'nan', junk)
+
+    if f == int(f):
+        return str(int(f))  # '20260415.0' -> '20260415'
+
+    return val  # genuinely has a fractional part — leave untouched
 
 
 # ══════════════════════════════════════════════
@@ -211,6 +259,9 @@ class OnhandRuleEngine:
 # ══════════════════════════════════════════════
 class OnhandTableValidator:
 
+    # YYYYMMDD-style columns that must be guarded against float coercion
+    DATE_COLUMNS = ("DATEOFLASTGOODSRECEIPT", "SHELFLIFEEXPIRATION", "DATEOFMANUFACTURE")
+
     def __init__(self, onhand_path: str, site_path: str):
         self.onhand_path    = onhand_path
         self.site_path      = site_path
@@ -218,11 +269,19 @@ class OnhandTableValidator:
         self.site_plants    = set()
         self.part_materials = set()
         self.error_map      = {}
-        self.reason_map     = {}
+        self.reason_map      = {}
 
     def load(self):
         self.df = pd.read_csv(self.onhand_path, dtype=str, sep="\t")
         self.df.columns = [c.strip().upper() for c in self.df.columns]
+
+        # Guard against YYYYMMDD columns being silently stored/read as a
+        # float representation (e.g. '20260415.0'). Force them back to a
+        # clean digit string here, before anything else touches them, so
+        # validation and the report both see the real value.
+        for date_col in self.DATE_COLUMNS:
+            if date_col in self.df.columns:
+                self.df[date_col] = self.df[date_col].map(_clean_possible_float_string)
 
         site_df = pd.read_csv(self.site_path, dtype=str, sep="\t")
         site_df.columns = [c.strip().upper() for c in site_df.columns]
@@ -283,6 +342,8 @@ class OnhandTableValidator:
                 field_errors.setdefault(col, []).append(row_idx)
         return field_errors
 
+    # ── Sub-count helpers (one per field that has more than one rule) ──
+
     def get_materialnumber_error_subcounts(self) -> dict:
         counts = {"blank": 0, "not_in_part": 0}
         for idx, col_reason in self.reason_map.items():
@@ -305,6 +366,39 @@ class OnhandTableValidator:
                 counts["blank"] += 1
             else:
                 counts["not_in_site"] += 1
+        return counts
+
+    def get_date_field_error_subcounts(self, field_name: str) -> dict:
+        """
+        Generic sub-category breakdown for any YYYYMMDD-style field.
+        The rule engine can internally return three distinct messages
+        (blank / invalid format / invalid date value), but RULES_CONTENT
+        only documents two rules for these fields ('must not be blank'
+        and 'must follow YYYYMMDD format'). Both format-related messages
+        are folded into a single 'invalid_format' bucket so the number
+        of sub-rows always matches the number of documented rules (2).
+        """
+        counts = {"blank": 0, "invalid_format": 0}
+        for idx, col_reason in self.reason_map.items():
+            reason = col_reason.get(field_name, "")
+            if not reason:
+                continue
+            if "blank" in reason.lower():
+                counts["blank"] += 1
+            else:
+                counts["invalid_format"] += 1
+        return counts
+
+    def get_type_error_subcounts(self) -> dict:
+        counts = {"blank": 0, "invalid_value": 0}
+        for idx, col_reason in self.reason_map.items():
+            reason = col_reason.get("TYPE", "")
+            if not reason:
+                continue
+            if "blank" in reason.lower():
+                counts["blank"] += 1
+            else:
+                counts["invalid_value"] += 1
         return counts
 
 
@@ -393,6 +487,40 @@ class OnhandReportWriter:
             if fill:
                 cell.fill = fill
 
+    def _write_sub_rows(self, ws, row_num: int, total_rows: int, sub_rows: list) -> int:
+        """
+        Writes a block of indented, italic sub-rows directly under a parent
+        field row in the summary sheet — one row per distinct failure reason.
+
+        Percentages use `total_rows` (the whole dataset), not the parent
+        field's own error count, so every row in the sheet — parent or
+        sub-row — sits on the same percentage scale.
+
+        Returns the next free row number so the caller can keep writing.
+        """
+        for sub_label, sub_count, sub_reason in sub_rows:
+            sub_pct_err    = round((sub_count / total_rows) * 100, 2) if total_rows else 0
+            sub_pct_health = round(100 - sub_pct_err, 2)
+
+            ws.cell(row=row_num, column=1, value="")
+            ws.cell(row=row_num, column=2, value=sub_label)
+            ws.cell(row=row_num, column=3, value=sub_count)
+            ws.cell(row=row_num, column=4, value=total_rows)
+            ws.cell(row=row_num, column=5, value=f"{sub_pct_health}%")
+            ws.cell(row=row_num, column=6, value=f"{sub_pct_err}%")
+            ws.cell(row=row_num, column=7, value=sub_reason)
+
+            self._style_summary_data_row(ws, row_num, fill=SUB_FILL, italic=True)
+            ws.cell(row=row_num, column=2).alignment = Alignment(
+                horizontal="left", vertical="center", indent=1
+            )
+            ws.cell(row=row_num, column=7).alignment = Alignment(
+                horizontal="left", vertical="center", wrap_text=True
+            )
+            row_num += 1
+
+        return row_num
+
     # ══════════════════════════════════════════
     #  Summary sheet
     # ══════════════════════════════════════════
@@ -423,8 +551,14 @@ class OnhandReportWriter:
             for col in bad_cols:
                 col_error_counts[col] = col_error_counts.get(col, 0) + 1
 
+        # ── Precompute every sub-category breakdown up front ──
         mat_subcounts   = self.validator.get_materialnumber_error_subcounts()
         plant_subcounts = self.validator.get_plant_error_subcounts()
+        date_subcounts  = {
+            field: self.validator.get_date_field_error_subcounts(field)
+            for field in OnhandTableValidator.DATE_COLUMNS
+        }
+        type_subcounts  = self.validator.get_type_error_subcounts()
 
         row_num   = 3
         field_num = 1
@@ -457,75 +591,44 @@ class OnhandReportWriter:
             )
             row_num += 1
 
-            # ── MATERIALNUMBER sub-rows ──
-            if col_name == "MATERIALNUMBER" and has_errors:
-                sub_definitions = [
-                    (
-                        "  ↳ Blank Material Number",
-                        mat_subcounts["blank"],
-                        "MATERIALNUMBER: Field is blank",
-                    ),
-                    (
-                        "  ↳ Not in Part Master",
-                        mat_subcounts["not_in_part"],
-                        "MATERIALNUMBER: Not present in Part master",
-                    ),
-                ]
-                for sub_label, sub_count, sub_reason in sub_definitions:
-                    sub_pct_err    = round((sub_count / total_rows) * 100, 2) if total_rows else 0
-                    sub_pct_health = round(100 - sub_pct_err, 2)
+            # ── Sub-rows: a field gets sub-rows ONLY if it has more than
+            #    one rule (i.e. it's in FIELDS_WITH_SUB_ROWS) AND it has at
+            #    least one error row. Two rules + zero errors -> no
+            #    sub-rows, just the clean parent row above. ──
+            if has_errors:
+                if col_name == "MATERIALNUMBER":
+                    row_num = self._write_sub_rows(ws, row_num, total_rows, [
+                        ("  ↳ Blank Material Number", mat_subcounts["blank"],
+                         "MATERIALNUMBER: Field is blank"),
+                        ("  ↳ Not in Part Master", mat_subcounts["not_in_part"],
+                         "MATERIALNUMBER: Not present in Part master"),
+                    ])
 
-                    ws.cell(row=row_num, column=1, value="")
-                    ws.cell(row=row_num, column=2, value=sub_label)
-                    ws.cell(row=row_num, column=3, value=sub_count)
-                    ws.cell(row=row_num, column=4, value=total_rows)
-                    ws.cell(row=row_num, column=5, value=f"{sub_pct_health}%")
-                    ws.cell(row=row_num, column=6, value=f"{sub_pct_err}%")
-                    ws.cell(row=row_num, column=7, value=sub_reason)
+                elif col_name == "PLANT":
+                    row_num = self._write_sub_rows(ws, row_num, total_rows, [
+                        ("  ↳ Blank Plant Code", plant_subcounts["blank"],
+                         "PLANT: Field is blank"),
+                        ("  ↳ Not in Site Master", plant_subcounts["not_in_site"],
+                         "PLANT: Plant code not found in the Site master"),
+                    ])
 
-                    self._style_summary_data_row(ws, row_num, fill=SUB_FILL, italic=True)
-                    ws.cell(row=row_num, column=2).alignment = Alignment(
-                        horizontal="left", vertical="center", indent=1
-                    )
-                    ws.cell(row=row_num, column=7).alignment = Alignment(
-                        horizontal="left", vertical="center", wrap_text=True
-                    )
-                    row_num += 1
+                elif col_name in FRIENDLY_FIELD_LABEL:
+                    sub   = date_subcounts[col_name]
+                    label = FRIENDLY_FIELD_LABEL[col_name]
+                    row_num = self._write_sub_rows(ws, row_num, total_rows, [
+                        (f"  ↳ Blank {label}", sub["blank"],
+                         f"{col_name}: Field is blank"),
+                        ("  ↳ Invalid Format (not YYYYMMDD)", sub["invalid_format"],
+                         f"{col_name}: Does not follow required format YYYYMMDD"),
+                    ])
 
-            # ── PLANT sub-rows ──
-            if col_name == "PLANT" and has_errors:
-                sub_definitions = [
-                    (
-                        "  ↳ Blank Plant Code",
-                        plant_subcounts["blank"],
-                        "PLANT: Field is blank",
-                    ),
-                    (
-                        "  ↳ Not in Site Master",
-                        plant_subcounts["not_in_site"],
-                        "PLANT: Plant code not found in the Site master",
-                    ),
-                ]
-                for sub_label, sub_count, sub_reason in sub_definitions:
-                    sub_pct_err    = round((sub_count / total_rows) * 100, 2) if total_rows else 0
-                    sub_pct_health = round(100 - sub_pct_err, 2)
-
-                    ws.cell(row=row_num, column=1, value="")
-                    ws.cell(row=row_num, column=2, value=sub_label)
-                    ws.cell(row=row_num, column=3, value=sub_count)
-                    ws.cell(row=row_num, column=4, value=total_rows)
-                    ws.cell(row=row_num, column=5, value=f"{sub_pct_health}%")
-                    ws.cell(row=row_num, column=6, value=f"{sub_pct_err}%")
-                    ws.cell(row=row_num, column=7, value=sub_reason)
-
-                    self._style_summary_data_row(ws, row_num, fill=SUB_FILL, italic=True)
-                    ws.cell(row=row_num, column=2).alignment = Alignment(
-                        horizontal="left", vertical="center", indent=1
-                    )
-                    ws.cell(row=row_num, column=7).alignment = Alignment(
-                        horizontal="left", vertical="center", wrap_text=True
-                    )
-                    row_num += 1
+                elif col_name == "TYPE":
+                    row_num = self._write_sub_rows(ws, row_num, total_rows, [
+                        ("  ↳ Blank Type", type_subcounts["blank"],
+                         "TYPE: Field is blank"),
+                        ("  ↳ Invalid Type Value", type_subcounts["invalid_value"],
+                         "TYPE: Value is not one of the allowed TYPE values"),
+                    ])
 
             field_num += 1
 
