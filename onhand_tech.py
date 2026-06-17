@@ -61,30 +61,27 @@ FIELD_ORDER = [
     "SHELFLIFEEXPIRATION", "DATEOFMANUFACTURE", "TYPE", "QTY", "STANDARDPRICE",
 ]
 
-# Fields that use sub-rows in the summary
-FIELDS_WITH_SUB_ROWS = {"MATERIALNUMBER", "PLANT"}
+# Fields that use sub-rows in the summary (parent reason cell left blank; sub-rows carry reasons)
+FIELDS_WITH_SUB_ROWS = {
+    "MATERIALNUMBER", "PLANT",
+    "DATEOFLASTGOODSRECEIPT", "SHELFLIFEEXPIRATION", "DATEOFMANUFACTURE", "TYPE",
+}
 
 # ─────────────────────────────────────────────
 #  Per-field single-line reason shown in summary
 # ─────────────────────────────────────────────
 FIELD_REASON = {
-    "MATERIALNUMBER":        "",   # sub-rows carry reasons
-    "BATCHNUMBER":           "BATCHNUMBER: Field is blank",
-    "PLANT":                 "",   # sub-rows carry reasons
-    "STORAGELOCATION":       "STORAGELOCATION: Field is blank",
-    "WAREHOUSENUMBER":       "WAREHOUSENUMBER: Field is blank",
-    "DATEOFLASTGOODSRECEIPT": (
-        "DATEOFLASTGOODSRECEIPT: Field is blank or does not follow YYYYMMDD format"
-    ),
-    "SHELFLIFEEXPIRATION":   (
-        "SHELFLIFEEXPIRATION: Field is blank or does not follow YYYYMMDD format"
-    ),
-    "DATEOFMANUFACTURE":     (
-        "DATEOFMANUFACTURE: Field is blank or does not follow YYYYMMDD format"
-    ),
-    "TYPE":        "TYPE: Field is blank or not one of the 7 valid stock type values",
-    "QTY":         "QTY: Field is blank",
-    "STANDARDPRICE": "STANDARDPRICE: Field is blank",
+    "MATERIALNUMBER":         "",   # sub-rows carry reasons
+    "BATCHNUMBER":            "BATCHNUMBER: Field is blank",
+    "PLANT":                  "",   # sub-rows carry reasons
+    "STORAGELOCATION":        "STORAGELOCATION: Field is blank",
+    "WAREHOUSENUMBER":        "WAREHOUSENUMBER: Field is blank",
+    "DATEOFLASTGOODSRECEIPT": "",   # sub-rows carry reasons
+    "SHELFLIFEEXPIRATION":    "",   # sub-rows carry reasons
+    "DATEOFMANUFACTURE":      "",   # sub-rows carry reasons
+    "TYPE":                   "",   # sub-rows carry reasons
+    "QTY":                    "QTY: Field is blank",
+    "STANDARDPRICE":          "STANDARDPRICE: Field is blank",
 }
 
 
