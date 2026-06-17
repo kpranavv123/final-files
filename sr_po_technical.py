@@ -8,10 +8,11 @@ from openpyxl.utils import get_column_letter
 # ─────────────────────────────────────────────
 #  FILE PATHS
 # ─────────────────────────────────────────────
-SCHEDULED_RECEIPT_INPUT_FILE = r"C:\Users\SW526XH\Downloads\Go Live-2\ScheduledReceipt\ScheduledReceipt.tab"
-SITE_INPUT_FILE              = r"C:\Users\SW526XH\Downloads\Go Live-2\ScheduledReceipt\Site_2026-04-09-1058.xlsx"
-PART_FG_INPUT_FILE           = r"C:\Users\SW526XH\Downloads\Go Live-2\ScheduledReceipt\Part_FG.xlsx"
-OUTPUT_FILE                  = r"C:\Users\SW526XH\Downloads\Go Live-2\ScheduledReceipt\Validated_ScheduledReceipt.xlsx"
+SCHEDULED_RECEIPT_INPUT_FILE = r"C:\Users\SW526XH\Downloads\Go Live-2\SR_PO\ScheduledReceipt(SubCon)_2026-06-08-1731.tab"
+PART_FG_INPUT_FILE           = r"C:\Users\SW526XH\Downloads\Go Live-2\Part_RMPM\Part_Site_2026-06-08-1617.tab"
+SITE_INPUT_FILE              = r"C:\Users\SW526XH\Downloads\Go Live-1\Site\Site_2026-05-20-1153.tab"
+PARTSOURCE_BUY_INPUT_FILE    = r"C:\Users\SW526XH\Downloads\Go Live-2\SR_PO\PartSource_Buy.tab"
+OUTPUT_FILE                  = r"C:\Users\SW526XH\Downloads\Go Live-2\SR_PO\Validated_ScheduledReceipt_(Sub-Con PO)_Technical.xlsx"
 
 
 # ─────────────────────────────────────────────
@@ -39,7 +40,7 @@ KEEP_COLS = [
 ]
 
 # ─────────────────────────────────────────────
-#  Colours / Styles  — identical to Onhand template
+#  Colours / Styles
 # ─────────────────────────────────────────────
 RED_FILL        = PatternFill("solid", start_color="FF0000", end_color="FF0000")
 HDR_FILL        = PatternFill("solid", start_color="D9E1F2", end_color="D9E1F2")
@@ -76,7 +77,7 @@ FIELD_ORDER = [
     "TRANSITTIME",
 ]
 
-# Fields that use sub-rows in the summary (parent reason cell left blank)
+# Fields that use sub-rows in the summary
 FIELDS_WITH_SUB_ROWS = {"DESTINATIONPLANT", "MATERIALNUMBER", "SCHEDULELINEDELIVERYDATE", "TRANSITTIME"}
 
 # ─────────────────────────────────────────────
@@ -103,9 +104,14 @@ FIELD_REASON = {
 # ══════════════════════════════════════════════
 class ScheduledReceiptRuleEngine:
 
-    def __init__(self, site_plants: set, part_fg_materials: set):
-        self.site_plants        = set(str(p).strip() for p in site_plants)
-        self.part_fg_materials  = set(str(m).strip().upper() for m in part_fg_materials)
+    def __init__(self, site_plants: set, part_fg_materials: set,
+                 partsource_subcon_pairs: set, partsource_all_pairs: set):
+        self.site_plants             = set(str(p).strip() for p in site_plants)
+        self.part_fg_materials       = set(str(m).strip().upper() for m in part_fg_materials)
+        # (MATERIALNUMBER, PLANT) pairs in PartSource(Buy) with ORDERPOLICY == 'SubCon'
+        self.partsource_subcon_pairs = partsource_subcon_pairs
+        # (MATERIALNUMBER, PLANT) pairs present in PartSource(Buy) regardless of ORDERPOLICY
+        self.partsource_all_pairs    = partsource_all_pairs
 
     @staticmethod
     def _is_blank(value) -> bool:
@@ -151,15 +157,36 @@ class ScheduledReceiptRuleEngine:
         return ""
 
     # ── 7. MATERIALNUMBER ─────────────────────
+    # Rule 1: Must not be blank
+    # Rule 2: Must be present in Part (FG) master
+    # Rule 3: MATERIALNUMBER + DESTINATIONPLANT combo must exist in PartSource(Buy)
+    #         with ORDERPOLICY = 'SubCon'
     def validate_materialnumber(self, row) -> str:
         val = row.get("MATERIALNUMBER", "")
         if self._is_blank(val):
             return "MATERIALNUMBER: Field is blank"
+
         val_str = str(val).strip().upper()
+
         if val_str not in self.part_fg_materials:
+            return f"MATERIALNUMBER: '{val_str}' is not present in the Part (FG) master"
+
+        # Rule 3 — cross-check with PartSource(Buy)
+        dest_plant = str(row.get("DESTINATIONPLANT", "")).strip().upper()
+        pair       = (val_str, dest_plant)
+
+        if pair not in self.partsource_all_pairs:
             return (
-                f"MATERIALNUMBER: '{val_str}' is not present in the Part (FG) master"
+                f"MATERIALNUMBER: Part-Site combination ('{val_str}', '{dest_plant}') "
+                "is not present in PartSource(Buy)"
             )
+
+        if pair not in self.partsource_subcon_pairs:
+            return (
+                f"MATERIALNUMBER: Part-Site combination ('{val_str}', '{dest_plant}') "
+                "exists in PartSource(Buy) but ORDERPOLICY is not 'SubCon'"
+            )
+
         return ""
 
     # ── 8. POQUANTITY ─────────────────────────
@@ -227,30 +254,36 @@ class ScheduledReceiptRuleEngine:
 # ══════════════════════════════════════════════
 class ScheduledReceiptValidator:
 
-    def __init__(self, input_path: str, site_path: str, part_fg_path: str):
-        self.input_path     = input_path
-        self.site_path      = site_path
-        self.part_fg_path   = part_fg_path
-        self.df             = pd.DataFrame()
-        self.site_plants    = set()
-        self.part_fg_mats   = set()
-        self.error_map      = {}
-        self.reason_map     = {}
+    def __init__(self, input_path: str, site_path: str, part_fg_path: str,
+                 partsource_buy_path: str):
+        self.input_path          = input_path
+        self.site_path           = site_path
+        self.part_fg_path        = part_fg_path
+        self.partsource_buy_path = partsource_buy_path
+        self.df                  = pd.DataFrame()
+        self.site_plants         = set()
+        self.part_fg_mats        = set()
+        self.partsource_subcon_pairs = set()   # (MATERIALNUMBER, PLANT) with SubCon
+        self.partsource_all_pairs    = set()   # (MATERIALNUMBER, PLANT) regardless of policy
+        self.error_map           = {}
+        self.reason_map          = {}
 
     def load(self):
+        # ── Main input ──
         self.df = pd.read_csv(self.input_path, sep="\t", dtype=str)
         self.df.columns = [c.strip().upper() for c in self.df.columns]
 
-        site_df = pd.read_excel(self.site_path, dtype=str, engine="openpyxl")
+        # ── Site master ──
+        site_df = pd.read_csv(self.site_path, dtype=str, sep="\t")
         site_df.columns = [c.strip().upper() for c in site_df.columns]
         if "PLANT" not in site_df.columns:
             raise ValueError("PLANT column not found in Site master.")
         self.site_plants = set(site_df["PLANT"].dropna().str.strip().tolist())
-        print(f"    Site master plants loaded      : {len(self.site_plants)} unique values")
+        print(f"    Site master plants loaded           : {len(self.site_plants)} unique values")
 
-        part_fg_df = pd.read_excel(self.part_fg_path, dtype=str, engine="openpyxl")
+        # ── Part (FG) master ──
+        part_fg_df = pd.read_csv(self.part_fg_path, dtype=str, sep="\t")
         part_fg_df.columns = [c.strip().upper() for c in part_fg_df.columns]
-        # Accept MATERIALNUMBER or MATERIAL as the key column
         mat_col = next(
             (c for c in part_fg_df.columns if "MATERIAL" in c),
             None
@@ -260,11 +293,42 @@ class ScheduledReceiptValidator:
         self.part_fg_mats = set(
             part_fg_df[mat_col].dropna().str.strip().str.upper().tolist()
         )
-        print(f"    Part (FG) materials loaded     : {len(self.part_fg_mats)} unique values")
+        print(f"    Part (FG) materials loaded          : {len(self.part_fg_mats)} unique values")
+
+        # ── PartSource(Buy) master ──
+        ps_df = pd.read_csv(self.partsource_buy_path, dtype=str, sep="\t")
+        ps_df.columns = [c.strip().upper() for c in ps_df.columns]
+
+        required_ps_cols = {"MATERIALNUMBER", "PLANT", "ORDERPOLICY"}
+        missing = required_ps_cols - set(ps_df.columns)
+        if missing:
+            raise ValueError(f"PartSource(Buy) is missing columns: {missing}")
+
+        ps_df["MATERIALNUMBER"] = ps_df["MATERIALNUMBER"].str.strip().str.upper()
+        ps_df["PLANT"]          = ps_df["PLANT"].str.strip().str.upper()
+        ps_df["ORDERPOLICY"]    = ps_df["ORDERPOLICY"].str.strip()
+
+        self.partsource_all_pairs = set(
+            zip(ps_df["MATERIALNUMBER"].dropna(), ps_df["PLANT"].dropna())
+        )
+        subcon_mask = ps_df["ORDERPOLICY"].str.lower() == "subcon"
+        self.partsource_subcon_pairs = set(
+            zip(
+                ps_df.loc[subcon_mask, "MATERIALNUMBER"].dropna(),
+                ps_df.loc[subcon_mask, "PLANT"].dropna(),
+            )
+        )
+        print(f"    PartSource(Buy) total pairs loaded  : {len(self.partsource_all_pairs)} unique Part-Site pairs")
+        print(f"    PartSource(Buy) SubCon pairs loaded : {len(self.partsource_subcon_pairs)} unique Part-Site pairs")
 
     def validate(self):
-        engine = ScheduledReceiptRuleEngine(self.site_plants, self.part_fg_mats)
-        rules  = engine.get_rules()
+        engine = ScheduledReceiptRuleEngine(
+            self.site_plants,
+            self.part_fg_mats,
+            self.partsource_subcon_pairs,
+            self.partsource_all_pairs,
+        )
+        rules = engine.get_rules()
 
         for idx, row in self.df.iterrows():
             failed_cols    = []
@@ -319,15 +383,20 @@ class ScheduledReceiptValidator:
         return counts
 
     def get_materialnumber_error_subcounts(self) -> dict:
-        counts = {"blank": 0, "not_in_part_fg": 0}
+        counts = {"blank": 0, "not_in_part_fg": 0, "not_in_partsource": 0, "not_subcon": 0}
         for idx, col_reason in self.reason_map.items():
             reason = col_reason.get("MATERIALNUMBER", "")
             if not reason:
                 continue
-            if "blank" in reason.lower():
+            lower = reason.lower()
+            if "blank" in lower:
                 counts["blank"] += 1
-            else:
+            elif "part (fg) master" in lower:
                 counts["not_in_part_fg"] += 1
+            elif "not present in partsource" in lower:
+                counts["not_in_partsource"] += 1
+            elif "orderpolicy is not" in lower:
+                counts["not_subcon"] += 1
         return counts
 
     def get_schedulelinedeliverydate_error_subcounts(self) -> dict:
@@ -386,6 +455,8 @@ class ScheduledReceiptReportWriter:
         "MATERIALNUMBER": [
             "Must not be blank.",
             "Must be present in the Part (FG) master.",
+            "The combination of MATERIALNUMBER and DESTINATIONPLANT must exist in "
+            "PartSource(Buy) with ORDERPOLICY = 'SubCon'.",
         ],
         "POQUANTITY": [
             "Must not be blank.",
@@ -470,10 +541,10 @@ class ScheduledReceiptReportWriter:
             for col in bad_cols:
                 col_error_counts[col] = col_error_counts.get(col, 0) + 1
 
-        dest_subcounts  = self.validator.get_destinationplant_error_subcounts()
-        mat_subcounts   = self.validator.get_materialnumber_error_subcounts()
-        sld_subcounts   = self.validator.get_schedulelinedeliverydate_error_subcounts()
-        tt_subcounts    = self.validator.get_transittime_error_subcounts()
+        dest_subcounts = self.validator.get_destinationplant_error_subcounts()
+        mat_subcounts  = self.validator.get_materialnumber_error_subcounts()
+        sld_subcounts  = self.validator.get_schedulelinedeliverydate_error_subcounts()
+        tt_subcounts   = self.validator.get_transittime_error_subcounts()
 
         row_num   = 3
         field_num = 1
@@ -541,7 +612,7 @@ class ScheduledReceiptReportWriter:
                     )
                     row_num += 1
 
-            # ── MATERIALNUMBER sub-rows ──
+            # ── MATERIALNUMBER sub-rows (3 sub-rows now) ──
             if col_name == "MATERIALNUMBER" and has_errors:
                 sub_definitions = [
                     (
@@ -553,6 +624,16 @@ class ScheduledReceiptReportWriter:
                         "  ↳ Not in Part (FG) Master",
                         mat_subcounts["not_in_part_fg"],
                         "MATERIALNUMBER: Material number not found in the Part (FG) master",
+                    ),
+                    (
+                        "  ↳ Part-Site Not in PartSource(Buy)",
+                        mat_subcounts["not_in_partsource"],
+                        "MATERIALNUMBER: Part-Site combination not present in PartSource(Buy)",
+                    ),
+                    (
+                        "  ↳ Part-Site in PartSource(Buy) but ORDERPOLICY ≠ SubCon",
+                        mat_subcounts["not_subcon"],
+                        "MATERIALNUMBER: Part-Site exists in PartSource(Buy) but ORDERPOLICY is not 'SubCon'",
                     ),
                 ]
                 for sub_label, sub_count, sub_reason in sub_definitions:
@@ -694,7 +775,7 @@ class ScheduledReceiptReportWriter:
             row_num += 1
 
         # ── Column widths ──
-        col_widths = [6, 40, 14, 16, 12, 12, 70]
+        col_widths = [6, 52, 14, 16, 12, 12, 75]
         for c_idx, width in enumerate(col_widths, start=1):
             ws.column_dimensions[get_column_letter(c_idx)].width = width
 
@@ -802,7 +883,7 @@ class ScheduledReceiptReportWriter:
 
         ws.column_dimensions["A"].width = 6
         ws.column_dimensions["B"].width = 45
-        ws.column_dimensions["C"].width = 75
+        ws.column_dimensions["C"].width = 85
 
     # ── Main write ────────────────────────────
     def write(self):
@@ -843,9 +924,12 @@ class ScheduledReceiptReportWriter:
 # ══════════════════════════════════════════════
 class ScheduledReceiptProcessor:
 
-    def __init__(self, input_path: str, site_path: str, part_fg_path: str, output_path: str):
-        self.validator = ScheduledReceiptValidator(input_path, site_path, part_fg_path)
-        self.writer    = ScheduledReceiptReportWriter(self.validator, output_path)
+    def __init__(self, input_path: str, site_path: str, part_fg_path: str,
+                 partsource_buy_path: str, output_path: str):
+        self.validator = ScheduledReceiptValidator(
+            input_path, site_path, part_fg_path, partsource_buy_path
+        )
+        self.writer = ScheduledReceiptReportWriter(self.validator, output_path)
 
     def run(self):
         print("📂  Loading files …")
@@ -862,9 +946,10 @@ class ScheduledReceiptProcessor:
 # ══════════════════════════════════════════════
 if __name__ == "__main__":
     processor = ScheduledReceiptProcessor(
-        input_path   = SCHEDULED_RECEIPT_INPUT_FILE,
-        site_path    = SITE_INPUT_FILE,
-        part_fg_path = PART_FG_INPUT_FILE,
-        output_path  = OUTPUT_FILE,
+        input_path          = SCHEDULED_RECEIPT_INPUT_FILE,
+        site_path           = SITE_INPUT_FILE,
+        part_fg_path        = PART_FG_INPUT_FILE,
+        partsource_buy_path = PARTSOURCE_BUY_INPUT_FILE,
+        output_path         = OUTPUT_FILE,
     )
     processor.run()
