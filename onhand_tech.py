@@ -1,4 +1,3 @@
-import re
 import pandas as pd
 from openpyxl import Workbook
 from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
@@ -9,7 +8,8 @@ from openpyxl.utils import get_column_letter
 #  FILE PATHS
 # ─────────────────────────────────────────────
 ONHAND_INPUT_FILE = r"C:\Users\SW526XH\Downloads\Go Live-2\OnHand\Onhand_updated.tab"
-SITE_INPUT_FILE   = r"C:\Users\SW526XH\Downloads\Go Live-2\OnHand\Site_2026-04-09-1058.xlsx"
+PART_INPUT_FILE   = r"C:\Users\SW526XH\Downloads\Go Live-1\Part\Part_Site_2026-06-08-1617.tab"
+SITE_INPUT_FILE   = r"C:\Users\SW526XH\Downloads\Go Live-1\Site\Site_2026-05-20-1153.tab"
 OUTPUT_FILE       = r"C:\Users\SW526XH\Downloads\Go Live-2\Onhand\Validated_Onhand.xlsx"
 
 
@@ -26,28 +26,14 @@ VALID_TYPE_VALUES = {
     "SCHEDULEDFORDELIVERY",
 }
 
-# ── MATERIALNUMBER valid ranges ───────────────
-# Numeric ranges: each tuple is (min_inclusive, max_inclusive)
-MATERIAL_NUMERIC_RANGES = [
-    (14_000_000_000_000, 14_999_999_999_999),
-    (15_000_000_000_000, 15_999_999_999_999),
-    (16_000_000_000_000, 16_999_999_999_999),
-    (19_000_000_000_000, 19_999_999_999_999),
-    (20_000_000_000_000, 20_999_999_999_999),
-]
-
-# Alphanumeric range: 0000A0000000000000 – 0000ZZZZZZZZZZZZZZ
-# 18 characters: "0000" + one uppercase letter (A-Z) + 13 uppercase alphanumeric chars
-MATERIAL_ALPHA_PATTERN = re.compile(r'^0000[A-Z][0-9A-Z]{13}$')
-
 KEEP_COLS = [
     "MATERIALNUMBER", "MATERIALTYPE", "BATCHNUMBER", "PLANT",
     "STORAGELOCATION", "WAREHOUSENUMBER", "DATEOFLASTGOODSRECEIPT",
-    "SHELFLIFEEXPIRATION_DATEOFMANUFACTURE", "TYPE", "QTY", "STANDARDPRICE",
+    "SHELFLIFEEXPIRATION", "DATEOFMANUFACTURE", "TYPE", "QTY", "STANDARDPRICE",
 ]
 
 # ─────────────────────────────────────────────
-#  Colours / Styles  — matched to Site template
+#  Colours / Styles
 # ─────────────────────────────────────────────
 RED_FILL        = PatternFill("solid", start_color="FF0000", end_color="FF0000")
 HDR_FILL        = PatternFill("solid", start_color="D9E1F2", end_color="D9E1F2")
@@ -72,27 +58,33 @@ THIN_BORDER = Border(
 FIELD_ORDER = [
     "MATERIALNUMBER", "MATERIALTYPE", "BATCHNUMBER", "PLANT",
     "STORAGELOCATION", "WAREHOUSENUMBER", "DATEOFLASTGOODSRECEIPT",
-    "SHELFLIFEEXPIRATION_DATEOFMANUFACTURE", "TYPE", "QTY", "STANDARDPRICE",
+    "SHELFLIFEEXPIRATION", "DATEOFMANUFACTURE", "TYPE", "QTY", "STANDARDPRICE",
 ]
 
-# Fields that use sub-rows in the summary (parent reason cell left blank)
+# Fields that use sub-rows in the summary
 FIELDS_WITH_SUB_ROWS = {"MATERIALNUMBER", "PLANT"}
 
 # ─────────────────────────────────────────────
 #  Per-field single-line reason shown in summary
 # ─────────────────────────────────────────────
 FIELD_REASON = {
-    "MATERIALNUMBER":                        "",   # sub-rows carry reasons
-    # "MATERIALTYPE":                          "",   # no validation rules
-    "BATCHNUMBER":                           "BATCHNUMBER: Field is blank ",
-    "PLANT":                                 "",   # sub-rows carry reasons
-    "STORAGELOCATION":                       "STORAGELOCATION: Field is blank",
-    "WAREHOUSENUMBER":                       "WAREHOUSENUMBER: Field is blank ",
-    "DATEOFLASTGOODSRECEIPT":               "DATEOFLASTGOODSRECEIPT: Field is blank",
-    "SHELFLIFEEXPIRATION_DATEOFMANUFACTURE": "SHELFLIFEEXPIRATION_DATEOFMANUFACTURE: Field is blank",
-    "TYPE":                                  "TYPE: Field is blank or not one of the 7 valid stock type values",
-    "QTY":                                   "QTY: Field is blank",
-    "STANDARDPRICE":                         "STANDARDPRICE: Field is blank",
+    "MATERIALNUMBER":        "",   # sub-rows carry reasons
+    "BATCHNUMBER":           "BATCHNUMBER: Field is blank",
+    "PLANT":                 "",   # sub-rows carry reasons
+    "STORAGELOCATION":       "STORAGELOCATION: Field is blank",
+    "WAREHOUSENUMBER":       "WAREHOUSENUMBER: Field is blank",
+    "DATEOFLASTGOODSRECEIPT": (
+        "DATEOFLASTGOODSRECEIPT: Field is blank or does not follow YYYYMMDD format"
+    ),
+    "SHELFLIFEEXPIRATION":   (
+        "SHELFLIFEEXPIRATION: Field is blank or does not follow YYYYMMDD format"
+    ),
+    "DATEOFMANUFACTURE":     (
+        "DATEOFMANUFACTURE: Field is blank or does not follow YYYYMMDD format"
+    ),
+    "TYPE":        "TYPE: Field is blank or not one of the 7 valid stock type values",
+    "QTY":         "QTY: Field is blank",
+    "STANDARDPRICE": "STANDARDPRICE: Field is blank",
 }
 
 
@@ -101,47 +93,45 @@ FIELD_REASON = {
 # ══════════════════════════════════════════════
 class OnhandRuleEngine:
 
-    def __init__(self, site_plants: set):
-        self.site_plants = set(str(p).strip() for p in site_plants)
+    def __init__(self, site_plants: set, part_materials: set):
+        self.site_plants    = set(str(p).strip() for p in site_plants)
+        self.part_materials = set(str(p).strip() for p in part_materials)
 
     @staticmethod
     def _is_blank(value) -> bool:
-        return pd.isna(value) or str(value).strip() == ""
+        val = str(value).strip()
+        return pd.isna(value) or val == "" or val == "_" or val.lower() == "nan"
+
+    @staticmethod
+    def _validate_yyyymmdd(field_name: str, value) -> str:
+        """
+        Returns an error string if value is blank or not a valid YYYYMMDD date.
+        Returns '' if the value is valid.
+        """
+        val = str(value).strip()
+
+        if OnhandRuleEngine._is_blank(value):
+            return f"{field_name}: Field is blank"
+
+        if not (val.isdigit() and len(val) == 8):
+            return f"{field_name}: Invalid format (expected YYYYMMDD)"
+
+        try:
+            pd.to_datetime(val, format="%Y%m%d", errors="raise")
+        except Exception:
+            return f"{field_name}: Invalid date value"
+
+        return ""
+
+    # ── Individual field validators ───────────
 
     def validate_materialnumber(self, row) -> str:
-        val = row.get("MATERIALNUMBER", "")
+        val = str(row.get("MATERIALNUMBER", "")).strip()
         if self._is_blank(val):
             return "MATERIALNUMBER: Field is blank"
-
-        val_str = str(val).strip().upper()
-
-        # ── Try numeric ranges first ──
-        try:
-            num = int(val_str)
-            for rmin, rmax in MATERIAL_NUMERIC_RANGES:
-                if rmin <= num <= rmax:
-                    return ""
-            return (
-                f"MATERIALNUMBER: '{val_str}' is out of valid range "
-                "(must be 14x / 15x / 16x / 19x / 20x trillion, "
-                "or alphanumeric 0000A0000000000000–0000ZZZZZZZZZZZZZZ)"
-            )
-        except ValueError:
-            pass
-
-        # ── Try alphanumeric pattern: 0000A0000000000000 – 0000ZZZZZZZZZZZZZZ ──
-        if MATERIAL_ALPHA_PATTERN.match(val_str):
-            return ""
-
-        return (
-            f"MATERIALNUMBER: '{val_str}' is not a valid material number "
-            "(must be in numeric ranges 14x / 15x / 16x / 19x / 20x trillion, "
-            "or alphanumeric range 0000A0000000000000–0000ZZZZZZZZZZZZZZ)"
-        )
-
-    # def validate_materialtype(self, row) -> str:
-    #     # No validation rules defined for this field
-    #     return ""
+        if val not in self.part_materials:
+            return f"MATERIALNUMBER: '{val}' not present in Part master"
+        return ""
 
     def validate_batchnumber(self, row) -> str:
         if self._is_blank(row.get("BATCHNUMBER")):
@@ -167,14 +157,19 @@ class OnhandRuleEngine:
         return ""
 
     def validate_dateoflastgoodsreceipt(self, row) -> str:
-        if self._is_blank(row.get("DATEOFLASTGOODSRECEIPT")):
-            return "DATEOFLASTGOODSRECEIPT: Field is blank "
-        return ""
+        return self._validate_yyyymmdd(
+            "DATEOFLASTGOODSRECEIPT", row.get("DATEOFLASTGOODSRECEIPT", "")
+        )
 
-    def validate_shelflife(self, row) -> str:
-        if self._is_blank(row.get("SHELFLIFEEXPIRATION_DATEOFMANUFACTURE")):
-            return "SHELFLIFEEXPIRATION_DATEOFMANUFACTURE: Field is blank"
-        return ""
+    def validate_shelflifeexpiration(self, row) -> str:
+        return self._validate_yyyymmdd(
+            "SHELFLIFEEXPIRATION", row.get("SHELFLIFEEXPIRATION", "")
+        )
+
+    def validate_dateofmanufacture(self, row) -> str:
+        return self._validate_yyyymmdd(
+            "DATEOFMANUFACTURE", row.get("DATEOFMANUFACTURE", "")
+        )
 
     def validate_type(self, row) -> str:
         val = row.get("TYPE", "")
@@ -200,17 +195,17 @@ class OnhandRuleEngine:
 
     def get_rules(self) -> dict:
         return {
-            "MATERIALNUMBER":                        self.validate_materialnumber,
-            # "MATERIALTYPE":                          self.validate_materialtype,
-            "BATCHNUMBER":                           self.validate_batchnumber,
-            "PLANT":                                 self.validate_plant,
-            "STORAGELOCATION":                       self.validate_storagelocation,
-            "WAREHOUSENUMBER":                       self.validate_warehousenumber,
-            "DATEOFLASTGOODSRECEIPT":               self.validate_dateoflastgoodsreceipt,
-            "SHELFLIFEEXPIRATION_DATEOFMANUFACTURE": self.validate_shelflife,
-            "TYPE":                                  self.validate_type,
-            "QTY":                                   self.validate_qty,
-            "STANDARDPRICE":                         self.validate_standardprice,
+            "MATERIALNUMBER":        self.validate_materialnumber,
+            "BATCHNUMBER":           self.validate_batchnumber,
+            "PLANT":                 self.validate_plant,
+            "STORAGELOCATION":       self.validate_storagelocation,
+            "WAREHOUSENUMBER":       self.validate_warehousenumber,
+            "DATEOFLASTGOODSRECEIPT": self.validate_dateoflastgoodsreceipt,
+            "SHELFLIFEEXPIRATION":   self.validate_shelflifeexpiration,
+            "DATEOFMANUFACTURE":     self.validate_dateofmanufacture,
+            "TYPE":                  self.validate_type,
+            "QTY":                   self.validate_qty,
+            "STANDARDPRICE":         self.validate_standardprice,
         }
 
 
@@ -220,28 +215,35 @@ class OnhandRuleEngine:
 class OnhandTableValidator:
 
     def __init__(self, onhand_path: str, site_path: str):
-        self.onhand_path = onhand_path
-        self.site_path   = site_path
-        self.df          = pd.DataFrame()
-        self.site_plants = set()
-        self.error_map   = {}
-        self.reason_map  = {}
+        self.onhand_path    = onhand_path
+        self.site_path      = site_path
+        self.df             = pd.DataFrame()
+        self.site_plants    = set()
+        self.part_materials = set()
+        self.error_map      = {}
+        self.reason_map     = {}
 
     def load(self):
-        self.df = pd.read_csv(self.onhand_path, sep="\t", dtype=str)
+        self.df = pd.read_csv(self.onhand_path, dtype=str, sep="\t")
         self.df.columns = [c.strip().upper() for c in self.df.columns]
 
-        site_df = pd.read_excel(self.site_path, dtype=str,engine="openpyxl")
+        site_df = pd.read_csv(self.site_path, dtype=str, sep="\t")
         site_df.columns = [c.strip().upper() for c in site_df.columns]
+
+        part_df = pd.read_csv(PART_INPUT_FILE, dtype=str, sep="\t")
+        part_df.columns = [c.strip().upper() for c in part_df.columns]
+
+        if "MATERIALNUMBER" not in part_df.columns:
+            raise ValueError("MATERIALNUMBER column not found in Part master.")
+        self.part_materials = set(part_df["MATERIALNUMBER"].dropna().str.strip().tolist())
 
         if "PLANT" not in site_df.columns:
             raise ValueError("PLANT column not found in Site master.")
-
         self.site_plants = set(site_df["PLANT"].dropna().str.strip().tolist())
         print(f"    Site master plants loaded : {len(self.site_plants)} unique values")
 
     def validate(self):
-        engine = OnhandRuleEngine(self.site_plants)
+        engine = OnhandRuleEngine(self.site_plants, self.part_materials)
         rules  = engine.get_rules()
 
         for idx, row in self.df.iterrows():
@@ -285,7 +287,7 @@ class OnhandTableValidator:
         return field_errors
 
     def get_materialnumber_error_subcounts(self) -> dict:
-        counts = {"blank": 0, "out_of_range": 0}
+        counts = {"blank": 0, "not_in_part": 0}
         for idx, col_reason in self.reason_map.items():
             reason = col_reason.get("MATERIALNUMBER", "")
             if not reason:
@@ -293,7 +295,7 @@ class OnhandTableValidator:
             if "blank" in reason.lower():
                 counts["blank"] += 1
             else:
-                counts["out_of_range"] += 1
+                counts["not_in_part"] += 1
         return counts
 
     def get_plant_error_subcounts(self) -> dict:
@@ -320,19 +322,8 @@ class OnhandReportWriter:
     RULES_CONTENT = {
         "MATERIALNUMBER": [
             "Must not be blank.",
-            "Must be in one of the following numeric ranges: "
-            "14000000000000–14999999999999, "
-            "15000000000000–15999999999999, "
-            "16000000000000–16999999999999, "
-            "19000000000000–19999999999999, "
-            "20000000000000–20999999999999.",
-            "OR must match alphanumeric range: "
-            "0000A0000000000000–0000ZZZZZZZZZZZZZZ "
-            "(18 characters: '0000' + A–Z + 13 uppercase alphanumeric characters).",
+            "Must be present in the Part master.",
         ],
-        # "MATERIALTYPE": [
-        #     "No specific validation rules defined for this field.",
-        # ],
         "BATCHNUMBER": [
             "Must not be blank.",
         ],
@@ -348,9 +339,15 @@ class OnhandReportWriter:
         ],
         "DATEOFLASTGOODSRECEIPT": [
             "Must not be blank.",
+            "Field must follow YYYYMMDD format.",
         ],
-        "SHELFLIFEEXPIRATION_DATEOFMANUFACTURE": [
+        "SHELFLIFEEXPIRATION": [
             "Must not be blank.",
+            "Field must follow YYYYMMDD format.",
+        ],
+        "DATEOFMANUFACTURE": [
+            "Must not be blank.",
+            "Field must follow YYYYMMDD format.",
         ],
         "TYPE": [
             "Must not be blank.",
@@ -374,7 +371,6 @@ class OnhandReportWriter:
     def _write_header(self, ws, columns):
         for c_idx, col_name in enumerate(columns, start=1):
             cell = ws.cell(row=1, column=c_idx, value=col_name)
-            # ERROR_COLUMNS header → WHITE fill + black bold font so it's readable
             if col_name == "ERROR_COLUMNS":
                 cell.fill = WHITE_FILL
                 cell.font = Font(bold=True, name="Arial", color="000000")
@@ -444,7 +440,7 @@ class OnhandReportWriter:
             pct_health = round(100 - pct_error, 2)
 
             if col_name in FIELDS_WITH_SUB_ROWS:
-                reason_text = ""            # sub-rows carry reasons
+                reason_text = ""
             elif has_errors:
                 reason_text = FIELD_REASON.get(col_name, "")
             else:
@@ -473,11 +469,9 @@ class OnhandReportWriter:
                         "MATERIALNUMBER: Field is blank",
                     ),
                     (
-                        "  ↳ Out of Valid Range",
-                        mat_subcounts["out_of_range"],
-                        "MATERIALNUMBER: Not in numeric ranges "
-                        "(14x / 15x / 16x / 19x / 20x trillion) "
-                        "or alphanumeric range 0000A0000000000000–0000ZZZZZZZZZZZZZZ",
+                        "  ↳ Not in Part Master",
+                        mat_subcounts["not_in_part"],
+                        "MATERIALNUMBER: Not present in Part master",
                     ),
                 ]
                 for sub_label, sub_count, sub_reason in sub_definitions:
@@ -594,7 +588,8 @@ class OnhandReportWriter:
         Creates one sheet per field that has at least one error row.
         Sheets follow FIELD_ORDER for consistent tab ordering.
         Error rows use WHITE background; only the failing column cell is RED.
-        The ERROR_COLUMNS header column uses WHITE fill so it remains readable.
+        Each sheet shows individual columns (SHELFLIFEEXPIRATION and DATEOFMANUFACTURE
+        appear as their own separate columns — the old combined column is not used).
         """
         field_errors = self.validator.get_errors_by_field()
 
@@ -615,7 +610,6 @@ class OnhandReportWriter:
                 lambda i: field_err_series.get(i, "")
             )
 
-            # Header row (ERROR_COLUMNS column gets WHITE fill)
             self._write_header(ws, subset.columns)
             col_idx_map = {col: i for i, col in enumerate(subset.columns, start=1)}
 
@@ -624,7 +618,7 @@ class OnhandReportWriter:
                     cell           = ws.cell(row=excel_row, column=c_idx, value=value)
                     cell.font      = BODY_FONT
                     cell.alignment = Alignment(vertical="center")
-                    cell.fill      = WHITE_FILL   # ← white rows (no yellow)
+                    cell.fill      = WHITE_FILL
                     cell.border    = THIN_BORDER
 
                 # Only the failing field cell gets RED highlight
@@ -723,7 +717,7 @@ class OnhandReportWriter:
         # Rules sheet
         self._write_rules_sheet(wb)
 
-        # Per-field error sheets (only for fields WITH errors, in FIELD_ORDER)
+        # Per-field error sheets
         self._write_field_error_sheets(wb, df)
 
         wb.save(self.output_path)
