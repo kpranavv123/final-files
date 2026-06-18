@@ -8,11 +8,11 @@ from openpyxl.utils import get_column_letter
 # ─────────────────────────────────────────────
 #  FILE PATHS  (fill these in before running)
 # ─────────────────────────────────────────────
-PARTSOURCE_MAKE_INPUT_FILE = r""          # PartSource(Make).tab
-PART_MASTER_INPUT_FILE     = r""          # Part Master .tab  (has MATERIALNUMBER, PLANT, XPLANTSTATUS)
-SITE_INPUT_FILE            = r""          # Site master .xlsx (has PLANT)
-BOM_INPUT_FILE             = r""          # BOM extract .tab  (has ROOT_MATERIAL, ROOT_PLANT)
-OUTPUT_FILE                = r""          # Validated_PartSource_Make.xlsx
+PARTSOURCE_MAKE_INPUT_FILE = r"C:\Users\SW526XH\Downloads\Go Live-2\PartSource_Make\PartSource(Make)_2026-06-08-1646.tab"
+PART_MASTER_INPUT_FILE     = r"C:\Users\SW526XH\Downloads\Go Live-1\Part\PartSite_2026-06-16-1757.tab"
+SITE_INPUT_FILE            = r"C:\Users\SW526XH\Downloads\Go Live-1\Site\Site_2026-06-17-1243.tab"
+BOM_INPUT_FILE             = r"C:\Users\SW526XH\Downloads\Go Live-2\BOM\BOM_2026-06-08-1629.tab"
+OUTPUT_FILE                = r"C:\Users\SW526XH\Downloads\Go Live-2\PartSource_Make\Validated_Part_Source_Make_Technical.xlsx"
 
 
 # ─────────────────────────────────────────────
@@ -71,7 +71,6 @@ FIELD_ORDER = [
     "ROUNDINGVALUE",
 ]
 
-# Fields that use sub-rows in the summary
 FIELDS_WITH_SUB_ROWS = {
     "MATERIAL",
     "PLANT",
@@ -79,13 +78,12 @@ FIELDS_WITH_SUB_ROWS = {
     "VALIDTO",
 }
 
-# Per-field single-line reason shown in summary (blank for sub-row fields)
 FIELD_REASON = {
-    "MATERIAL":           "",   # sub-rows carry reasons
-    "PLANT":              "",   # sub-rows carry reasons
+    "MATERIAL":           "",
+    "PLANT":              "",
     "PRODUCTIONVERSION":  "PRODUCTIONVERSION: Field is blank",
-    "VALIDFROM":          "",   # sub-rows carry reasons
-    "VALIDTO":            "",   # sub-rows carry reasons
+    "VALIDFROM":          "",
+    "VALIDTO":            "",
     "MATERIAL_PLANT":     "MATERIAL_PLANT: Field is blank",
     "MAXIMUMLOTSIZE":     "MAXIMUMLOTSIZE: Field is blank",
     "MINIMUMLOTSIZE":     "MINIMUMLOTSIZE: Field is blank",
@@ -101,12 +99,16 @@ class PartSourceMakeRuleEngine:
     def __init__(self,
                  part_master_materials: set,
                  site_plants: set,
-                 filtered_material_plant_pairs: set,   # MATERIAL+PLANT pairs from Part Master with XPLANTSTATUS 02/blank
-                 bom_material_plant_pairs: set):        # ROOT_MATERIAL+ROOT_PLANT pairs from BOM
-        self.part_master_materials         = set(str(m).strip().upper() for m in part_master_materials)
-        self.site_plants                   = set(str(p).strip() for p in site_plants)
-        self.filtered_material_plant_pairs = filtered_material_plant_pairs  # already normalised by loader
-        self.bom_material_plant_pairs      = bom_material_plant_pairs       # already normalised by loader
+                 # Set of MATERIAL_PLANT values (from PartSource) that passed the
+                 # Part-Master filter (found in PM AND XPLANTMATSTATUS is blank or 02).
+                 # Only these are candidates for the BOM cross-check.
+                 eligible_for_bom_check: set,
+                 # ROOT_MATERIAL_ROOT_PLANT values from BOM extract
+                 bom_material_plant_pairs: set):
+        self.part_master_materials  = set(str(m).strip().upper() for m in part_master_materials)
+        self.site_plants            = set(str(p).strip() for p in site_plants)
+        self.eligible_for_bom_check = eligible_for_bom_check   # already normalised by loader
+        self.bom_material_plant_pairs = bom_material_plant_pairs  # already normalised by loader
 
     @staticmethod
     def _is_blank(value) -> bool:
@@ -122,20 +124,26 @@ class PartSourceMakeRuleEngine:
         if self._is_blank(val):
             return "MATERIAL: Field is blank"
 
-        val_str   = str(val).strip().upper()
-        plant_str = str(row.get("PLANT", "")).strip()
+        val_str = str(val).strip().upper()
 
         if val_str not in self.part_master_materials:
             return f"MATERIAL: '{val_str}' is not present in Part master"
 
-        # Rule 1c – check the MATERIAL+PLANT combo after filtering by XPLANTSTATUS
-        mp_key = f"{val_str}||{plant_str}"
-        if mp_key in self.filtered_material_plant_pairs:
+        # Rule 1c  ────────────────────────────────────────────────────────────
+        # Use the pre-built MATERIAL_PLANT key from the PartSource row.
+        # 1. If the key was not found in Part Master's MATERIALNUMBER_PLANT_XPLANTMATSTATUS
+        #    column → skip (no error).
+        # 2. If found but XPLANTMATSTATUS is not blank/02 → skip (no error).
+        # 3. If eligible (found AND status blank/02) → must exist in BOM.
+        mp_key = str(row.get("MATERIAL_PLANT", "")).strip()
+
+        if mp_key in self.eligible_for_bom_check:
             if mp_key not in self.bom_material_plant_pairs:
                 return (
-                    f"MATERIAL: '{val_str}' + PLANT '{plant_str}' "
-                    f"(XPLANTSTATUS 02/blank) not found in BOM extract"
+                    f"MATERIAL: '{val_str}' + PLANT combo "
+                    f"(XPLANTMATSTATUS blank/02) not found in BOM extract"
                 )
+        # Not eligible → no BOM check needed
         return ""
 
     # ── PLANT ─────────────────────────────────
@@ -159,10 +167,7 @@ class PartSourceMakeRuleEngine:
         if self._is_blank(val):
             return "VALIDFROM: Field is blank"
         if not self._valid_date(val):
-            return (
-                f"VALIDFROM: '{str(val).strip()}' "
-                f"does not follow the required format YYYYMMDD"
-            )
+            return f"VALIDFROM: '{str(val).strip()}' does not follow the required format YYYYMMDD"
         return ""
 
     # ── VALIDTO ───────────────────────────────
@@ -171,16 +176,12 @@ class PartSourceMakeRuleEngine:
         if self._is_blank(val):
             return "VALIDTO: Field is blank"
         if not self._valid_date(val):
-            return (
-                f"VALIDTO: '{str(val).strip()}' "
-                f"does not follow the required format YYYYMMDD"
-            )
+            return f"VALIDTO: '{str(val).strip()}' does not follow the required format YYYYMMDD"
         return ""
 
     # ── MATERIAL_PLANT (derived) ───────────────
     def validate_material_plant(self, row) -> str:
-        val = row.get("MATERIAL_PLANT", "")
-        if self._is_blank(val):
+        if self._is_blank(row.get("MATERIAL_PLANT", "")):
             return "MATERIAL_PLANT: Field is blank"
         return ""
 
@@ -228,30 +229,35 @@ class PartSourceMakeTableValidator:
         self.site_path        = site_path
         self.bom_path         = bom_path
 
-        self.df                            = pd.DataFrame()
-        self.part_master_materials         = set()
-        self.site_plants                   = set()
-        self.filtered_material_plant_pairs = set()   # MATERIAL+PLANT from Part Master with XPLANTSTATUS 02/blank
-        self.bom_material_plant_pairs      = set()   # ROOT_MATERIAL+ROOT_PLANT from BOM
+        self.df                     = pd.DataFrame()
+        self.part_master_materials  = set()
+        self.site_plants            = set()
+        self.eligible_for_bom_check = set()   # MATERIAL_PLANT keys passing PM filter
+        self.bom_material_plant_pairs = set() # ROOT_MATERIAL_ROOT_PLANT keys from BOM
 
-        self.error_map  = {}   # {row_idx: [col, ...]}
-        self.reason_map = {}   # {row_idx: {col: reason_str}}
+        self.error_map  = {}
+        self.reason_map = {}
 
     def load(self):
-        # ── PartSource(Make) ──
+        # ── PartSource(Make) ──────────────────────────────────────────────────
         self.df = pd.read_csv(self.partsource_path, sep="\t", dtype=str)
         self.df.columns = [c.strip().upper() for c in self.df.columns]
 
-        # Derive MATERIAL_PLANT column
-        mat   = self.df["MATERIAL"].fillna("").str.strip() if "MATERIAL" in self.df.columns else ""
-        plant = self.df["PLANT"].fillna("").str.strip()    if "PLANT"    in self.df.columns else ""
-        self.df["MATERIAL_PLANT"] = (mat + plant).where((mat != "") | (plant != ""), other="")
+        # Use the pre-built MATERIAL_PLANT column from the file if present,
+        # otherwise derive it on the fly (same as before).
+        if "MATERIAL_PLANT" not in self.df.columns:
+            mat   = self.df["MATERIAL"].fillna("").str.strip() if "MATERIAL" in self.df.columns else ""
+            plant = self.df["PLANT"].fillna("").str.strip()    if "PLANT"    in self.df.columns else ""
+            self.df["MATERIAL_PLANT"] = (mat + plant).where((mat != "") | (plant != ""), other="")
 
-        # ── Part Master ──
+        # Normalise MATERIAL_PLANT to strip whitespace
+        self.df["MATERIAL_PLANT"] = self.df["MATERIAL_PLANT"].fillna("").str.strip()
+
+        # ── Part Master ───────────────────────────────────────────────────────
         pm_df = pd.read_csv(self.part_master_path, sep="\t", dtype=str)
         pm_df.columns = [c.strip().upper() for c in pm_df.columns]
 
-        required_pm_cols = {"MATERIALNUMBER", "PLANT", "XPLANTSTATUS"}
+        required_pm_cols = {"MATERIALNUMBER", "MATERIALNUMBER_PLANT_XPLANTMATSTATUS"}
         missing = required_pm_cols - set(pm_df.columns)
         if missing:
             raise ValueError(f"Part Master is missing columns: {missing}")
@@ -259,56 +265,75 @@ class PartSourceMakeTableValidator:
         self.part_master_materials = set(
             pm_df["MATERIALNUMBER"].dropna().str.strip().str.upper().tolist()
         )
-        print(f"    Part Master materials loaded       : {len(self.part_master_materials)} unique values")
+        print(f"    Part Master materials loaded          : {len(self.part_master_materials)} unique values")
 
-        # Build filtered MATERIAL+PLANT pairs (XPLANTSTATUS == '02' or blank)
-        pm_df["_XPLANT_NORM"] = pm_df["XPLANTSTATUS"].fillna("").str.strip()
-        filtered_pm = pm_df[pm_df["_XPLANT_NORM"].isin(["02", ""])]
-        self.filtered_material_plant_pairs = set(
-            (
-                str(r["MATERIALNUMBER"]).strip().upper()
-                + "||"
-                + str(r["PLANT"]).strip()
-            )
-            for _, r in filtered_pm.iterrows()
-            if pd.notna(r["MATERIALNUMBER"]) and pd.notna(r["PLANT"])
-        )
-        print(f"    Filtered MATERIAL+PLANT pairs      : {len(self.filtered_material_plant_pairs)} (XPLANTSTATUS 02/blank)")
+        # Build eligible_for_bom_check:
+        #   Parse MATERIALNUMBER_PLANT_XPLANTMATSTATUS  →  "MATNUM_PLANT_STATUS"
+        #   Extract the MATERIAL_PLANT portion (first two segments joined without the
+        #   trailing underscore-STATUS) and keep only rows where STATUS is blank or '02'.
+        #
+        #   Column value examples:
+        #     blank status  → "160000000000006834_1801_"          (ends with _)
+        #     status=Z2     → "160000000000006834_1801_Z2"
+        #
+        #   The MATERIAL_PLANT in PartSource is a plain concatenation: "160000000000006834" + "1801"
+        #   → "1600000000000068341801"
+        #   So we reconstruct the MATERIAL_PLANT key the same way the PartSource file does it:
+        #   strip the STATUS suffix (everything after the last underscore), then remove
+        #   the remaining underscores to get the raw concatenation.
 
-        # ── Site Master ──
-        site_df = pd.read_excel(self.site_path, dtype=str, engine="openpyxl")
+        eligible = set()
+        col_vals = pm_df["MATERIALNUMBER_PLANT_XPLANTMATSTATUS"].dropna().str.strip()
+
+        for raw in col_vals:
+            # Split on the LAST underscore to isolate the STATUS part
+            last_sep = raw.rfind("_")
+            if last_sep == -1:
+                # No underscore at all – malformed; skip
+                continue
+            status   = raw[last_sep + 1:].strip()   # "" if blank, "Z2" etc. otherwise
+            mp_part  = raw[:last_sep]                # e.g. "160000000000006834_1801"
+
+            # Only proceed if status is blank or "02"
+            if status not in ("", "02"):
+                continue
+
+            # Convert "MAT_PLANT" → plain concatenation "MATPLANT"
+            mp_key = mp_part.replace("_", "")
+            eligible.add(mp_key)
+
+        self.eligible_for_bom_check = eligible
+        print(f"    Eligible MATERIAL_PLANT for BOM check : {len(self.eligible_for_bom_check)} (XPLANTMATSTATUS blank/02)")
+
+        # ── Site Master ───────────────────────────────────────────────────────
+        site_df = pd.read_csv(self.site_path, dtype=str, sep="\t")
         site_df.columns = [c.strip().upper() for c in site_df.columns]
         if "PLANT" not in site_df.columns:
             raise ValueError("PLANT column not found in Site master.")
         self.site_plants = set(site_df["PLANT"].dropna().str.strip().tolist())
-        print(f"    Site master plants loaded          : {len(self.site_plants)} unique values")
+        print(f"    Site master plants loaded             : {len(self.site_plants)} unique values")
 
-        # ── BOM Extract ──
+        # ── BOM Extract ───────────────────────────────────────────────────────
         bom_df = pd.read_csv(self.bom_path, sep="\t", dtype=str)
         bom_df.columns = [c.strip().upper() for c in bom_df.columns]
 
-        required_bom_cols = {"ROOT_MATERIAL", "ROOT_PLANT"}
+        required_bom_cols = {"ROOT_MATERIAL_ROOT_PLANT"}
         missing_bom = required_bom_cols - set(bom_df.columns)
         if missing_bom:
             raise ValueError(f"BOM extract is missing columns: {missing_bom}")
 
+        # BOM also uses a plain concatenation column – normalise the same way
         self.bom_material_plant_pairs = set(
-            (
-                str(r["ROOT_MATERIAL"]).strip().upper()
-                + "||"
-                + str(r["ROOT_PLANT"]).strip()
-            )
-            for _, r in bom_df.iterrows()
-            if pd.notna(r["ROOT_MATERIAL"]) and pd.notna(r["ROOT_PLANT"])
+            bom_df["ROOT_MATERIAL_ROOT_PLANT"].dropna().str.strip().tolist()
         )
-        print(f"    BOM MATERIAL+PLANT pairs loaded    : {len(self.bom_material_plant_pairs)} unique values")
+        print(f"    BOM MATERIAL_PLANT pairs loaded       : {len(self.bom_material_plant_pairs)} unique values")
 
     def validate(self):
         engine = PartSourceMakeRuleEngine(
-            part_master_materials         = self.part_master_materials,
-            site_plants                   = self.site_plants,
-            filtered_material_plant_pairs = self.filtered_material_plant_pairs,
-            bom_material_plant_pairs      = self.bom_material_plant_pairs,
+            part_master_materials  = self.part_master_materials,
+            site_plants            = self.site_plants,
+            eligible_for_bom_check = self.eligible_for_bom_check,
+            bom_material_plant_pairs = self.bom_material_plant_pairs,
         )
         rules = engine.get_rules()
 
@@ -317,7 +342,6 @@ class PartSourceMakeTableValidator:
             col_reason_map = {}
 
             for col, rule_fn in rules.items():
-                # MATERIAL_PLANT is derived – always present; skip column-existence check
                 if col != "MATERIAL_PLANT" and col not in self.df.columns:
                     continue
                 try:
@@ -406,7 +430,7 @@ class PartSourceMakeTableValidator:
 
 
 # ══════════════════════════════════════════════
-#  Report Writer
+#  Report Writer  (unchanged from original)
 # ══════════════════════════════════════════════
 class PartSourceMakeReportWriter:
 
@@ -417,8 +441,8 @@ class PartSourceMakeReportWriter:
         "MATERIAL": [
             "Must not be blank.",
             "Must be present in the Part master (MATERIALNUMBER column).",
-            "All MATERIAL+PLANT combinations (where XPLANTSTATUS is '02' or blank in Part master) "
-            "must be present in the BOM extract (ROOT_MATERIAL + ROOT_PLANT).",
+            "For rows where MATERIAL_PLANT exists in Part Master AND XPLANTMATSTATUS is blank or '02': "
+            "the MATERIAL_PLANT must also be present in the BOM extract (ROOT_MATERIAL_ROOT_PLANT column).",
         ],
         "PLANT": [
             "Must not be blank.",
@@ -453,7 +477,6 @@ class PartSourceMakeReportWriter:
         self.validator   = validator
         self.output_path = output_path
 
-    # ── helpers ───────────────────────────────
     def _write_header(self, ws, columns):
         for c_idx, col_name in enumerate(columns, start=1):
             cell = ws.cell(row=1, column=c_idx, value=col_name)
@@ -482,12 +505,8 @@ class PartSourceMakeReportWriter:
             if fill:
                 cell.fill = fill
 
-    # ══════════════════════════════════════════
-    #  Summary sheet
-    # ══════════════════════════════════════════
     def _write_summary_sheet_into(self, ws, error_map: dict, total_rows: int):
 
-        # ── Row 1 : Title ──
         ws.merge_cells("A1:G1")
         title_cell           = ws.cell(row=1, column=1, value="PartSource (Make) Validation Summary")
         title_cell.font      = Font(name="Arial", bold=True, size=14)
@@ -495,7 +514,6 @@ class PartSourceMakeReportWriter:
         title_cell.alignment = Alignment(horizontal="left", vertical="center")
         ws.row_dimensions[1].height = 26
 
-        # ── Row 2 : Column headers ──
         headers = ["#", "Field Name", "Error Count", "Record Count",
                    "% Health", "% of Error", "Reason / Sub-Category"]
         for c_idx, h in enumerate(headers, start=1):
@@ -506,7 +524,6 @@ class PartSourceMakeReportWriter:
             cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
         ws.row_dimensions[2].height = 30
 
-        # ── Build per-field error counts ──
         col_error_counts: dict = {}
         for bad_cols in error_map.values():
             for col in bad_cols:
@@ -562,9 +579,9 @@ class PartSourceMakeReportWriter:
                         "MATERIAL: Not present in Part master",
                     ),
                     (
-                        "  ↳ MATERIAL+PLANT (XPLANTSTATUS 02/blank) not in BOM",
+                        "  ↳ MATERIAL_PLANT (XPLANTMATSTATUS blank/02) not in BOM",
                         material_sub["not_in_bom"],
-                        "MATERIAL: MATERIAL+PLANT combo (XPLANTSTATUS 02/blank) not found in BOM extract",
+                        "MATERIAL: MATERIAL_PLANT combo (XPLANTMATSTATUS blank/02) not found in BOM extract",
                     ),
                 ]
                 for sub_label, sub_count, sub_reason in sub_definitions:
@@ -589,16 +606,8 @@ class PartSourceMakeReportWriter:
             # ── PLANT sub-rows ──
             if col_name == "PLANT" and has_errors:
                 sub_definitions = [
-                    (
-                        "  ↳ Blank Plant",
-                        plant_sub["blank"],
-                        "PLANT: Field is blank",
-                    ),
-                    (
-                        "  ↳ Not in Site Master",
-                        plant_sub["not_in_site"],
-                        "PLANT: Site not found in the Site master",
-                    ),
+                    ("  ↳ Blank Plant",        plant_sub["blank"],       "PLANT: Field is blank"),
+                    ("  ↳ Not in Site Master", plant_sub["not_in_site"], "PLANT: Site not found in the Site master"),
                 ]
                 for sub_label, sub_count, sub_reason in sub_definitions:
                     sub_pct_err    = round((sub_count / total_rows) * 100, 2) if total_rows else 0
@@ -622,16 +631,8 @@ class PartSourceMakeReportWriter:
             # ── VALIDFROM sub-rows ──
             if col_name == "VALIDFROM" and has_errors:
                 sub_definitions = [
-                    (
-                        "  ↳ Blank Valid From Date",
-                        validfrom_sub["blank"],
-                        "VALIDFROM: Field is blank",
-                    ),
-                    (
-                        "  ↳ Invalid Format (not YYYYMMDD)",
-                        validfrom_sub["bad_format"],
-                        "VALIDFROM: Does not follow required format YYYYMMDD",
-                    ),
+                    ("  ↳ Blank Valid From Date",        validfrom_sub["blank"],      "VALIDFROM: Field is blank"),
+                    ("  ↳ Invalid Format (not YYYYMMDD)", validfrom_sub["bad_format"], "VALIDFROM: Does not follow required format YYYYMMDD"),
                 ]
                 for sub_label, sub_count, sub_reason in sub_definitions:
                     sub_pct_err    = round((sub_count / total_rows) * 100, 2) if total_rows else 0
@@ -655,16 +656,8 @@ class PartSourceMakeReportWriter:
             # ── VALIDTO sub-rows ──
             if col_name == "VALIDTO" and has_errors:
                 sub_definitions = [
-                    (
-                        "  ↳ Blank Valid To Date",
-                        validto_sub["blank"],
-                        "VALIDTO: Field is blank",
-                    ),
-                    (
-                        "  ↳ Invalid Format (not YYYYMMDD)",
-                        validto_sub["bad_format"],
-                        "VALIDTO: Does not follow required format YYYYMMDD",
-                    ),
+                    ("  ↳ Blank Valid To Date",           validto_sub["blank"],      "VALIDTO: Field is blank"),
+                    ("  ↳ Invalid Format (not YYYYMMDD)", validto_sub["bad_format"], "VALIDTO: Does not follow required format YYYYMMDD"),
                 ]
                 for sub_label, sub_count, sub_reason in sub_definitions:
                     sub_pct_err    = round((sub_count / total_rows) * 100, 2) if total_rows else 0
@@ -707,9 +700,8 @@ class PartSourceMakeReportWriter:
             ws.cell(row=row_num, column=c).border    = THIN_BORDER
             ws.cell(row=row_num, column=c).alignment = Alignment(horizontal="center", vertical="center")
 
-        row_num += 2   # blank spacer
+        row_num += 2
 
-        # ── Quick-glance stats block ──
         records_with_errors = len(error_map)
         records_passing     = total_rows - records_with_errors
 
@@ -729,15 +721,12 @@ class PartSourceMakeReportWriter:
             value_cell.font      = Font(name="Arial", size=10)
             value_cell.border    = THIN_BORDER
             value_cell.alignment = Alignment(horizontal="center", vertical="center")
-
             row_num += 1
 
-        # ── Column widths ──
         col_widths = [6, 52, 14, 16, 12, 12, 70]
         for c_idx, width in enumerate(col_widths, start=1):
             ws.column_dimensions[get_column_letter(c_idx)].width = width
 
-    # ── Per-field error sheets ────────────────
     def _write_field_error_sheets(self, wb, df: pd.DataFrame):
         field_errors = self.validator.get_errors_by_field()
 
@@ -783,7 +772,6 @@ class PartSourceMakeReportWriter:
                 value=f"Total error rows for '{field_name}': {len(subset)}",
             ).font = Font(name="Arial", italic=True, size=9, bold=True)
 
-    # ── Rules sheet ───────────────────────────
     def _write_rules_sheet(self, wb):
         ws = wb.create_sheet(self.SHEET_RULES)
 
@@ -842,7 +830,6 @@ class PartSourceMakeReportWriter:
         ws.column_dimensions["B"].width = 22
         ws.column_dimensions["C"].width = 90
 
-    # ── Main write ────────────────────────────
     def write(self):
         v  = self.validator
         df = v.df.copy()
