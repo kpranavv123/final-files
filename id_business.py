@@ -9,8 +9,9 @@ Business Rules:
   - SCHEDULELINEORDERQUANTITY should not contain negative values
   - NETPRICE should not contain negative values
   - REQUESTEDDELIVERYDATE: year-month must not be earlier than
-    (BASE_DATE year-month  minus 2 months).
+    (BASE_DATE year-month  minus 3 months).
     The day component of BASE_DATE is ignored — only year+month matter.
+    Rule applies ONLY when SDPROCESSSTATUS = 'C'.
   - SDPROCESSSTATUS: if value is "C", then REQUESTEDQTYINBASEUNIT must
     equal DELIVEREDQTYINBASEUNIT.
 
@@ -29,14 +30,14 @@ import re
 # ─────────────────────────────────────────────
 #  FILE PATHS  –  update these
 # ─────────────────────────────────────────────
-INDEPENDENT_DEMAND_INPUT = r"C:\Users\SW526XH\Downloads\Go Live-1\ID\Independent Demand_2026-05-20-1754.tab"
-OUTPUT_FILE              = r"C:\Users\SW526XH\Downloads\Go Live-1\ID\Validated_IndependentDemand_Business2.xlsx"
+INDEPENDENT_DEMAND_INPUT = r"C:\Users\SW526XH\Downloads\Go Live-1\ID\IndependentDemand_2026-06-24-1156.tab"
+OUTPUT_FILE              = r"C:\Users\SW526XH\Downloads\Go Live-1\ID\Validated_IndependentDemand_Business.xlsx"
 
 
 # ─────────────────────────────────────────────
 #  BASE DATE CONFIGURATION
 # ─────────────────────────────────────────────
-BASE_DATE = None
+BASE_DATE = _date(2026, 6, 24)
 
 
 def _resolve_base_date() -> _date:
@@ -44,9 +45,9 @@ def _resolve_base_date() -> _date:
 
 
 def _cutoff_year_month() -> tuple[int, int]:
-    base   = _resolve_base_date()
-    year   = base.year
-    month  = base.month - 2
+    base  = _resolve_base_date()
+    year  = base.year
+    month = base.month - 2
 
     if month <= 0:
         month += 12
@@ -91,11 +92,11 @@ BUSINESS_RULESET_INFO = {
         "NETPRICE contains negative value",
     ],
     "REQUESTEDDELIVERYDATE": [
-        "REQUESTEDDELIVERYDATE year-month is more than 2 months before the base date",
+        "Transactions beyond current-3 months should not be present when SDPROCESSSTATUS = C",
     ],
-    "SDPROCESSSTATUS": [
-        "When SDPROCESSSTATUS is 'C', REQUESTEDQTYINBASEUNIT must equal DELIVEREDQTYINBASEUNIT",
-    ],
+    # "SDPROCESSSTATUS": [
+    #     "When SDPROCESSSTATUS is 'C', REQUESTEDQTYINBASEUNIT must equal DELIVEREDQTYINBASEUNIT",
+    # ],
 }
 
 
@@ -143,7 +144,12 @@ class IndependentDemandBusinessRuleEngine:
         return True, ""
 
     def validate_requested_delivery_date_range(self, row) -> tuple:
-        val = row.get("REQUESTEDDELIVERYDATE")
+        val    = row.get("REQUESTEDDELIVERYDATE")
+        status = row.get("SDPROCESSSTATUS")
+
+        # Apply rule ONLY when SDPROCESSSTATUS = 'C'
+        if self._is_blank(status) or str(status).strip().upper() != "C":
+            return True, ""
 
         if self._is_blank(val):
             return True, ""
@@ -162,69 +168,74 @@ class IndependentDemandBusinessRuleEngine:
         if not (1 <= month <= 12):
             return True, ""
 
-        cutoff_year, cutoff_month = _cutoff_year_month()
+        # 3-month cutoff
+        base    = _resolve_base_date()
+        year_c  = base.year
+        month_c = base.month - 3
 
-        if (year, month) < (cutoff_year, cutoff_month):
-            base_str   = _resolve_base_date().strftime("%Y-%m-%d")
-            cutoff_str = _cutoff_label()
+        if month_c <= 0:
+            month_c += 12
+            year_c  -= 1
+
+        if (year, month) < (year_c, month_c):
             return (
                 False,
-                f"REQUESTEDDELIVERYDATE {val_str[:4]}-{val_str[4:6]} is before the "
-                f"2-month cutoff {cutoff_str} (base date: {base_str})",
+                f"REQUESTEDDELIVERYDATE {year}-{month:02d} is before allowed 3-month cutoff "
+                f"(applies only when SDPROCESSSTATUS = 'C')",
             )
 
         return True, ""
 
-    def validate_sdprocessstatus_completed(self, row) -> tuple:
-        """
-        If SDPROCESSSTATUS is 'C', then REQUESTEDQTYINBASEUNIT must equal
-        DELIVEREDQTYINBASEUNIT. Both values are compared as floats to avoid
-        string formatting mismatches (e.g. '10' vs '10.0').
-
-        Skips the check when:
-          - SDPROCESSSTATUS is blank or not 'C'
-          - Either quantity column is blank or non-numeric
-        """
-        status = row.get("SDPROCESSSTATUS")
-
-        if self._is_blank(status) or str(status).strip().upper() != "C":
-            return True, ""
-
-        requested  = row.get("REQUESTEDQTYINBASEUNIT")
-        delivered  = row.get("DELIVEREDQTYINBASEUNIT")
-
-        if self._is_blank(requested) or self._is_blank(delivered):
-            return (
-                False,
-                "SDPROCESSSTATUS is 'C' but REQUESTEDQTYINBASEUNIT or "
-                "DELIVEREDQTYINBASEUNIT is blank",
-            )
-
-        try:
-            req_val = float(requested)
-            del_val = float(delivered)
-        except (ValueError, TypeError):
-            return (
-                False,
-                "SDPROCESSSTATUS is 'C' but quantity values are non-numeric "
-                f"(REQUESTEDQTYINBASEUNIT={requested}, DELIVEREDQTYINBASEUNIT={delivered})",
-            )
-
-        if req_val != del_val:
-            return (
-                False,
-                f"SDPROCESSSTATUS is 'C' but REQUESTEDQTYINBASEUNIT ({req_val}) "
-                f"!= DELIVEREDQTYINBASEUNIT ({del_val})",
-            )
-
-        return True, ""
+    # def validate_sdprocessstatus_completed(self, row) -> tuple:
+    #     """
+    #     If SDPROCESSSTATUS is 'C', then REQUESTEDQTYINBASEUNIT must equal
+    #     DELIVEREDQTYINBASEUNIT. Both values are compared as floats to avoid
+    #     string formatting mismatches (e.g. '10' vs '10.0').
+    #
+    #     Skips the check when:
+    #       - SDPROCESSSTATUS is blank or not 'C'
+    #       - Either quantity column is blank or non-numeric
+    #     """
+    #     status = row.get("SDPROCESSSTATUS")
+    #
+    #     if self._is_blank(status) or str(status).strip().upper() != "C":
+    #         return True, ""
+    #
+    #     requested = row.get("REQUESTEDQTYINBASEUNIT")
+    #     delivered = row.get("DELIVEREDQTYINBASEUNIT")
+    #
+    #     if self._is_blank(requested) or self._is_blank(delivered):
+    #         return (
+    #             False,
+    #             "SDPROCESSSTATUS is 'C' but REQUESTEDQTYINBASEUNIT or "
+    #             "DELIVEREDQTYINBASEUNIT is blank",
+    #         )
+    #
+    #     try:
+    #         req_val = float(requested)
+    #         del_val = float(delivered)
+    #     except (ValueError, TypeError):
+    #         return (
+    #             False,
+    #             "SDPROCESSSTATUS is 'C' but quantity values are non-numeric "
+    #             f"(REQUESTEDQTYINBASEUNIT={requested}, DELIVEREDQTYINBASEUNIT={delivered})",
+    #         )
+    #
+    #     if req_val != del_val:
+    #         return (
+    #             False,
+    #             f"SDPROCESSSTATUS is 'C' but REQUESTEDQTYINBASEUNIT ({req_val}) "
+    #             f"not equal to DELIVEREDQTYINBASEUNIT ({del_val})",
+    #         )
+    #
+    #     return True, ""
 
     def get_rules(self) -> dict:
         return {
             "SCHEDULELINEORDERQUANTITY": self.validate_quantity_negative,
             "NETPRICE":                  self.validate_netprice_negative,
             "REQUESTEDDELIVERYDATE":     self.validate_requested_delivery_date_range,
-            "SDPROCESSSTATUS":           self.validate_sdprocessstatus_completed,
+            # "SDPROCESSSTATUS":           self.validate_sdprocessstatus_completed,
         }
 
 
@@ -257,8 +268,8 @@ class IndependentDemandBusinessValidator:
 
     def validate(self):
         print("[VALIDATE] Running business validation rules...")
-        print(f"    Base date         : {_resolve_base_date().strftime('%Y-%m-%d')}")
-        print(f"    2-month cutoff    : {_cutoff_label()}")
+        print(f"    Base date : {_resolve_base_date().strftime('%Y-%m-%d')}")
+        print("    Rule: 3-month cutoff applies when SDPROCESSSTATUS = C")
 
         engine = IndependentDemandBusinessRuleEngine()
         rules  = engine.get_rules()
@@ -329,7 +340,7 @@ class IndependentDemandBusinessReportWriter:
             "REQUESTEDQTYINBASEUNIT",
             "DELIVEREDQTYINBASEUNIT",
             "NETPRICE",
-            "SDPROCESSSTATUS",
+            # "SDPROCESSSTATUS",
         ]
         ruleset_columns = [col for col in ruleset_fields if col in self.validator.df.columns]
         ruleset_columns.append("ERROR_FIELDS")
@@ -363,13 +374,12 @@ class IndependentDemandBusinessReportWriter:
                 "No negative values.",
             ],
             "REQUESTEDDELIVERYDATE": [
-                "Transactions beyond current - 2 months should not be present",
+                "Transactions beyond current - 3 months should not be present for SDPROCESSSTATUS = C",
             ],
-            "SDPROCESSSTATUS": [
-                "When SDPROCESSSTATUS is 'C' (Completed), REQUESTEDQTYINBASEUNIT "
-                "must equal DELIVEREDQTYINBASEUNIT. A mismatch indicates the order "
-                "was marked complete but quantities do not reconcile.",
-            ],
+            # "SDPROCESSSTATUS": [
+            #     "When SDPROCESSSTATUS is 'C' (Completed), REQUESTEDQTYINBASEUNIT "
+            #     "must equal DELIVEREDQTYINBASEUNIT.",
+            # ],
         }
 
         ordered_fields = summary_fields if summary_fields else list(ruleset_info.keys())
@@ -455,7 +465,7 @@ class IndependentDemandBusinessReportWriter:
             "SCHEDULELINEORDERQUANTITY",
             "NETPRICE",
             "REQUESTEDDELIVERYDATE",
-            "SDPROCESSSTATUS",
+            # "SDPROCESSSTATUS",
         ]
 
         col_error_counts  = {field: 0 for field in ruleset_field_order}
@@ -490,18 +500,18 @@ class IndependentDemandBusinessReportWriter:
                 ),
                 "NETPRICE": "NETPRICE contains negative value",
                 "REQUESTEDDELIVERYDATE": (
-                    f"REQUESTEDDELIVERYDATE year-month is before the 2-month cutoff "
-                    f"{self.cutoff_label_str}"
+                    "REQUESTEDDELIVERYDATE is beyond current-3 months "
+                    "for records where SDPROCESSSTATUS = C"
                 ),
-                "SDPROCESSSTATUS": (
-                    "SDPROCESSSTATUS is 'C' but REQUESTEDQTYINBASEUNIT != DELIVEREDQTYINBASEUNIT"
-                ),
+                # "SDPROCESSSTATUS": (
+                #     "SDPROCESSSTATUS is 'C' but REQUESTEDQTYINBASEUNIT is not equal to DELIVEREDQTYINBASEUNIT"
+                # ),
             }
             reason_text = canonical_reasons.get(col_name, "") if count > 0 else ""
 
-            ws.cell(row=row_num, column=1, value=field_num).font = BODY_FONT
-            ws.cell(row=row_num, column=2, value=col_name).font  = BODY_FONT
-            ws.cell(row=row_num, column=3, value=count).font     = BODY_FONT
+            ws.cell(row=row_num, column=1, value=field_num).font  = BODY_FONT
+            ws.cell(row=row_num, column=2, value=col_name).font   = BODY_FONT
+            ws.cell(row=row_num, column=3, value=count).font      = BODY_FONT
             ws.cell(row=row_num, column=4, value=total_rows).font = BODY_FONT
 
             cell_health               = ws.cell(row=row_num, column=5, value=health_percent)
