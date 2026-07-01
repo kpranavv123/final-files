@@ -8,11 +8,10 @@ from openpyxl.utils import get_column_letter
 # ─────────────────────────────────────────────
 #  FILE PATHS
 # ─────────────────────────────────────────────
-BATCH_INPUT_FILE  = r"C:\Users\SW526XH\Downloads\Go Live-2\Batch\Batch.tab"
-PARTFG_INPUT_FILE = r"C:\Users\SW526XH\Downloads\Go Live-2\Batch\Part_FG.xlsx"
-PARTPM_INPUT_FILE = r"C:\Users\SW526XH\Downloads\Go Live-2\Batch\Part_RMPM.xlsx"
-SITE_INPUT_FILE   = r"C:\Users\SW526XH\Downloads\Go Live-2\Batch\Site_2026-04-09-1058.xlsx"
-OUTPUT_FILE       = r"C:\Users\SW526XH\Downloads\Go Live-2\Batch\Validated_Batch.xlsx"
+BOM_INPUT_FILE    = r"C:\Users\SW526XH\Downloads\Go Live-2\BOM\BOM.tab"
+PARTFG_INPUT_FILE = r"C:\Users\SW526XH\Downloads\Go Live-2\BOM\Part_FG.xlsx"
+SITE_INPUT_FILE   = r"C:\Users\SW526XH\Downloads\Go Live-2\BOM\Site_2026-04-09-1058.xlsx"
+OUTPUT_FILE       = r"C:\Users\SW526XH\Downloads\Go Live-2\BOM\Validated_BOM.xlsx"
 
 
 # ─────────────────────────────────────────────
@@ -22,7 +21,14 @@ DATE_PATTERN = re.compile(r'^\d{4}(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])$')  # YYY
 
 
 # ─────────────────────────────────────────────
-#  Colours / Styles  — matched to Onhand template
+#  PRODUCTTYPE allow-lists
+# ─────────────────────────────────────────────
+MATERIAL_ALLOWED_PRODUCTTYPES  = {"FERT", "HAWA", "HALB"}
+COMPONENT_ALLOWED_PRODUCTTYPES = {"HALB", "BLND", "ROH", "VERP"}
+
+
+# ─────────────────────────────────────────────
+#  Colours / Styles
 # ─────────────────────────────────────────────
 RED_FILL        = PatternFill("solid", start_color="FF0000", end_color="FF0000")
 HDR_FILL        = PatternFill("solid", start_color="D9E1F2", end_color="D9E1F2")
@@ -43,45 +49,47 @@ THIN_BORDER = Border(
     top=Side(style="thin"),  bottom=Side(style="thin"),
 )
 
+
 # ─────────────────────────────────────────────
 #  FIELD ORDER & METADATA
 # ─────────────────────────────────────────────
 KEEP_COLS = [
-    "MATERIALNUMBER", "PLANT", "BATCHNUMBER",
-    "DATEOFMANUFACTURE", "SHELFLIFEEXPIRATION",
-    "VENDORSACCOUNTNUMBER", "SUPPLIERBATCHNUMBER",
+    "MATERIAL", "PLANT", "COMPONENT", "VALIDFROM",
+    "VALIDTO", "BASEQUANTITY", "COMPONENTSCRAP", "TYPE",
 ]
 
 FIELD_ORDER = [
-    "MATERIALNUMBER", "PLANT", "BATCHNUMBER",
-    "DATEOFMANUFACTURE", "SHELFLIFEEXPIRATION",
-    "VENDORSACCOUNTNUMBER", "SUPPLIERBATCHNUMBER",
+    "MATERIAL", "PLANT", "COMPONENT", "VALIDFROM",
+    "VALIDTO", "BASEQUANTITY", "COMPONENTSCRAP", "TYPE",
 ]
 
 # Fields that use sub-rows in the summary
-FIELDS_WITH_SUB_ROWS = {"MATERIALNUMBER", "PLANT", "DATEOFMANUFACTURE", "SHELFLIFEEXPIRATION"}
+FIELDS_WITH_SUB_ROWS = {
+    "MATERIAL", "PLANT", "COMPONENT", "VALIDFROM", "VALIDTO",
+}
 
 # Per-field single-line reason shown in summary (blank for sub-row fields)
 FIELD_REASON = {
-    "MATERIALNUMBER":       "",   # sub-rows carry reasons
-    "PLANT":                "",   # sub-rows carry reasons
-    "BATCHNUMBER":          "BATCHNUMBER: Field is blank",
-    "DATEOFMANUFACTURE":    "",   # sub-rows carry reasons
-    "SHELFLIFEEXPIRATION":  "",   # sub-rows carry reasons
-    "VENDORSACCOUNTNUMBER": "VENDORSACCOUNTNUMBER: Field is blank",
-    "SUPPLIERBATCHNUMBER":  "SUPPLIERBATCHNUMBER: Field is blank",
+    "MATERIAL":        "",   # sub-rows carry reasons
+    "PLANT":           "",   # sub-rows carry reasons
+    "COMPONENT":       "",   # sub-rows carry reasons
+    "VALIDFROM":       "",   # sub-rows carry reasons
+    "VALIDTO":         "",   # sub-rows carry reasons
+    "BASEQUANTITY":    "BASEQUANTITY: Field is blank",
+    "COMPONENTSCRAP":  "COMPONENTSCRAP: Field is blank",
+    "TYPE":            "TYPE: Field is blank",
 }
 
 
 # ══════════════════════════════════════════════
 #  Rule Engine
 # ══════════════════════════════════════════════
-class BatchRuleEngine:
+class BOMRuleEngine:
 
-    def __init__(self, part_fg_materials: set, part_pm_materials: set, site_plants: set):
-        self.part_fg_materials = set(str(m).strip().upper() for m in part_fg_materials)
-        self.part_pm_materials = set(str(m).strip().upper() for m in part_pm_materials)
-        self.site_plants       = set(str(p).strip() for p in site_plants)
+    def __init__(self, part_fg_materials: set, site_plants: set, material_producttype_map: dict):
+        self.part_fg_materials        = set(str(m).strip().upper() for m in part_fg_materials)
+        self.site_plants              = set(str(p).strip() for p in site_plants)
+        self.material_producttype_map = material_producttype_map  # MATERIALNUMBER(upper) -> PRODUCTTYPE(upper)
 
     @staticmethod
     def _is_blank(value) -> bool:
@@ -91,15 +99,25 @@ class BatchRuleEngine:
     def _valid_date(value) -> bool:
         return bool(DATE_PATTERN.match(str(value).strip()))
 
-    # ── MATERIALNUMBER ────────────────────────
-    def validate_materialnumber(self, row) -> str:
-        val = row.get("MATERIALNUMBER", "")
+    # ── MATERIAL ──────────────────────────────
+    def validate_material(self, row) -> str:
+        val = row.get("MATERIAL", "")
         if self._is_blank(val):
-            return "MATERIALNUMBER: Field is blank"
+            return "MATERIAL: Field is blank"
         val_str = str(val).strip().upper()
-        if val_str not in self.part_fg_materials and val_str not in self.part_pm_materials:
+        if val_str not in self.part_fg_materials:
+            return f"MATERIAL: '{val_str}' is not present in Part(FG) master"
+
+        producttype = self.material_producttype_map.get(val_str, "")
+        if not producttype:
             return (
-                f"MATERIALNUMBER: '{val_str}' is not present in Part(FG) or Part(RMPM) master"
+                f"MATERIAL: '{val_str}' has a blank PRODUCTTYPE in Part(FG) master "
+                f"(must be one of {'/'.join(sorted(MATERIAL_ALLOWED_PRODUCTTYPES))})"
+            )
+        if producttype not in MATERIAL_ALLOWED_PRODUCTTYPES:
+            return (
+                f"MATERIAL: '{val_str}' has PRODUCTTYPE '{producttype}' which must be one of "
+                f"{'/'.join(sorted(MATERIAL_ALLOWED_PRODUCTTYPES))}"
             )
         return ""
 
@@ -112,105 +130,126 @@ class BatchRuleEngine:
             return f"PLANT: '{val}' is not present in the Site master"
         return ""
 
-    # ── BATCHNUMBER ───────────────────────────
-    def validate_batchnumber(self, row) -> str:
-        if self._is_blank(row.get("BATCHNUMBER")):
-            return "BATCHNUMBER: Field is blank"
-        return ""
-
-    # ── DATEOFMANUFACTURE ─────────────────────
-    def validate_dateofmanufacture(self, row) -> str:
-        val = row.get("DATEOFMANUFACTURE", "")
+    # ── COMPONENT ─────────────────────────────
+    def validate_component(self, row) -> str:
+        val = row.get("COMPONENT", "")
         if self._is_blank(val):
-            return "DATEOFMANUFACTURE: Field is blank"
-        if not self._valid_date(val):
+            return "COMPONENT: Field is blank"
+        val_str = str(val).strip().upper()
+        if val_str not in self.part_fg_materials:
+            return f"COMPONENT: '{val_str}' is not present in Part(FG) master"
+
+        producttype = self.material_producttype_map.get(val_str, "")
+        if not producttype:
             return (
-                f"DATEOFMANUFACTURE: '{str(val).strip()}' does not follow the required format YYYYMMDD"
+                f"COMPONENT: '{val_str}' has a blank PRODUCTTYPE in Part(FG) master "
+                f"(must be one of {'/'.join(sorted(COMPONENT_ALLOWED_PRODUCTTYPES))})"
+            )
+        if producttype not in COMPONENT_ALLOWED_PRODUCTTYPES:
+            return (
+                f"COMPONENT: '{val_str}' has PRODUCTTYPE '{producttype}' which must be one of "
+                f"{'/'.join(sorted(COMPONENT_ALLOWED_PRODUCTTYPES))}"
             )
         return ""
 
-    # ── SHELFLIFEEXPIRATION ───────────────────
-    def validate_shelflifeexpiration(self, row) -> str:
-        val = row.get("SHELFLIFEEXPIRATION", "")
+    # ── VALIDFROM ─────────────────────────────
+    def validate_validfrom(self, row) -> str:
+        val = row.get("VALIDFROM", "")
         if self._is_blank(val):
-            return "SHELFLIFEEXPIRATION: Field is blank"
+            return "VALIDFROM: Field is blank"
         if not self._valid_date(val):
             return (
-                f"SHELFLIFEEXPIRATION: '{str(val).strip()}' does not follow the required format YYYYMMDD"
+                f"VALIDFROM: '{str(val).strip()}' does not follow "
+                "the required format YYYYMMDD"
             )
         return ""
 
-    # ── VENDORSACCOUNTNUMBER ──────────────────
-    def validate_vendorsaccountnumber(self, row) -> str:
-        if self._is_blank(row.get("VENDORSACCOUNTNUMBER")):
-            return "VENDORSACCOUNTNUMBER: Field is blank"
+    # ── VALIDTO ───────────────────────────────
+    def validate_validto(self, row) -> str:
+        val = row.get("VALIDTO", "")
+        if self._is_blank(val):
+            return "VALIDTO: Field is blank"
+        if not self._valid_date(val):
+            return (
+                f"VALIDTO: '{str(val).strip()}' does not follow "
+                "the required format YYYYMMDD"
+            )
         return ""
 
-    # ── SUPPLIERBATCHNUMBER ───────────────────
-    def validate_supplierbatchnumber(self, row) -> str:
-        if self._is_blank(row.get("SUPPLIERBATCHNUMBER")):
-            return "SUPPLIERBATCHNUMBER: Field is blank"
+    # ── BASEQUANTITY ──────────────────────────
+    def validate_basequantity(self, row) -> str:
+        if self._is_blank(row.get("BASEQUANTITY")):
+            return "BASEQUANTITY: Field is blank"
+        return ""
+
+    # ── COMPONENTSCRAP ────────────────────────
+    def validate_componentscrap(self, row) -> str:
+        if self._is_blank(row.get("COMPONENTSCRAP")):
+            return "COMPONENTSCRAP: Field is blank"
+        return ""
+
+    # ── TYPE ──────────────────────────────────
+    def validate_type(self, row) -> str:
+        if self._is_blank(row.get("TYPE")):
+            return "TYPE: Field is blank"
         return ""
 
     def get_rules(self) -> dict:
         return {
-            "MATERIALNUMBER":       self.validate_materialnumber,
-            "PLANT":                self.validate_plant,
-            "BATCHNUMBER":          self.validate_batchnumber,
-            "DATEOFMANUFACTURE":    self.validate_dateofmanufacture,
-            "SHELFLIFEEXPIRATION":  self.validate_shelflifeexpiration,
-            "VENDORSACCOUNTNUMBER": self.validate_vendorsaccountnumber,
-            "SUPPLIERBATCHNUMBER":  self.validate_supplierbatchnumber,
+            "MATERIAL":       self.validate_material,
+            "PLANT":          self.validate_plant,
+            "COMPONENT":      self.validate_component,
+            "VALIDFROM":      self.validate_validfrom,
+            "VALIDTO":        self.validate_validto,
+            "BASEQUANTITY":   self.validate_basequantity,
+            "COMPONENTSCRAP": self.validate_componentscrap,
+            "TYPE":           self.validate_type,
         }
 
 
 # ══════════════════════════════════════════════
 #  Validator
 # ══════════════════════════════════════════════
-class BatchTableValidator:
+class BOMTableValidator:
 
-    def __init__(self, batch_path: str, partfg_path: str, partpm_path: str, site_path: str):
-        self.batch_path    = batch_path
-        self.partfg_path   = partfg_path
-        self.partpm_path   = partpm_path
-        self.site_path     = site_path
-        self.df            = pd.DataFrame()
-        self.part_fg_materials = set()
-        self.part_pm_materials = set()
-        self.site_plants   = set()
-        self.error_map     = {}
-        self.reason_map    = {}
+    def __init__(self, bom_path: str, partfg_path: str, site_path: str):
+        self.bom_path                 = bom_path
+        self.partfg_path              = partfg_path
+        self.site_path                = site_path
+        self.df                       = pd.DataFrame()
+        self.part_fg_materials        = set()
+        self.site_plants              = set()
+        self.material_producttype_map = {}
+        self.error_map                = {}
+        self.reason_map               = {}
 
     def load(self):
-        self.df = pd.read_csv(self.batch_path, sep="\t", dtype=str)
+        self.df = pd.read_csv(self.bom_path, sep="\t", dtype=str)
         self.df.columns = [c.strip().upper() for c in self.df.columns]
 
-        # Part(FG) master
         fg_df = pd.read_excel(self.partfg_path, dtype=str, engine="openpyxl")
         fg_df.columns = [c.strip().upper() for c in fg_df.columns]
         if "MATERIALNUMBER" not in fg_df.columns:
             raise ValueError("MATERIALNUMBER column not found in Part(FG) master.")
         self.part_fg_materials = set(fg_df["MATERIALNUMBER"].dropna().str.strip().str.upper().tolist())
-        print(f"    Part(FG)  materials loaded : {len(self.part_fg_materials)} unique values")
+        print(f"    Part(FG) materials loaded : {len(self.part_fg_materials)} unique values")
 
-        # Part(RMPM) master
-        pm_df = pd.read_excel(self.partpm_path, dtype=str, engine="openpyxl")
-        pm_df.columns = [c.strip().upper() for c in pm_df.columns]
-        if "MATERIALNUMBER" not in pm_df.columns:
-            raise ValueError("MATERIALNUMBER column not found in Part(RMPM) master.")
-        self.part_pm_materials = set(pm_df["MATERIALNUMBER"].dropna().str.strip().str.upper().tolist())
-        print(f"    Part(RMPM) materials loaded: {len(self.part_pm_materials)} unique values")
+        if "PRODUCTTYPE" not in fg_df.columns:
+            raise ValueError("PRODUCTTYPE column not found in Part(FG) master.")
+        fg_df["_MATKEY"] = fg_df["MATERIALNUMBER"].astype(str).str.strip().str.upper()
+        fg_df["_PTYPE"]  = fg_df["PRODUCTTYPE"].astype(str).str.strip().str.upper()
+        self.material_producttype_map = dict(zip(fg_df["_MATKEY"], fg_df["_PTYPE"]))
+        print(f"    PRODUCTTYPE map loaded    : {len(self.material_producttype_map)} entries")
 
-        # Site master
         site_df = pd.read_excel(self.site_path, dtype=str, engine="openpyxl")
         site_df.columns = [c.strip().upper() for c in site_df.columns]
         if "PLANT" not in site_df.columns:
             raise ValueError("PLANT column not found in Site master.")
         self.site_plants = set(site_df["PLANT"].dropna().str.strip().tolist())
-        print(f"    Site master plants loaded  : {len(self.site_plants)} unique values")
+        print(f"    Site master plants loaded : {len(self.site_plants)} unique values")
 
     def validate(self):
-        engine = BatchRuleEngine(self.part_fg_materials, self.part_pm_materials, self.site_plants)
+        engine = BOMRuleEngine(self.part_fg_materials, self.site_plants, self.material_producttype_map)
         rules  = engine.get_rules()
 
         for idx, row in self.df.iterrows():
@@ -254,92 +293,97 @@ class BatchTableValidator:
         return field_errors
 
     # ── Sub-count helpers ─────────────────────
-    def get_materialnumber_error_subcounts(self) -> dict:
-        counts = {"blank": 0, "not_in_master": 0}
+    def _get_subcounts(self, field: str, categories: list) -> dict:
+        """categories: ordered list of (bucket_key, substring_to_match_lower).
+        First matching substring wins, so put the most specific ones first."""
+        counts = {key: 0 for key, _ in categories}
         for idx, col_reason in self.reason_map.items():
-            reason = col_reason.get("MATERIALNUMBER", "")
+            reason = col_reason.get(field, "")
             if not reason:
                 continue
-            if "blank" in reason.lower():
-                counts["blank"] += 1
-            else:
-                counts["not_in_master"] += 1
+            reason_lower = reason.lower()
+            for key, substr in categories:
+                if substr in reason_lower:
+                    counts[key] += 1
+                    break
         return counts
+
+    def get_material_error_subcounts(self) -> dict:
+        return self._get_subcounts("MATERIAL", [
+            ("blank",         "field is blank"),
+            ("not_in_master", "not present in"),
+            ("invalid_type",  "producttype"),
+        ])
 
     def get_plant_error_subcounts(self) -> dict:
-        counts = {"blank": 0, "not_in_site": 0}
-        for idx, col_reason in self.reason_map.items():
-            reason = col_reason.get("PLANT", "")
-            if not reason:
-                continue
-            if "blank" in reason.lower():
-                counts["blank"] += 1
-            else:
-                counts["not_in_site"] += 1
-        return counts
+        return self._get_subcounts("PLANT", [
+            ("blank",       "field is blank"),
+            ("not_in_site", "not present in"),
+        ])
 
-    def get_dateofmanufacture_error_subcounts(self) -> dict:
-        counts = {"blank": 0, "bad_format": 0}
-        for idx, col_reason in self.reason_map.items():
-            reason = col_reason.get("DATEOFMANUFACTURE", "")
-            if not reason:
-                continue
-            if "blank" in reason.lower():
-                counts["blank"] += 1
-            else:
-                counts["bad_format"] += 1
-        return counts
+    def get_component_error_subcounts(self) -> dict:
+        return self._get_subcounts("COMPONENT", [
+            ("blank",         "field is blank"),
+            ("not_in_master", "not present in"),
+            ("invalid_type",  "producttype"),
+        ])
 
-    def get_shelflife_error_subcounts(self) -> dict:
-        counts = {"blank": 0, "bad_format": 0}
-        for idx, col_reason in self.reason_map.items():
-            reason = col_reason.get("SHELFLIFEEXPIRATION", "")
-            if not reason:
-                continue
-            if "blank" in reason.lower():
-                counts["blank"] += 1
-            else:
-                counts["bad_format"] += 1
-        return counts
+    def get_validfrom_error_subcounts(self) -> dict:
+        return self._get_subcounts("VALIDFROM", [
+            ("blank",      "field is blank"),
+            ("bad_format", "does not follow"),
+        ])
+
+    def get_validto_error_subcounts(self) -> dict:
+        return self._get_subcounts("VALIDTO", [
+            ("blank",      "field is blank"),
+            ("bad_format", "does not follow"),
+        ])
 
 
 # ══════════════════════════════════════════════
 #  Report Writer
 # ══════════════════════════════════════════════
-class BatchReportWriter:
+class BOMReportWriter:
 
     SHEET_SUMMARY = "Summary"
     SHEET_RULES   = "Rules"
 
     RULES_CONTENT = {
-        "MATERIALNUMBER": [
+        "MATERIAL": [
             "Must not be blank.",
-            "Must be present in the Part(FG) master OR Part(RMPM) master (MATERIALNUMBER column).",
+            "Must be present in the Part(FG) master (MATERIALNUMBER column).",
+            "Must have PRODUCTTYPE = FERT, HAWA, or HALB in the Part(FG) master.",
         ],
         "PLANT": [
             "Must not be blank.",
             "Must be present in the Site master (PLANT column).",
         ],
-        "BATCHNUMBER": [
+        "COMPONENT": [
             "Must not be blank.",
+            "Must be present in the Part(FG) master (MATERIALNUMBER column).",
+            "Must have PRODUCTTYPE = HALB, BLND, ROH, or VERP in the Part(FG) master.",
         ],
-        "DATEOFMANUFACTURE": [
-            "Must not be blank.",
-            "Must follow the format: YYYYMMDD.",
-        ],
-        "SHELFLIFEEXPIRATION": [
+        "VALIDFROM": [
             "Must not be blank.",
             "Must follow the format: YYYYMMDD.",
         ],
-        "VENDORSACCOUNTNUMBER": [
+        "VALIDTO": [
+            "Must not be blank.",
+            "Must follow the format: YYYYMMDD.",
+        ],
+        "BASEQUANTITY": [
             "Must not be blank.",
         ],
-        "SUPPLIERBATCHNUMBER": [
+        "COMPONENTSCRAP": [
+            "Must not be blank.",
+        ],
+        "TYPE": [
             "Must not be blank.",
         ],
     }
 
-    def __init__(self, validator: BatchTableValidator, output_path: str):
+    def __init__(self, validator: BOMTableValidator, output_path: str):
         self.validator   = validator
         self.output_path = output_path
 
@@ -372,6 +416,26 @@ class BatchReportWriter:
             if fill:
                 cell.fill = fill
 
+    def _write_sub_rows(self, ws, row_num: int, sub_definitions: list,
+                        total_rows: int) -> int:
+        for sub_label, sub_count, sub_reason in sub_definitions:
+            sub_pct_err    = round((sub_count / total_rows) * 100, 2) if total_rows else 0
+            sub_pct_health = round(100 - sub_pct_err, 2)
+            ws.cell(row=row_num, column=1, value="")
+            ws.cell(row=row_num, column=2, value=sub_label)
+            ws.cell(row=row_num, column=3, value=sub_count)
+            ws.cell(row=row_num, column=4, value=total_rows)
+            ws.cell(row=row_num, column=5, value=f"{sub_pct_health}%")
+            ws.cell(row=row_num, column=6, value=f"{sub_pct_err}%")
+            ws.cell(row=row_num, column=7, value=sub_reason)
+            self._style_summary_data_row(ws, row_num, fill=SUB_FILL, italic=True)
+            ws.cell(row=row_num, column=2).alignment = Alignment(
+                horizontal="left", vertical="center", indent=1)
+            ws.cell(row=row_num, column=7).alignment = Alignment(
+                horizontal="left", vertical="center", wrap_text=True)
+            row_num += 1
+        return row_num
+
     # ══════════════════════════════════════════
     #  Summary sheet
     # ══════════════════════════════════════════
@@ -379,7 +443,7 @@ class BatchReportWriter:
 
         # ── Row 1 : Title ──
         ws.merge_cells("A1:G1")
-        title_cell           = ws.cell(row=1, column=1, value="Batch Validation Summary")
+        title_cell           = ws.cell(row=1, column=1, value="BOM Validation Summary")
         title_cell.font      = Font(name="Arial", bold=True, size=14)
         title_cell.fill      = SUMM_TITLE_FILL
         title_cell.alignment = Alignment(horizontal="left", vertical="center")
@@ -402,10 +466,11 @@ class BatchReportWriter:
             for col in bad_cols:
                 col_error_counts[col] = col_error_counts.get(col, 0) + 1
 
-        mat_subcounts  = self.validator.get_materialnumber_error_subcounts()
+        mat_subcounts   = self.validator.get_material_error_subcounts()
         plant_subcounts = self.validator.get_plant_error_subcounts()
-        dom_subcounts  = self.validator.get_dateofmanufacture_error_subcounts()
-        sle_subcounts  = self.validator.get_shelflife_error_subcounts()
+        comp_subcounts  = self.validator.get_component_error_subcounts()
+        vf_subcounts    = self.validator.get_validfrom_error_subcounts()
+        vt_subcounts    = self.validator.get_validto_error_subcounts()
 
         row_num   = 3
         field_num = 1
@@ -417,12 +482,9 @@ class BatchReportWriter:
             pct_error  = round((count / total_rows) * 100, 2) if total_rows else 0
             pct_health = round(100 - pct_error, 2)
 
-            if col_name in FIELDS_WITH_SUB_ROWS:
-                reason_text = ""
-            elif has_errors:
-                reason_text = FIELD_REASON.get(col_name, "")
-            else:
-                reason_text = ""
+            reason_text = "" if col_name in FIELDS_WITH_SUB_ROWS else (
+                FIELD_REASON.get(col_name, "") if has_errors else ""
+            )
 
             ws.cell(row=row_num, column=1, value=field_num)
             ws.cell(row=row_num, column=2, value=col_name)
@@ -434,141 +496,57 @@ class BatchReportWriter:
 
             self._style_summary_data_row(ws, row_num, fill=WHITE_FILL)
             ws.cell(row=row_num, column=7).alignment = Alignment(
-                horizontal="left", vertical="center", wrap_text=True
-            )
+                horizontal="left", vertical="center", wrap_text=True)
             row_num += 1
 
-            # ── MATERIALNUMBER sub-rows ──
-            if col_name == "MATERIALNUMBER" and has_errors:
-                sub_definitions = [
-                    (
-                        "  ↳ Blank Material Number",
-                        mat_subcounts["blank"],
-                        "MATERIALNUMBER: Field is blank",
-                    ),
-                    (
-                        "  ↳ Not in Part(FG) or Part(RMPM) Master",
-                        mat_subcounts["not_in_master"],
-                        "MATERIALNUMBER: Not present in Part(FG) or Part(RMPM) master",
-                    ),
-                ]
-                for sub_label, sub_count, sub_reason in sub_definitions:
-                    sub_pct_err    = round((sub_count / total_rows) * 100, 2) if total_rows else 0
-                    sub_pct_health = round(100 - sub_pct_err, 2)
-                    ws.cell(row=row_num, column=1, value="")
-                    ws.cell(row=row_num, column=2, value=sub_label)
-                    ws.cell(row=row_num, column=3, value=sub_count)
-                    ws.cell(row=row_num, column=4, value=total_rows)
-                    ws.cell(row=row_num, column=5, value=f"{sub_pct_health}%")
-                    ws.cell(row=row_num, column=6, value=f"{sub_pct_err}%")
-                    ws.cell(row=row_num, column=7, value=sub_reason)
-                    self._style_summary_data_row(ws, row_num, fill=SUB_FILL, italic=True)
-                    ws.cell(row=row_num, column=2).alignment = Alignment(
-                        horizontal="left", vertical="center", indent=1
-                    )
-                    ws.cell(row=row_num, column=7).alignment = Alignment(
-                        horizontal="left", vertical="center", wrap_text=True
-                    )
-                    row_num += 1
+            # ── MATERIAL sub-rows ──
+            if col_name == "MATERIAL" and has_errors:
+                row_num = self._write_sub_rows(ws, row_num, [
+                    ("  ↳ Blank Material",              mat_subcounts["blank"],
+                     "MATERIAL: Field is blank"),
+                    ("  ↳ Not in Part(FG) Master",      mat_subcounts["not_in_master"],
+                     "MATERIAL: Not present in Part(FG) master"),
+                    ("  ↳ Invalid PRODUCTTYPE",         mat_subcounts["invalid_type"],
+                     "MATERIAL: PRODUCTTYPE is not one of FERT/HAWA/HALB"),
+                ], total_rows)
 
             # ── PLANT sub-rows ──
             if col_name == "PLANT" and has_errors:
-                sub_definitions = [
-                    (
-                        "  ↳ Blank Plant Code",
-                        plant_subcounts["blank"],
-                        "PLANT: Field is blank",
-                    ),
-                    (
-                        "  ↳ Not in Site Master",
-                        plant_subcounts["not_in_site"],
-                        "PLANT: Plant code not found in the Site master",
-                    ),
-                ]
-                for sub_label, sub_count, sub_reason in sub_definitions:
-                    sub_pct_err    = round((sub_count / total_rows) * 100, 2) if total_rows else 0
-                    sub_pct_health = round(100 - sub_pct_err, 2)
-                    ws.cell(row=row_num, column=1, value="")
-                    ws.cell(row=row_num, column=2, value=sub_label)
-                    ws.cell(row=row_num, column=3, value=sub_count)
-                    ws.cell(row=row_num, column=4, value=total_rows)
-                    ws.cell(row=row_num, column=5, value=f"{sub_pct_health}%")
-                    ws.cell(row=row_num, column=6, value=f"{sub_pct_err}%")
-                    ws.cell(row=row_num, column=7, value=sub_reason)
-                    self._style_summary_data_row(ws, row_num, fill=SUB_FILL, italic=True)
-                    ws.cell(row=row_num, column=2).alignment = Alignment(
-                        horizontal="left", vertical="center", indent=1
-                    )
-                    ws.cell(row=row_num, column=7).alignment = Alignment(
-                        horizontal="left", vertical="center", wrap_text=True
-                    )
-                    row_num += 1
+                row_num = self._write_sub_rows(ws, row_num, [
+                    ("  ↳ Blank Plant Code",   plant_subcounts["blank"],
+                     "PLANT: Field is blank"),
+                    ("  ↳ Not in Site Master", plant_subcounts["not_in_site"],
+                     "PLANT: Plant code not found in the Site master"),
+                ], total_rows)
 
-            # ── DATEOFMANUFACTURE sub-rows ──
-            if col_name == "DATEOFMANUFACTURE" and has_errors:
-                sub_definitions = [
-                    (
-                        "  ↳ Blank Date of Manufacture",
-                        dom_subcounts["blank"],
-                        "DATEOFMANUFACTURE: Field is blank",
-                    ),
-                    (
-                        "  ↳ Invalid Format (not YYYYMMDD)",
-                        dom_subcounts["bad_format"],
-                        "DATEOFMANUFACTURE: Does not follow required format YYYYMMDD",
-                    ),
-                ]
-                for sub_label, sub_count, sub_reason in sub_definitions:
-                    sub_pct_err    = round((sub_count / total_rows) * 100, 2) if total_rows else 0
-                    sub_pct_health = round(100 - sub_pct_err, 2)
-                    ws.cell(row=row_num, column=1, value="")
-                    ws.cell(row=row_num, column=2, value=sub_label)
-                    ws.cell(row=row_num, column=3, value=sub_count)
-                    ws.cell(row=row_num, column=4, value=total_rows)
-                    ws.cell(row=row_num, column=5, value=f"{sub_pct_health}%")
-                    ws.cell(row=row_num, column=6, value=f"{sub_pct_err}%")
-                    ws.cell(row=row_num, column=7, value=sub_reason)
-                    self._style_summary_data_row(ws, row_num, fill=SUB_FILL, italic=True)
-                    ws.cell(row=row_num, column=2).alignment = Alignment(
-                        horizontal="left", vertical="center", indent=1
-                    )
-                    ws.cell(row=row_num, column=7).alignment = Alignment(
-                        horizontal="left", vertical="center", wrap_text=True
-                    )
-                    row_num += 1
+            # ── COMPONENT sub-rows ──
+            if col_name == "COMPONENT" and has_errors:
+                row_num = self._write_sub_rows(ws, row_num, [
+                    ("  ↳ Blank Component",          comp_subcounts["blank"],
+                     "COMPONENT: Field is blank"),
+                    ("  ↳ Not in Part(FG) Master",   comp_subcounts["not_in_master"],
+                     "COMPONENT: Not present in Part(FG) master"),
+                    ("  ↳ Invalid PRODUCTTYPE",      comp_subcounts["invalid_type"],
+                     "COMPONENT: PRODUCTTYPE is not one of HALB/BLND/ROH/VERP"),
+                ], total_rows)
 
-            # ── SHELFLIFEEXPIRATION sub-rows ──
-            if col_name == "SHELFLIFEEXPIRATION" and has_errors:
-                sub_definitions = [
-                    (
-                        "  ↳ Blank Shelf Life Expiration",
-                        sle_subcounts["blank"],
-                        "SHELFLIFEEXPIRATION: Field is blank",
-                    ),
-                    (
-                        "  ↳ Invalid Format (not YYYYMMDD)",
-                        sle_subcounts["bad_format"],
-                        "SHELFLIFEEXPIRATION: Does not follow required format YYYYMMDD",
-                    ),
-                ]
-                for sub_label, sub_count, sub_reason in sub_definitions:
-                    sub_pct_err    = round((sub_count / total_rows) * 100, 2) if total_rows else 0
-                    sub_pct_health = round(100 - sub_pct_err, 2)
-                    ws.cell(row=row_num, column=1, value="")
-                    ws.cell(row=row_num, column=2, value=sub_label)
-                    ws.cell(row=row_num, column=3, value=sub_count)
-                    ws.cell(row=row_num, column=4, value=total_rows)
-                    ws.cell(row=row_num, column=5, value=f"{sub_pct_health}%")
-                    ws.cell(row=row_num, column=6, value=f"{sub_pct_err}%")
-                    ws.cell(row=row_num, column=7, value=sub_reason)
-                    self._style_summary_data_row(ws, row_num, fill=SUB_FILL, italic=True)
-                    ws.cell(row=row_num, column=2).alignment = Alignment(
-                        horizontal="left", vertical="center", indent=1
-                    )
-                    ws.cell(row=row_num, column=7).alignment = Alignment(
-                        horizontal="left", vertical="center", wrap_text=True
-                    )
-                    row_num += 1
+            # ── VALIDFROM sub-rows ──
+            if col_name == "VALIDFROM" and has_errors:
+                row_num = self._write_sub_rows(ws, row_num, [
+                    ("  ↳ Blank Valid From Date",        vf_subcounts["blank"],
+                     "VALIDFROM: Field is blank"),
+                    ("  ↳ Invalid Format (not YYYYMMDD)", vf_subcounts["bad_format"],
+                     "VALIDFROM: Does not follow required format YYYYMMDD"),
+                ], total_rows)
+
+            # ── VALIDTO sub-rows ──
+            if col_name == "VALIDTO" and has_errors:
+                row_num = self._write_sub_rows(ws, row_num, [
+                    ("  ↳ Blank Valid To Date",          vt_subcounts["blank"],
+                     "VALIDTO: Field is blank"),
+                    ("  ↳ Invalid Format (not YYYYMMDD)", vt_subcounts["bad_format"],
+                     "VALIDTO: Does not follow required format YYYYMMDD"),
+                ], total_rows)
 
             field_num += 1
 
@@ -592,7 +570,7 @@ class BatchReportWriter:
             ws.cell(row=row_num, column=c).border    = THIN_BORDER
             ws.cell(row=row_num, column=c).alignment = Alignment(horizontal="center", vertical="center")
 
-        row_num += 2   # blank spacer
+        row_num += 2
 
         # ── Quick-glance stats block ──
         records_with_errors = len(error_map)
@@ -617,7 +595,6 @@ class BatchReportWriter:
 
             row_num += 1
 
-        # ── Column widths ──
         col_widths = [6, 42, 14, 16, 12, 12, 70]
         for c_idx, width in enumerate(col_widths, start=1):
             ws.column_dimensions[get_column_letter(c_idx)].width = width
@@ -673,7 +650,7 @@ class BatchReportWriter:
         ws = wb.create_sheet(self.SHEET_RULES)
 
         ws.merge_cells("A1:C1")
-        title_cell           = ws.cell(row=1, column=1, value="Batch Table – Validation Rules")
+        title_cell           = ws.cell(row=1, column=1, value="BOM Table – Validation Rules")
         title_cell.font      = Font(name="Arial", bold=True, size=13)
         title_cell.fill      = TITLE_FILL
         title_cell.alignment = Alignment(horizontal="center")
@@ -760,17 +737,16 @@ class BatchReportWriter:
 # ══════════════════════════════════════════════
 #  Orchestrator
 # ══════════════════════════════════════════════
-class BatchTableProcessor:
+class BOMTableProcessor:
 
-    def __init__(self, batch_path: str, partfg_path: str, partpm_path: str,
-                 site_path: str, output_path: str):
-        self.validator = BatchTableValidator(batch_path, partfg_path, partpm_path, site_path)
-        self.writer    = BatchReportWriter(self.validator, output_path)
+    def __init__(self, bom_path: str, partfg_path: str, site_path: str, output_path: str):
+        self.validator = BOMTableValidator(bom_path, partfg_path, site_path)
+        self.writer    = BOMReportWriter(self.validator, output_path)
 
     def run(self):
         print("📂  Loading files …")
         self.validator.load()
-        print(f"    Batch columns detected : {list(self.validator.df.columns)}")
+        print(f"    BOM columns detected : {list(self.validator.df.columns)}")
         print("🔍  Validating rules …")
         self.validator.validate()
         print("📝  Writing report …")
@@ -781,11 +757,10 @@ class BatchTableProcessor:
 #  Entry Point
 # ══════════════════════════════════════════════
 if __name__ == "__main__":
-    processor = BatchTableProcessor(
-        batch_path   = BATCH_INPUT_FILE,
-        partfg_path  = PARTFG_INPUT_FILE,
-        partpm_path  = PARTPM_INPUT_FILE,
-        site_path    = SITE_INPUT_FILE,
-        output_path  = OUTPUT_FILE,
+    processor = BOMTableProcessor(
+        bom_path    = BOM_INPUT_FILE,
+        partfg_path = PARTFG_INPUT_FILE,
+        site_path   = SITE_INPUT_FILE,
+        output_path = OUTPUT_FILE,
     )
     processor.run()
