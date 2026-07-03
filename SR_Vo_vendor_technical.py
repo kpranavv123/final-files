@@ -8,10 +8,10 @@ from openpyxl.utils import get_column_letter
 # ─────────────────────────────────────────────
 #  FILE PATHS
 # ─────────────────────────────────────────────
-SR_INPUT_FILE     = r"C:\Users\SW526XH\Downloads\Go Live-2\ScheduledReceipt\PO_from_Vend.tab"
-PARTFG_INPUT_FILE = r"C:\Users\SW526XH\Downloads\Go Live-2\ScheduledReceipt\Part_FG.xlsx"
-SITE_INPUT_FILE   = r"C:\Users\SW526XH\Downloads\Go Live-2\ScheduledReceipt\Site_2026-04-09-1058.xlsx"
-OUTPUT_FILE       = r"C:\Users\SW526XH\Downloads\Go Live-2\ScheduledReceipt\Validated_PO_from_Vend.xlsx"
+SR_INPUT_FILE     = r"C:\Users\SW526XH\Downloads\Go Live-2\SR_vendor\Scheduled_Receipt(Vendor)_2026-06-08-1745.tab"
+PARTFG_INPUT_FILE           = r"C:\Users\SW526XH\Downloads\Go Live-1\Part\PartSite_2026-06-30-1024.tab"
+SITE_INPUT_FILE              = r"C:\Users\SW526XH\Downloads\Go Live-1\Site\Site_2026-06-22-1902.tab"
+OUTPUT_FILE       = r"C:\Users\SW526XH\Downloads\Go Live-2\SR_vendor\Validated_ ScheduledReceipt (PO_from Vend)_Technical.xlsx"
 
 
 # ─────────────────────────────────────────────
@@ -50,16 +50,21 @@ KEEP_COLS = [
     "PURCHASEORDER", "DESTINATIONPLANT", "PURCHASINGDOCUMENTTYPE",
     "PURCHASEORDERITEM", "VENDORSACCOUNTNUMBER", "SOURCEPLANT",
     "MATERIALNUMBER", "POQUANTITYINBU", "SCHEDULELINEDELIVERYDATE",
-    "NETPRICEINPURCHASINGDOCUMENTI", "MATSTAGINGAVAILABILITYDATE",
-    "TRANSITTIME",
+    "NETPRICEINPURCHASINGDOCUMENTI","DELIVERYCOMPLETEDINDICATOR"
 ]
 
 FIELD_ORDER = [
     "PURCHASEORDER", "DESTINATIONPLANT", "PURCHASINGDOCUMENTTYPE",
-    "PURCHASEORDERITEM", "VENDORSACCOUNTNUMBER", "SOURCEPLANT",
+    "PURCHASEORDERITEM", "VENDORSACCOUNTNUMBER",
     "MATERIALNUMBER", "POQUANTITYINBU", "SCHEDULELINEDELIVERYDATE",
-    "NETPRICEINPURCHASINGDOCUMENTI", "MATSTAGINGAVAILABILITYDATE",
-    "TRANSITTIME",
+    "NETPRICEINPURCHASINGDOCUMENTI", "DELIVERYCOMPLETEDINDICATOR",
+    "DUPLICATE_CHECK"
+]
+
+# Composite key used for the DUPLICATE_CHECK rule
+DUPLICATE_KEY_COLUMNS = [
+    "PURCHASEORDER", "PURCHASEORDERITEM", "MATERIALNUMBER",
+    "DESTINATIONPLANT", "SOURCEPLANT"
 ]
 
 # Fields that use sub-rows in the summary
@@ -67,7 +72,7 @@ FIELDS_WITH_SUB_ROWS = {
     "DESTINATIONPLANT",
     "MATERIALNUMBER",
     "SCHEDULELINEDELIVERYDATE",
-    "MATSTAGINGAVAILABILITYDATE",
+    "POQUANTITYINBU",
 }
 
 # Per-field single-line reason shown in summary (blank for sub-row fields)
@@ -77,13 +82,17 @@ FIELD_REASON = {
     "PURCHASINGDOCUMENTTYPE":         "PURCHASINGDOCUMENTTYPE: Field is blank",
     "PURCHASEORDERITEM":              "PURCHASEORDERITEM: Field is blank",
     "VENDORSACCOUNTNUMBER":           "VENDORSACCOUNTNUMBER: Field is blank",
-    "SOURCEPLANT":                    "SOURCEPLANT: Field is blank",
+    # "SOURCEPLANT":                    "SOURCEPLANT: Field is blank",
     "MATERIALNUMBER":                 "",   # sub-rows carry reasons
-    "POQUANTITYINBU":                 "POQUANTITYINBU: Field is blank",
+    "POQUANTITYINBU":                 "",   # sub-rows carry reasons
     "SCHEDULELINEDELIVERYDATE":       "",   # sub-rows carry reasons
     "NETPRICEINPURCHASINGDOCUMENTI":  "NETPRICEINPURCHASINGDOCUMENTI: Field is blank",
     "MATSTAGINGAVAILABILITYDATE":     "",   # sub-rows carry reasons
-    "TRANSITTIME":                    "TRANSITTIME: Field is blank",
+    # "TRANSITTIME":                    "TRANSITTIME: Field is blank",
+    "DELIVERYCOMPLETEDINDICATOR": "DELIVERYCOMPLETEDINDICATOR: Field is blank",
+    "DUPLICATE_CHECK": ("DUPLICATE_CHECK: Duplicate record found for combination "
+                         "PURCHASEORDER-PURCHASEORDERITEM-MATERIALNUMBER-DESTINATIONPLANT-SOURCEPLANT"),
+
 }
 
 
@@ -103,6 +112,13 @@ class POFromVendRuleEngine:
     @staticmethod
     def _valid_date(value) -> bool:
         return bool(DATE_PATTERN.match(str(value).strip()))
+
+    @staticmethod
+    def _is_negative(value) -> bool:
+        try:
+            return float(str(value).strip()) < 0
+        except (TypeError, ValueError):
+            return False
 
     # ── PURCHASEORDER ─────────────────────────
     def validate_purchaseorder(self, row) -> str:
@@ -155,8 +171,11 @@ class POFromVendRuleEngine:
 
     # ── POQUANTITYINBU ────────────────────────
     def validate_poquantityinbu(self, row) -> str:
-        if self._is_blank(row.get("POQUANTITYINBU")):
+        val = row.get("POQUANTITYINBU", "")
+        if self._is_blank(val):
             return "POQUANTITYINBU: Field is blank"
+        if self._is_negative(val):
+            return f"POQUANTITYINBU: '{str(val).strip()}' must not be negative"
         return ""
 
     # ── SCHEDULELINEDELIVERYDATE ──────────────
@@ -189,10 +208,15 @@ class POFromVendRuleEngine:
             )
         return ""
 
-    # ── TRANSITTIME ───────────────────────────
-    def validate_transittime(self, row) -> str:
-        if self._is_blank(row.get("TRANSITTIME")):
-            return "TRANSITTIME: Field is blank"
+    # # ── TRANSITTIME ───────────────────────────
+    # def validate_transittime(self, row) -> str:
+    #     if self._is_blank(row.get("TRANSITTIME")):
+    #         return "TRANSITTIME: Field is blank"
+    #     return ""
+    # ── DELIVERYCOMPLETEDINDICATOR ──────────────
+    def validate_deliverycompletedindicator(self, row) -> str:
+        if self._is_blank(row.get("DELIVERYCOMPLETEDINDICATOR")):
+          return "DELIVERYCOMPLETEDINDICATOR: Field is blank"
         return ""
 
     def get_rules(self) -> dict:
@@ -202,13 +226,15 @@ class POFromVendRuleEngine:
             "PURCHASINGDOCUMENTTYPE":        self.validate_purchasingdocumenttype,
             "PURCHASEORDERITEM":             self.validate_purchaseorderitem,
             "VENDORSACCOUNTNUMBER":          self.validate_vendorsaccountnumber,
-            "SOURCEPLANT":                   self.validate_sourceplant,
+            # "SOURCEPLANT":                   self.validate_sourceplant,
             "MATERIALNUMBER":                self.validate_materialnumber,
             "POQUANTITYINBU":                self.validate_poquantityinbu,
             "SCHEDULELINEDELIVERYDATE":      self.validate_schedulelinedeliverydate,
             "NETPRICEINPURCHASINGDOCUMENTI": self.validate_netpriceinpurchasingdocumenti,
-            "MATSTAGINGAVAILABILITYDATE":    self.validate_matstagingavailabilitydate,
-            "TRANSITTIME":                   self.validate_transittime,
+            # "MATSTAGINGAVAILABILITYDATE":    self.validate_matstagingavailabilitydate,
+            # "TRANSITTIME":                   self.validate_transittime,
+            "DELIVERYCOMPLETEDINDICATOR": self.validate_deliverycompletedindicator,
+
         }
 
 
@@ -226,28 +252,49 @@ class POFromVendTableValidator:
         self.site_plants       = set()
         self.error_map         = {}
         self.reason_map        = {}
+        self.duplicate_indices = set()
 
     def load(self):
         self.df = pd.read_csv(self.sr_path, sep="\t", dtype=str)
         self.df.columns = [c.strip().upper() for c in self.df.columns]
 
-        fg_df = pd.read_excel(self.partfg_path, dtype=str, engine="openpyxl")
+        fg_df = pd.read_csv(self.partfg_path, dtype=str, sep="\t")
         fg_df.columns = [c.strip().upper() for c in fg_df.columns]
         if "MATERIALNUMBER" not in fg_df.columns:
             raise ValueError("MATERIALNUMBER column not found in Part(FG) master.")
         self.part_fg_materials = set(fg_df["MATERIALNUMBER"].dropna().str.strip().str.upper().tolist())
         print(f"    Part(FG) materials loaded : {len(self.part_fg_materials)} unique values")
 
-        site_df = pd.read_excel(self.site_path, dtype=str, engine="openpyxl")
+        site_df = pd.read_csv(self.site_path, dtype=str,sep="\t")
         site_df.columns = [c.strip().upper() for c in site_df.columns]
         if "PLANT" not in site_df.columns:
             raise ValueError("PLANT column not found in Site master.")
         self.site_plants = set(site_df["PLANT"].dropna().str.strip().tolist())
         print(f"    Site master plants loaded : {len(self.site_plants)} unique values")
 
+    def _compute_duplicate_indices(self) -> set:
+        """Pre-compute row indices that share the same DUPLICATE_KEY_COLUMNS
+        combination (blank key combinations are not flagged)."""
+        dup_key_cols = [c for c in DUPLICATE_KEY_COLUMNS if c in self.df.columns]
+        if not dup_key_cols:
+            return set()
+
+        key_df = self.df[dup_key_cols].apply(
+            lambda s: s.astype(str).str.strip().str.upper()
+        )
+        blank_mask     = key_df.apply(lambda s: s.eq("") | s.eq("NAN"))
+        any_blank_mask = blank_mask.any(axis=1)
+
+        dup_mask = key_df.duplicated(keep=False) & (~any_blank_mask)
+        return set(self.df.index[dup_mask])
+
     def validate(self):
         engine = POFromVendRuleEngine(self.part_fg_materials, self.site_plants)
         rules  = engine.get_rules()
+
+        # Pre-compute DUPLICATE_CHECK membership before the row loop
+        self.duplicate_indices = self._compute_duplicate_indices()
+        dup_key_cols = [c for c in DUPLICATE_KEY_COLUMNS if c in self.df.columns]
 
         for idx, row in self.df.iterrows():
             failed_cols    = []
@@ -264,6 +311,17 @@ class POFromVendTableValidator:
                 if reason:
                     failed_cols.append(col)
                     col_reason_map[col] = reason
+
+            # ── DUPLICATE_CHECK ──
+            if idx in self.duplicate_indices:
+                key_desc = "-".join(str(row.get(c, "")).strip() for c in dup_key_cols)
+                reason = (
+                    "DUPLICATE_CHECK: Duplicate record found for combination "
+                    f"PURCHASEORDER-PURCHASEORDERITEM-MATERIALNUMBER-DESTINATIONPLANT-SOURCEPLANT "
+                    f"('{key_desc}')"
+                )
+                failed_cols.append("DUPLICATE_CHECK")
+                col_reason_map["DUPLICATE_CHECK"] = reason
 
             if failed_cols:
                 self.error_map[idx]  = failed_cols
@@ -312,6 +370,18 @@ class POFromVendTableValidator:
                 counts["blank"] += 1
             else:
                 counts["not_in_master"] += 1
+        return counts
+
+    def get_poquantityinbu_error_subcounts(self) -> dict:
+        counts = {"blank": 0, "negative": 0}
+        for idx, col_reason in self.reason_map.items():
+            reason = col_reason.get("POQUANTITYINBU", "")
+            if not reason:
+                continue
+            if "blank" in reason.lower():
+                counts["blank"] += 1
+            else:
+                counts["negative"] += 1
         return counts
 
     def get_schedulelinedeliverydate_error_subcounts(self) -> dict:
@@ -364,15 +434,16 @@ class POFromVendReportWriter:
         "VENDORSACCOUNTNUMBER": [
             "Must not be blank.",
         ],
-        "SOURCEPLANT": [
-            "Must not be blank.",
-        ],
+        # "SOURCEPLANT": [
+        #     "Must not be blank.",
+        # ],
         "MATERIALNUMBER": [
             "Must not be blank.",
             "Must be present in the Part(FG) master (MATERIALNUMBER column).",
         ],
         "POQUANTITYINBU": [
             "Must not be blank.",
+            "Must not be negative.",
         ],
         "SCHEDULELINEDELIVERYDATE": [
             "Must not be blank.",
@@ -381,13 +452,22 @@ class POFromVendReportWriter:
         "NETPRICEINPURCHASINGDOCUMENTI": [
             "Must not be blank.",
         ],
-        "MATSTAGINGAVAILABILITYDATE": [
-            "Must not be blank.",
-            "Must follow the format: YYYYMMDD.",
+        
+"DELIVERYCOMPLETEDINDICATOR": [
+    "Must not be blank.",
+],
+        "DUPLICATE_CHECK": [
+            "There should not be any duplicate records based on the combination of "
+            "PURCHASEORDER, PURCHASEORDERITEM, MATERIALNUMBER, DESTINATIONPLANT and SOURCEPLANT.",
         ],
-        "TRANSITTIME": [
-            "Must not be blank.",
-        ],
+
+        # "MATSTAGINGAVAILABILITYDATE": [
+        #     "Must not be blank.",
+        #     "Must follow the format: YYYYMMDD.",
+        # ],
+        # "TRANSITTIME": [
+        #     "Must not be blank.",
+        # ],
     }
 
     def __init__(self, validator: POFromVendTableValidator, output_path: str):
@@ -476,8 +556,9 @@ class POFromVendReportWriter:
 
         dest_subcounts   = self.validator.get_destinationplant_error_subcounts()
         mat_subcounts    = self.validator.get_materialnumber_error_subcounts()
+        poqty_subcounts  = self.validator.get_poquantityinbu_error_subcounts()
         sld_subcounts    = self.validator.get_schedulelinedeliverydate_error_subcounts()
-        mstg_subcounts   = self.validator.get_matstagingavailabilitydate_error_subcounts()
+        # mstg_subcounts   = self.validator.get_matstagingavailabilitydate_error_subcounts()
 
         row_num   = 3
         field_num = 1
@@ -524,6 +605,15 @@ class POFromVendReportWriter:
                      "MATERIALNUMBER: Not present in Part(FG) master"),
                 ], total_rows)
 
+            # ── POQUANTITYINBU sub-rows ──
+            if col_name == "POQUANTITYINBU" and has_errors:
+                row_num = self._write_sub_rows(ws, row_num, [
+                    ("  ↳ Blank POQUANTITYINBU",   poqty_subcounts["blank"],
+                     "POQUANTITYINBU: Field is blank"),
+                    ("  ↳ Negative Quantity",      poqty_subcounts["negative"],
+                     "POQUANTITYINBU: Value must not be negative"),
+                ], total_rows)
+
             # ── SCHEDULELINEDELIVERYDATE sub-rows ──
             if col_name == "SCHEDULELINEDELIVERYDATE" and has_errors:
                 row_num = self._write_sub_rows(ws, row_num, [
@@ -534,13 +624,13 @@ class POFromVendReportWriter:
                 ], total_rows)
 
             # ── MATSTAGINGAVAILABILITYDATE sub-rows ──
-            if col_name == "MATSTAGINGAVAILABILITYDATE" and has_errors:
-                row_num = self._write_sub_rows(ws, row_num, [
-                    ("  ↳ Blank Mat Staging Availability Date", mstg_subcounts["blank"],
-                     "MATSTAGINGAVAILABILITYDATE: Field is blank"),
-                    ("  ↳ Invalid Format (not YYYYMMDD)",       mstg_subcounts["bad_format"],
-                     "MATSTAGINGAVAILABILITYDATE: Does not follow required format YYYYMMDD"),
-                ], total_rows)
+            # if col_name == "MATSTAGINGAVAILABILITYDATE" and has_errors:
+            #     row_num = self._write_sub_rows(ws, row_num, [
+            #         ("  ↳ Blank Mat Staging Availability Date", mstg_subcounts["blank"],
+            #          "MATSTAGINGAVAILABILITYDATE: Field is blank"),
+            #         ("  ↳ Invalid Format (not YYYYMMDD)",       mstg_subcounts["bad_format"],
+            #          "MATSTAGINGAVAILABILITYDATE: Does not follow required format YYYYMMDD"),
+            #     ], total_rows)
 
             field_num += 1
 
@@ -617,6 +707,13 @@ class POFromVendReportWriter:
             self._write_header(ws, subset.columns)
             col_idx_map = {col: i for i, col in enumerate(subset.columns, start=1)}
 
+            # DUPLICATE_CHECK highlights every key column involved; all
+            # other fields highlight only their own column.
+            if field_name == "DUPLICATE_CHECK":
+                highlight_fields = [c for c in DUPLICATE_KEY_COLUMNS if c in col_idx_map]
+            else:
+                highlight_fields = [field_name] if field_name in col_idx_map else []
+
             for excel_row, (orig_idx, row_data) in enumerate(subset.iterrows(), start=2):
                 for c_idx, (col, value) in enumerate(zip(subset.columns, row_data), start=1):
                     cell           = ws.cell(row=excel_row, column=c_idx, value=value)
@@ -625,8 +722,8 @@ class POFromVendReportWriter:
                     cell.fill      = WHITE_FILL
                     cell.border    = THIN_BORDER
 
-                if field_name in col_idx_map:
-                    target_cell      = ws.cell(row=excel_row, column=col_idx_map[field_name])
+                for hl_field in highlight_fields:
+                    target_cell      = ws.cell(row=excel_row, column=col_idx_map[hl_field])
                     target_cell.fill = RED_FILL
                     target_cell.font = ERR_FONT
 
