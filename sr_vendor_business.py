@@ -27,6 +27,7 @@ MASTER_POLICY_VALUE = "BUY"
 # ─────────────────────────────────────────────
 PO_MATERIAL_COL = "MATERIALNUMBER"
 PO_PLANT_COL    = "DESTINATIONPLANT"
+PO_QTY_COL      = "POQUANTITYINBU"
 
 
 # ─────────────────────────────────────────────
@@ -55,10 +56,16 @@ THIN_BORDER  = Border(
 # ─────────────────────────────────────────────
 #  FIELD ORDER  (only fields with business rules)
 # ─────────────────────────────────────────────
-FIELD_ORDER = ["MATERIALNUMBER"]
+FIELD_ORDER = ["MATERIALNUMBER", "POQUANTITYINBU"]
 
 # Sub-category reasons shown as indented rows under MATERIALNUMBER in Summary
 SUB_CATEGORIES = ["Blank", "Not in Master"]
+
+# Columns (per field) to highlight red in the per-field error sheets
+FIELD_HIGHLIGHT_COLS = {
+    "MATERIALNUMBER":  [PO_MATERIAL_COL, PO_PLANT_COL],
+    "POQUANTITYINBU":  [PO_QTY_COL],
+}
 
 
 # ══════════════════════════════════════════════
@@ -66,12 +73,15 @@ SUB_CATEGORIES = ["Blank", "Not in Master"]
 # ══════════════════════════════════════════════
 class ScheduledReceiptBusinessRuleEngine:
     """
-    Rule:
+    Rules:
       MATERIALNUMBER
         - The MATERIALNUMBER / DESTINATIONPLANT (Part-Site) combination on
           this row must exist in the PartSource(Buy) extract as a
           MATERIALNUMBER(PART) / PLANT(SITE) combination where
           ORDERPOLICY = 'BUY'.
+
+      POQUANTITYINBU
+        - The value must not be negative.
     """
 
     def __init__(self, valid_buy_combos: set):
@@ -82,15 +92,15 @@ class ScheduledReceiptBusinessRuleEngine:
         return pd.isna(value) or str(value).strip() == ""
 
     def validate_row(self, row) -> dict:
-        """Returns {field_name: reason} for MATERIALNUMBER if the rule fails."""
+        """Returns {field_name: reason} for each field that fails its rule(s)."""
         reasons = {}
 
+        # ── MATERIALNUMBER (Part-Site / BUY combo) ──
         mat_raw   = row.get(PO_MATERIAL_COL, "")
         plant_raw = row.get(PO_PLANT_COL, "")
         mat_blank   = self._is_blank(mat_raw)
         plant_blank = self._is_blank(plant_raw)
 
-        # ── Blank check ──
         if mat_blank or plant_blank:
             missing = []
             if mat_blank:
@@ -100,18 +110,29 @@ class ScheduledReceiptBusinessRuleEngine:
             reasons["MATERIALNUMBER"] = (
                 f"MATERIALNUMBER: Blank field(s) - {', '.join(missing)}"
             )
-            return reasons
+        else:
+            mat   = str(mat_raw).strip()
+            plant = str(plant_raw).strip()
+            key   = f"{mat}|{plant}"
 
-        # ── Not-in-master (BUY) check ──
-        mat   = str(mat_raw).strip()
-        plant = str(plant_raw).strip()
-        key   = f"{mat}|{plant}"
+            if key not in self.valid_buy_combos:
+                reasons["MATERIALNUMBER"] = (
+                    f"MATERIALNUMBER: Part-Site combination '{mat}-{plant}' not found in "
+                    f"PartSource(Buy) extract with ORDERPOLICY='{MASTER_POLICY_VALUE}'"
+                )
 
-        if key not in self.valid_buy_combos:
-            reasons["MATERIALNUMBER"] = (
-                f"MATERIALNUMBER: Part-Site combination '{mat}-{plant}' not found in "
-                f"PartSource(Buy) extract with ORDERPOLICY='{MASTER_POLICY_VALUE}'"
-            )
+        # ── POQUANTITYINBU (must not be negative) ──
+        qty_raw = row.get(PO_QTY_COL, "")
+        if not self._is_blank(qty_raw):
+            try:
+                qty_val = float(str(qty_raw).strip())
+            except ValueError:
+                qty_val = None
+
+            if qty_val is not None and qty_val < 0:
+                reasons["POQUANTITYINBU"] = (
+                    f"POQUANTITYINBU: Value is negative ({str(qty_raw).strip()})"
+                )
 
         return reasons
 
@@ -132,6 +153,7 @@ class ScheduledReceiptBusinessTableValidator:
         # sub-category counters for Summary sheet breakdown
         self.blank_count         = 0
         self.not_in_master_count = 0
+        self.negative_qty_count  = 0
 
     def load(self):
         self.df = pd.read_csv(self.po_path, sep="\t", dtype=str)
@@ -163,11 +185,14 @@ class ScheduledReceiptBusinessTableValidator:
                 self.error_map[idx]  = list(reasons.keys())
                 self.reason_map[idx] = reasons
 
-                reason_text = reasons.get("MATERIALNUMBER", "")
-                if reason_text.startswith("MATERIALNUMBER: Blank field(s)"):
+                mat_reason = reasons.get("MATERIALNUMBER", "")
+                if mat_reason.startswith("MATERIALNUMBER: Blank field(s)"):
                     self.blank_count += 1
-                elif "not found in" in reason_text:
+                elif "not found in" in mat_reason:
                     self.not_in_master_count += 1
+
+                if "POQUANTITYINBU" in reasons:
+                    self.negative_qty_count += 1
 
     def get_error_series(self) -> pd.Series:
         result = {}
@@ -203,6 +228,9 @@ class ScheduledReceiptBusinessReportWriter:
             "The MATERIALNUMBER / DESTINATIONPLANT (Part-Site) combination must be "
             "present in the PartSource(Buy) extract as MATERIALNUMBER(PART) / "
             "PLANT(SITE), where ORDERPOLICY = 'BUY'.",
+        ],
+        "POQUANTITYINBU": [
+            "The value must not be negative.",
         ],
     }
 
@@ -244,7 +272,9 @@ class ScheduledReceiptBusinessReportWriter:
             )
 
     # ══════════════════════════════════════════
-    #  Summary sheet  (MATERIALNUMBER + Blank / Not-in-Master sub-rows)
+    #  Summary sheet
+    #  Row 1: MATERIALNUMBER + Blank / Not-in-Master sub-rows
+    #  Row 2: POQUANTITYINBU (single rule, no sub-rows)
     # ══════════════════════════════════════════
     def _write_summary_sheet_into(self, ws, error_map: dict, total_rows: int):
         v = self.validator
@@ -269,16 +299,20 @@ class ScheduledReceiptBusinessReportWriter:
             cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
         ws.row_dimensions[2].height = 30
 
-        row_num = 3
+        row_num  = 3
+        field_no = 1
+
+        # ── Field-level error counts (per field, from error_map) ──
+        field_errors = v.get_errors_by_field()
 
         # ── MATERIALNUMBER main row ──
-        total_errors = len(error_map)
-        pct_error    = round((total_errors / total_rows) * 100, 2) if total_rows else 0
+        mat_errors   = len(field_errors.get("MATERIALNUMBER", []))
+        pct_error    = round((mat_errors / total_rows) * 100, 2) if total_rows else 0
         pct_health   = round(100 - pct_error, 2)
 
-        ws.cell(row=row_num, column=1, value=1)
+        ws.cell(row=row_num, column=1, value=field_no)
         ws.cell(row=row_num, column=2, value="MATERIALNUMBER")
-        ws.cell(row=row_num, column=3, value=total_errors)
+        ws.cell(row=row_num, column=3, value=mat_errors)
         ws.cell(row=row_num, column=4, value=total_rows)
         ws.cell(row=row_num, column=5, value=f"{pct_health}%")
         ws.cell(row=row_num, column=6, value=f"{pct_error}%")
@@ -288,7 +322,8 @@ class ScheduledReceiptBusinessReportWriter:
         ws.cell(row=row_num, column=7).alignment = Alignment(
             horizontal="left", vertical="center", wrap_text=True
         )
-        row_num += 1
+        row_num  += 1
+        field_no += 1
 
         # ── Sub-rows: Blank / Not in Master ──
         sub_counts = {
@@ -311,8 +346,28 @@ class ScheduledReceiptBusinessReportWriter:
                                           indent_col2=True)
             row_num += 1
 
+        # ── POQUANTITYINBU main row (single rule, no sub-rows) ──
+        qty_errors     = len(field_errors.get("POQUANTITYINBU", []))
+        qty_pct_error  = round((qty_errors / total_rows) * 100, 2) if total_rows else 0
+        qty_pct_health = round(100 - qty_pct_error, 2)
+
+        ws.cell(row=row_num, column=1, value=field_no)
+        ws.cell(row=row_num, column=2, value="POQUANTITYINBU")
+        ws.cell(row=row_num, column=3, value=qty_errors)
+        ws.cell(row=row_num, column=4, value=total_rows)
+        ws.cell(row=row_num, column=5, value=f"{qty_pct_health}%")
+        ws.cell(row=row_num, column=6, value=f"{qty_pct_error}%")
+        ws.cell(row=row_num, column=7, value="Value is negative")
+        self._style_summary_data_row(ws, row_num, bold=True, fill=WHITE_FILL)
+        ws.cell(row=row_num, column=7).alignment = Alignment(
+            horizontal="left", vertical="center", wrap_text=True
+        )
+        row_num  += 1
+        field_no += 1
+
         # ── TOTAL row ──
-        total_record_count = total_rows * len(FIELD_ORDER)
+        total_errors        = mat_errors + qty_errors
+        total_record_count  = total_rows * len(FIELD_ORDER)
         total_pct_error     = round((total_errors / total_record_count) * 100, 2) if total_record_count else 0
         total_pct_health    = round(100 - total_pct_error, 2)
 
@@ -391,9 +446,8 @@ class ScheduledReceiptBusinessReportWriter:
                     cell.fill      = WHITE_FILL
                     cell.border    = THIN_BORDER
 
-                # Highlight both MATERIALNUMBER and DESTINATIONPLANT — the
-                # Part-Site combination is validated together.
-                for involved_col in (PO_MATERIAL_COL, PO_PLANT_COL):
+                # Highlight only the column(s) relevant to this field's rule.
+                for involved_col in FIELD_HIGHLIGHT_COLS.get(field_name, []):
                     if involved_col in col_idx_map:
                         target_cell      = ws.cell(row=excel_row, column=col_idx_map[involved_col])
                         target_cell.fill = RED_FILL
@@ -495,8 +549,9 @@ class ScheduledReceiptBusinessReportWriter:
         print(f"\n✅  Output saved  → {self.output_path}")
         print(f"   Total rows        : {len(df)}")
         print(f"   Error rows        : {len(v.error_map)}")
-        print(f"     - Blank          : {v.blank_count}")
-        print(f"     - Not in Master  : {v.not_in_master_count}")
+        print(f"     - Blank              : {v.blank_count}")
+        print(f"     - Not in Master      : {v.not_in_master_count}")
+        print(f"     - Negative Quantity  : {v.negative_qty_count}")
         print(f"   Field sheets       : {fields_with_errors}")
 
 
