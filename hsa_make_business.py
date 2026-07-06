@@ -448,9 +448,9 @@ class HDAMakeBusinessReportWriter:
             lambda i: error_series.get(i, "") if i in error_series.index else ""
         )
 
-        ruleset_columns = self._get_ruleset_columns()
-        filtered_cols   = [col for col in df.columns if col in ruleset_columns]
-        df              = df[filtered_cols]
+        # NOTE: error sheets now use ALL columns from the extract (no filtering
+        # to ruleset_columns). ruleset_columns is retained only for reference /
+        # potential future use, not applied here.
 
         wb = Workbook()
         if "Sheet" in wb.sheetnames:
