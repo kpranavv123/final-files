@@ -9,8 +9,8 @@ from openpyxl.utils import get_column_letter
 # ─────────────────────────────────────────────
 #  FILE PATHS
 # ─────────────────────────────────────────────
-PARTSOURCE_BUY_INPUT_FILE = r"C:\Users\SW526XH\Downloads\Go Live-2\PartSource(Buy)\PartSource_Buy.tab"
-OUTPUT_FILE                = r"C:\Users\SW526XH\Downloads\Go Live-2\PartSource(Buy)\Validated_PartSourceBuy_Business.xlsx"
+PARTSOURCE_BUY_INPUT_FILE = r"C:\Users\SW526XH\Downloads\Go Live-2\PartSource_Buy\PartSource_Buy_2026-07-17-1905.tab"
+OUTPUT_FILE                = r"C:\Users\SW526XH\Downloads\Go Live-2\PartSource_Buy\Validated_PartSourceBuy_Business.xlsx"
 
 
 # ─────────────────────────────────────────────
@@ -25,6 +25,7 @@ WHITE_FILL      = PatternFill("solid", start_color="FFFFFF", end_color="FFFFFF")
 STATS_FILL      = PatternFill("solid", start_color="EDEDED", end_color="EDEDED")
 SUMM_HDR_FILL   = PatternFill("solid", start_color="BDD7EE", end_color="BDD7EE")
 SUMM_TITLE_FILL = PatternFill("solid", start_color="BDD7EE", end_color="BDD7EE")
+SUB_FILL        = PatternFill("solid", start_color="FFFFFF", end_color="FFFFFF")
 
 HDR_FONT    = Font(bold=True, name="Arial")
 BODY_FONT   = Font(name="Arial", size=10)
@@ -39,10 +40,15 @@ THIN_BORDER = Border(
 # ─────────────────────────────────────────────
 FIELD_ORDER = ["MAXIMUMPOQUANTITY", "MINIMUMPOQUANTITY", "ROUNDINGVALUE", "PLANNEDELIVERYTIME"]
 
+FIELDS_WITH_SUB_ROWS = {
+    "MAXIMUMPOQUANTITY",
+    "MINIMUMPOQUANTITY",
+}
+
 # Single-line reason shown in Summary sheet for each field
 FIELD_REASON = {
-    "MAXIMUMPOQUANTITY":  "MAXIMUMPOQUANTITY: Value not greater than 0",
-    "MINIMUMPOQUANTITY":  "MINIMUMPOQUANTITY: Value not greater than 0",
+    "MAXIMUMPOQUANTITY":  "",   # sub-rows carry reasons
+    "MINIMUMPOQUANTITY":  "",   # sub-rows carry reasons
     "ROUNDINGVALUE":      "ROUNDINGVALUE: Value not greater than 0",
     "PLANNEDELIVERYTIME": "PLANNEDELIVERYTIME: Value not greater than 0",
 }
@@ -51,14 +57,16 @@ FIELD_REASON = {
 # ══════════════════════════════════════════════
 #  Rule Engine
 # ══════════════════════════════════════════════
+
 class PartSourceBuyBusinessRuleEngine:
     """
     Rules:
       MAXIMUMPOQUANTITY   - must be > 0.
+                          - maximum should be greater than or equal to minimum.
       MINIMUMPOQUANTITY   - must be > 0.
+                          - minimum should be lesser than or equal to maximum.
       ROUNDINGVALUE       - must be > 0.
       PLANNEDELIVERYTIME  - must be > 0.
-    All four fields are independent of each other.
     """
 
     @staticmethod
@@ -71,22 +79,65 @@ class PartSourceBuyBusinessRuleEngine:
         except ValueError:
             return None
 
-    def _validate_positive_field(self, row, field_name: str) -> str:
-        """Returns a reason string if field_name is present but not > 0, else ''."""
+    def _validate_positive_field(self, row, field_name: str) -> list:
+        """Returns list of reason strings if field_name is present but not > 0."""
+        reasons = []
+
         raw = row.get(field_name, "")
         num = self._parse_number(raw)
+
         if num is not None and num <= 0:
-            return f"{field_name}: '{str(raw).strip()}' is not greater than 0"
-        return ""
+            reasons.append(f"{field_name}: '{str(raw).strip()}' is not greater than 0")
+
+        return reasons
+
+    def _validate_min_max_relation(self, row) -> dict:
+        """
+        Validates relation between MINIMUMPOQUANTITY and MAXIMUMPOQUANTITY.
+
+        If minimum > maximum:
+          - MINIMUMPOQUANTITY fails because minimum should be <= maximum
+          - MAXIMUMPOQUANTITY fails because maximum should be >= minimum
+        """
+        reasons = {
+            "MAXIMUMPOQUANTITY": [],
+            "MINIMUMPOQUANTITY": [],
+        }
+
+        min_raw = row.get("MINIMUMPOQUANTITY", "")
+        max_raw = row.get("MAXIMUMPOQUANTITY", "")
+
+        min_num = self._parse_number(min_raw)
+        max_num = self._parse_number(max_raw)
+
+        # Apply relation check only when both values are valid numbers
+        if min_num is not None and max_num is not None:
+            if min_num > max_num:
+                reasons["MINIMUMPOQUANTITY"].append(
+                    f"MINIMUMPOQUANTITY: Minimum '{str(min_raw).strip()}' is greater than MAXIMUMPOQUANTITY '{str(max_raw).strip()}'"
+                )
+                reasons["MAXIMUMPOQUANTITY"].append(
+                    f"MAXIMUMPOQUANTITY: Maximum '{str(max_raw).strip()}' is less than MINIMUMPOQUANTITY '{str(min_raw).strip()}'"
+                )
+
+        return reasons
 
     def validate_row(self, row) -> dict:
-        """Returns {field_name: reason} for whichever fields failed on this row."""
+        """Returns {field_name: [reasons]} for whichever fields failed on this row."""
         reasons = {}
 
+        # Rule 1: positive check for all fields
         for field_name in FIELD_ORDER:
-            reason = self._validate_positive_field(row, field_name)
-            if reason:
-                reasons[field_name] = reason
+            field_reasons = self._validate_positive_field(row, field_name)
+            if field_reasons:
+                reasons[field_name] = field_reasons
+
+        # Rule 2: min/max relationship check
+        relation_reasons = self._validate_min_max_relation(row)
+
+        for field_name, field_reasons in relation_reasons.items():
+            if field_reasons:
+                reasons.setdefault(field_name, []).extend(field_reasons)
 
         return reasons
 
@@ -122,14 +173,29 @@ class PartSourceBuyBusinessTableValidator:
     def get_error_series(self) -> pd.Series:
         result = {}
         for idx, col_reason in self.reason_map.items():
-            result[idx] = " | ".join(col_reason.values())
+            all_reasons = []
+
+            for reason_value in col_reason.values():
+                if isinstance(reason_value, list):
+                    all_reasons.extend(reason_value)
+                else:
+                    all_reasons.append(reason_value)
+
+            result[idx] = " | ".join(all_reasons)
+
         return pd.Series(result, dtype=str)
 
     def get_field_error_series(self, field_name: str) -> pd.Series:
         result = {}
         for idx, col_reason in self.reason_map.items():
             if field_name in col_reason:
-                result[idx] = col_reason[field_name]
+                reason_value = col_reason[field_name]
+
+                if isinstance(reason_value, list):
+                    result[idx] = " | ".join(reason_value)
+                else:
+                    result[idx] = reason_value
+
         return pd.Series(result, dtype=str)
 
     def get_errors_by_field(self) -> dict:
@@ -138,6 +204,33 @@ class PartSourceBuyBusinessTableValidator:
             for col in bad_cols:
                 field_errors.setdefault(col, []).append(row_idx)
         return field_errors
+
+    def get_quantity_error_subcounts(self, field_name: str) -> dict:
+        counts = {
+            "not_greater_than_zero": 0,
+            "min_max_relation": 0,
+        }
+
+        for idx, col_reason in self.reason_map.items():
+            reason_value = col_reason.get(field_name, "")
+
+            if not reason_value:
+                continue
+
+            if not isinstance(reason_value, list):
+                reason_list = [reason_value]
+            else:
+                reason_list = reason_value
+
+            for reason in reason_list:
+                reason_lower = str(reason).lower()
+
+                if "not greater than 0" in reason_lower:
+                    counts["not_greater_than_zero"] += 1
+                elif "maximumpoquantity" in reason_lower and "minimumpoquantity" in reason_lower:
+                    counts["min_max_relation"] += 1
+
+        return counts
 
 
 # ══════════════════════════════════════════════
@@ -151,9 +244,11 @@ class PartSourceBuyBusinessReportWriter:
     RULES_CONTENT = {
         "MAXIMUMPOQUANTITY": [
             "MAXIMUMPOQUANTITY must be greater than 0.",
+            "Maximum should be greater than or equal to minimum.",
         ],
         "MINIMUMPOQUANTITY": [
             "MINIMUMPOQUANTITY must be greater than 0.",
+            "Minimum should be lesser than or equal to maximum.",
         ],
         "ROUNDINGVALUE": [
             "ROUNDINGVALUE must be greater than 0.",
@@ -196,6 +291,35 @@ class PartSourceBuyBusinessReportWriter:
             if fill:
                 cell.fill = fill
 
+    def _write_sub_rows(self, ws, row_num: int, sub_definitions: list, total_rows: int) -> int:
+        """
+        Writes the given list of (label, count, reason) sub-rows starting at row_num,
+        directly beneath the parent field's row. Returns the next free row_num.
+        """
+        for sub_label, sub_count, sub_reason in sub_definitions:
+            sub_pct_err    = round((sub_count / total_rows) * 100, 2) if total_rows else 0
+            sub_pct_health = round(100 - sub_pct_err, 2)
+
+            ws.cell(row=row_num, column=1, value="")
+            ws.cell(row=row_num, column=2, value=sub_label)
+            ws.cell(row=row_num, column=3, value=sub_count)
+            ws.cell(row=row_num, column=4, value=total_rows)
+            ws.cell(row=row_num, column=5, value=f"{sub_pct_health}%")
+            ws.cell(row=row_num, column=6, value=f"{sub_pct_err}%")
+            ws.cell(row=row_num, column=7, value=sub_reason)
+
+            self._style_summary_data_row(ws, row_num, fill=SUB_FILL, italic=True)
+            ws.cell(row=row_num, column=2).alignment = Alignment(
+                horizontal="left", vertical="center", indent=1
+            )
+            ws.cell(row=row_num, column=7).alignment = Alignment(
+                horizontal="left", vertical="center", wrap_text=True
+            )
+
+            row_num += 1
+
+        return row_num
+
     # ══════════════════════════════════════════
     #  Summary sheet
     # ══════════════════════════════════════════
@@ -211,7 +335,7 @@ class PartSourceBuyBusinessReportWriter:
 
         # ── Row 2 : Column headers ──
         headers = ["#", "Field Name", "Error Count", "Record Count",
-                   "% Health", "% of Error", "Reason / Sub-Category"]
+                   "% Health", "% of Error", "Reason"]
         for c_idx, h in enumerate(headers, start=1):
             cell           = ws.cell(row=2, column=c_idx, value=h)
             cell.fill      = SUMM_HDR_FILL
@@ -226,6 +350,9 @@ class PartSourceBuyBusinessReportWriter:
             for col in bad_cols:
                 col_error_counts[col] = col_error_counts.get(col, 0) + 1
 
+        max_qty_sub = self.validator.get_quantity_error_subcounts("MAXIMUMPOQUANTITY")
+        min_qty_sub = self.validator.get_quantity_error_subcounts("MINIMUMPOQUANTITY")
+
         row_num   = 3
         field_num = 1
 
@@ -236,8 +363,14 @@ class PartSourceBuyBusinessReportWriter:
             pct_error  = round((count / total_rows) * 100, 2) if total_rows else 0
             pct_health = round(100 - pct_error, 2)
 
-            reason_text = FIELD_REASON.get(col_name, "") if has_errors else ""
+            if col_name in FIELDS_WITH_SUB_ROWS:
+                reason_text = ""
+            elif has_errors:
+                reason_text = FIELD_REASON.get(col_name, "")
+            else:
+                reason_text = ""
 
+            # ── Main field row ──
             ws.cell(row=row_num, column=1, value=field_num)
             ws.cell(row=row_num, column=2, value=col_name)
             ws.cell(row=row_num, column=3, value=count)
@@ -251,6 +384,38 @@ class PartSourceBuyBusinessReportWriter:
                 horizontal="left", vertical="center", wrap_text=True
             )
             row_num += 1
+
+            # ── Sub-rows immediately beneath their own parent field ──
+            if col_name == "MAXIMUMPOQUANTITY" and has_errors:
+                sub_definitions = [
+                    (
+                        "  ↳ Not greater than 0",
+                        max_qty_sub["not_greater_than_zero"],
+                        "MAXIMUMPOQUANTITY: Value not greater than 0",
+                    ),
+                    (
+                        "  ↳ Maximum less than Minimum",
+                        max_qty_sub["min_max_relation"],
+                        "MAXIMUMPOQUANTITY: Maximum should be greater than or equal to minimum",
+                    ),
+                ]
+                row_num = self._write_sub_rows(ws, row_num, sub_definitions, total_rows)
+
+            elif col_name == "MINIMUMPOQUANTITY" and has_errors:
+                sub_definitions = [
+                    (
+                        "  ↳ Not greater than 0",
+                        min_qty_sub["not_greater_than_zero"],
+                        "MINIMUMPOQUANTITY: Value not greater than 0",
+                    ),
+                    (
+                        "  ↳ Minimum greater than Maximum",
+                        min_qty_sub["min_max_relation"],
+                        "MINIMUMPOQUANTITY: Minimum should be lesser than or equal to maximum",
+                    ),
+                ]
+                row_num = self._write_sub_rows(ws, row_num, sub_definitions, total_rows)
+
             field_num += 1
 
         # ── TOTAL row ──
