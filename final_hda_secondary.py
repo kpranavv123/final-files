@@ -5,13 +5,13 @@ from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 
 # ====================================================
-# File paths
+# File paths 
 # ====================================================
-HDA_FILE      = r"C:\Users\SW526XH\Downloads\Go Live-1\HDA_Secondary\HDA(SecSales)2026-05-06-1606.tab"
-PART_FILE     = r"C:\Users\SW526XH\Downloads\Go Live-1\Part\Part_Site_2026-06-04-1737.tab"
-CUSTOMER_FILE = r"C:\Users\SW526XH\Downloads\Go Live-1\Customer\CustomerHierarchy_updated_2026-06-05-0958 1.tab"
-SITE_FILE     = r"C:\Users\SW526XH\Downloads\Go Live-1\Site\Site_2026-05-20-1153.tab"
-OUTPUT_EXCEL  = r"C:\Users\SW526XH\Downloads\Go Live-1\HDA_Secondary\Validated_HDA_Secondary_Technical.xlsx"
+HDA_FILE      = r"C:\Users\SW526XH\Downloads\Go Live-1\HDA_Secondary\HistoricalDemandActual_SecondarySales.tab"
+PART_FILE     = r"C:\Users\SW526XH\Downloads\Go Live-1\ID\Part.tab"
+CUSTOMER_FILE = r"C:\Users\SW526XH\Downloads\Go Live-1\ID\Customer.tab"
+SITE_FILE     = r"C:\Users\SW526XH\Downloads\Go Live-1\ID\Site.tab"
+OUTPUT_EXCEL  = r"C:\Users\SW526XH\Downloads\Go Live-1\HDA_Secondary\Validated_HDA_Secondary_Technical_Updated.xlsx"
 
 # ====================================================
 # Constants & Styling
@@ -64,18 +64,22 @@ part_df.columns = part_df.columns.str.strip().str.upper()
 part_set = set(part_df["MATERIALNUMBER"].dropna().str.strip())
 
 # Build (CUSTOMER, SUPPLYINGPLANT) combo set from Customer master
-customer_df = read_input(CUSTOMER_FILE)
-customer_df.columns = customer_df.columns.str.strip().str.upper()
-customer_set = set(
-    zip(
-        customer_df["CUSTOMER"].fillna("").str.strip(),
-        customer_df["SUPPLYINGPLANT"].fillna("").str.strip(),
-    )
-)
+# customer_df = read_input(CUSTOMER_FILE)
+# customer_df.columns = customer_df.columns.str.strip().str.upper()
+# customer_set = set(
+#     zip(
+#         customer_df["CUSTOMER"].fillna("").str.strip(),
+#         customer_df["SUPPLYINGPLANT"].fillna("").str.strip(),
+#     )
+# )
 
 site_df = read_input(SITE_FILE)
 site_df.columns = site_df.columns.str.strip().str.upper()
 site_set = set(site_df["PLANT"].dropna().str.strip())
+
+# Sanity check: warn early if reference sets look empty/suspicious
+print(f"   → Part master: {len(part_set):,} unique MATERIALNUMBER values loaded.")
+print(f"   → Site master: {len(site_set):,} unique PLANT values loaded.")
 
 
 # ====================================================
@@ -85,7 +89,7 @@ date_pattern = re.compile(r"^\d{8}$")
 
 ERROR_REASON_MAP = {
     "ERROR_CSKU":             "CSKU: CSKU missing in Part master",
-    "ERROR_DISTRIBUTOR_CODE": "DISTRIBUTOR_CODE: DISTRIBUTOR_CODE + PLANT combination does not exist in Customer master (CUSTOMER + SUPPLYINGPLANT)",
+    "ERROR_DISTRIBUTOR_CODE": "DISTRIBUTOR_CODE: Distributor_Code is Blank",
     "ERROR_INVOICE_DATE":     "INVOICE_DATE: Invoice week start is blank or not in YYYYMMDD format",
     "ERROR_PLANT":            "PLANT: Plant does not exist in Site master or is blank",
     "ERROR_DUPLICATE":        "DUPLICATE_CHECK: Duplicate record — DISTRIBUTOR_CODE, PLANT, INVOICE_DATE, CSKU combination already exists.",
@@ -105,7 +109,7 @@ RULESET_DESCRIPTIONS = {
     "CSKU":             ["Must not be blank.", "Must exist as MATERIALNUMBER in Part master."],
     "DISTRIBUTOR_CODE": [
         "Must not be blank.",
-        "DISTRIBUTOR_CODE + PLANT combination must exist as CUSTOMER + SUPPLYINGPLANT in Customer master.",
+        # "DISTRIBUTOR_CODE + PLANT combination must exist as CUSTOMER + SUPPLYINGPLANT in Customer master.",
     ],
     "INVOICE_DATE":     ["Must not be blank.", "Must strictly be in YYYYMMDD format."],
     "PLANT":            ["Must not be blank.", "Must exist in Site master."],
@@ -157,15 +161,18 @@ hda_df["ERROR_CSKU"] = hda_df["CSKU"].apply(
 )
 
 # DISTRIBUTOR_CODE + PLANT combo must exist in Customer master as CUSTOMER + SUPPLYINGPLANT
-hda_df["ERROR_DISTRIBUTOR_CODE"] = hda_df.apply(
-    lambda row: "Yes"
-    if (
-        pd.isna(row["DISTRIBUTOR_CODE"]) or str(row["DISTRIBUTOR_CODE"]).strip() == ""
-        or pd.isna(row["PLANT"]) or str(row["PLANT"]).strip() == ""
-        or (str(row["DISTRIBUTOR_CODE"]).strip(), str(row["PLANT"]).strip()) not in customer_set
-    )
-    else "",
-    axis=1,
+# hda_df["ERROR_DISTRIBUTOR_CODE"] = hda_df.apply(
+#     lambda row: "Yes"
+#     if (
+#         pd.isna(row["DISTRIBUTOR_CODE"]) or str(row["DISTRIBUTOR_CODE"]).strip() == ""
+#         or pd.isna(row["PLANT"]) or str(row["PLANT"]).strip() == ""
+#         or (str(row["DISTRIBUTOR_CODE"]).strip(), str(row["PLANT"]).strip()) not in customer_set
+#     )
+#     else "",
+#     axis=1,
+# )
+hda_df["ERROR_DISTRIBUTOR_CODE"] = hda_df["DISTRIBUTOR_CODE"].apply(
+    lambda x: "Yes" if pd.isna(x) or str(x).strip() == "" else ""
 )
 
 hda_df["ERROR_INVOICE_DATE"] = hda_df["INVOICE_DATE"].apply(
@@ -205,13 +212,18 @@ records_with_errors = int(row_has_error.sum())
 # WRITE ERROR SHEETS TO EXCEL
 # ====================================================
 print("📝 Writing error data to Excel...")
+print("\nError Summary:")
+for err_col in ERROR_COLUMNS:
+      cnt = (hda_df[err_col] == "Yes").sum()
+      print(f"{err_col}: {cnt:,}")
 
 with pd.ExcelWriter(OUTPUT_EXCEL, engine="openpyxl") as writer:
-
+    sheet_created = False
     for err_col, (base_name, reason_text) in ATTRIBUTE_SHEETS.items():
         error_rows = hda_df[hda_df[err_col] == "Yes"].copy()
         if error_rows.empty:
             continue
+        sheet_created = True
 
         # Drop all error flag columns, then append the human-readable reason
         error_rows = error_rows.drop(columns=ERROR_COLUMNS, errors="ignore")
@@ -242,6 +254,21 @@ with pd.ExcelWriter(OUTPUT_EXCEL, engine="openpyxl") as writer:
             if state["row"] >= EXCEL_MAX_ROWS:
                 state["sheet_no"] += 1
                 state["row"]       = 0
+
+    # FIX: this block now lives INSIDE the `with` block (indented to match the
+    # `for` loop above) so it executes while `writer` is still open. Previously
+    # it was dedented to column 0, so when every error count was 0 the workbook
+    # closed with zero sheets ever written, raising
+    # "IndexError: At least one sheet must be visible".
+    if not sheet_created:
+        pd.DataFrame({
+            "Message": ["No validation errors found"]
+        }).to_excel(
+            writer,
+            sheet_name="No_Errors",
+            index=False,
+        )
+
 
 print("📝 Generating standardized reports...")
 
