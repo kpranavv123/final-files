@@ -41,10 +41,20 @@ THIN_BORDER = Border(
 )
 
 # ─────────────────────────────────────────────
-#  DUPLICATE CHECK CONFIG
+#  DUPLICATE_COMPONENT CONFIG
 # ─────────────────────────────────────────────
-DUPLICATE_FIELD = "DUPLICATE_VALUES"
-DUPLICATE_KEYS  = ["ASSEMBLYMATERIAL", "ROOT_PLANT", "ALTERNATIVE"]
+DUPLICATE_FIELD = "DUPLICATE_COMPONENT"
+
+ASSEMBLY_COL      = "ASSEMBLYMATERIAL"
+PLANT_COL         = "ROOT_PLANT"
+ALTERNATE_COLS    = ["ALTERNATIVE", "ALTERNATE"]   # whichever exists in the file is used
+COMPONENT_COL     = "COMPONENT"
+
+# "ACROSS_GROUPS" : the same COMPONENT used under more than one
+#                   ASSEMBLYMATERIAL-ROOT_PLANT-ALTERNATE combination is an error.
+# "WITHIN_GROUP"  : the same COMPONENT repeated inside one
+#                   ASSEMBLYMATERIAL-ROOT_PLANT-ALTERNATE combination is an error.
+DUPLICATE_COMPONENT_MODE = "ACROSS_GROUPS"
 
 # ─────────────────────────────────────────────
 #  FIELD ORDER  (only fields with business rules)
@@ -54,17 +64,16 @@ FIELD_ORDER = ["VALIDFROM", "VALIDTO", "BASEQUANTITY", DUPLICATE_FIELD]
 # Single-line reason shown in Summary sheet for each field (no sub-rows needed
 # since each field here maps to exactly one business condition)
 FIELD_REASON = {
-    "VALIDFROM":     "VALIDFROM: Greater than VALIDTO",
-    "VALIDTO":       "VALIDTO: Lesser than VALIDFROM",
-    "BASEQUANTITY":  "BASEQUANTITY: Negative value found",
-    DUPLICATE_FIELD: "DUPLICATE_VALUES: ASSEMBLYMATERIAL + ROOT_PLANT + ALTERNATIVE "
-                     "combination is repeated across rows",
-}
-
-# Which source columns get highlighted red in the error sheets when a field
-# fails. Fields not listed here highlight themselves.
-FIELD_HIGHLIGHT_COLS = {
-    DUPLICATE_FIELD: DUPLICATE_KEYS,
+    "VALIDFROM":    "VALIDFROM: Greater than VALIDTO",
+    "VALIDTO":      "VALIDTO: Lesser than VALIDFROM",
+    "BASEQUANTITY": "BASEQUANTITY: Negative value found",
+    DUPLICATE_FIELD: (
+        "DUPLICATE_COMPONENT: Same COMPONENT found for different "
+        "ASSEMBLYMATERIAL-ROOT_PLANT-ALTERNATE combinations"
+        if DUPLICATE_COMPONENT_MODE == "ACROSS_GROUPS" else
+        "DUPLICATE_COMPONENT: Same COMPONENT repeated within the same "
+        "ASSEMBLYMATERIAL-ROOT_PLANT-ALTERNATE combination"
+    ),
 }
 
 
@@ -80,12 +89,15 @@ class BOMBusinessRuleEngine:
         a) VALIDTO must not be lesser than VALIDFROM.
       BASEQUANTITY
         - Negative values are not allowed.
-      DUPLICATE_VALUES
-        - The combination of ASSEMBLYMATERIAL + ROOT_PLANT + ALTERNATIVE
-          must not repeat across rows. Every row in a duplicate group is flagged.
+      DUPLICATE_COMPONENT
+        - ACROSS_GROUPS mode: a COMPONENT must not be used under more than one
+          ASSEMBLYMATERIAL-ROOT_PLANT-ALTERNATE combination.
+        - WITHIN_GROUP mode: a COMPONENT must not repeat within the same
+          ASSEMBLYMATERIAL-ROOT_PLANT-ALTERNATE combination.
+        Every row involved is flagged.
     VALIDFROM / VALIDTO are cross-field and validated together.
     BASEQUANTITY is independent.
-    DUPLICATE_VALUES is a whole-dataset check (pre-computed before row validation).
+    DUPLICATE_COMPONENT is a whole-dataset check (pre-computed before row validation).
     """
 
     @staticmethod
@@ -112,33 +124,63 @@ class BOMBusinessRuleEngine:
         except ValueError:
             return None
 
-    # ── Duplicate pre-pass (whole dataframe) ──
+    # ── Duplicate-component pre-pass (whole dataframe) ──
     @staticmethod
-    def find_duplicates(df: pd.DataFrame) -> dict:
-        """Returns {row_idx: reason} for every row whose
-        ASSEMBLYMATERIAL + ROOT_PLANT + ALTERNATIVE combination appears
-        more than once in the file (keep=False -> all occurrences flagged).
-        Rows where all three key columns are blank are skipped."""
-        missing = [c for c in DUPLICATE_KEYS if c not in df.columns]
+    def resolve_duplicate_columns(df: pd.DataFrame):
+        """Returns [ASSEMBLY, PLANT, ALTERNATE, COMPONENT] column names that exist
+        in df, or None (with a warning) if any are missing."""
+        alt_col = next((c for c in ALTERNATE_COLS if c in df.columns), None)
+        cols = [ASSEMBLY_COL, PLANT_COL, alt_col, COMPONENT_COL]
+
+        missing = []
+        for wanted, actual in zip(
+            [ASSEMBLY_COL, PLANT_COL, "/".join(ALTERNATE_COLS), COMPONENT_COL], cols
+        ):
+            if actual is None or actual not in df.columns:
+                missing.append(wanted)
+
         if missing:
-            print(f"⚠️   Duplicate check skipped — column(s) not found: {missing}")
-            return {}
+            print(f"⚠️   {DUPLICATE_FIELD} check skipped — column(s) not found: {missing}")
+            return None
+        return cols
 
-        keys = df[DUPLICATE_KEYS].fillna("").astype(str).apply(lambda s: s.str.strip())
+    @staticmethod
+    def find_duplicate_components(df: pd.DataFrame, cols: list) -> dict:
+        """Returns {row_idx: reason} for every row flagged by the DUPLICATE_COMPONENT rule.
+        Rows with a blank COMPONENT (or all-blank ASSEMBLY/PLANT/ALTERNATE) are skipped."""
+        asm_c, plant_c, alt_c, comp_c = cols
 
-        not_all_blank = (keys != "").any(axis=1)
-        dup_mask      = keys.duplicated(keep=False) & not_all_blank
-        if not dup_mask.any():
-            return {}
+        keys = df[cols].fillna("").astype(str).apply(lambda s: s.str.strip())
+        comp = keys[comp_c]
 
-        group_size = keys.groupby(DUPLICATE_KEYS)[DUPLICATE_KEYS[0]].transform("size")
+        group_blank = (keys[[asm_c, plant_c, alt_c]] == "").all(axis=1)
+        eligible    = (comp != "") & ~group_blank
 
         result = {}
-        for idx in keys.index[dup_mask]:
-            am, rp, alt = (keys.at[idx, c] for c in DUPLICATE_KEYS)
+
+        if DUPLICATE_COMPONENT_MODE == "WITHIN_GROUP":
+            size = keys.groupby(cols)[comp_c].transform("size")
+            mask = eligible & (size > 1)
+            for idx in keys.index[mask]:
+                a, p, alt, c = (keys.at[idx, x] for x in cols)
+                result[idx] = (
+                    f"DUPLICATE_COMPONENT: COMPONENT '{c}' appears {int(size.at[idx])} times "
+                    f"under {asm_c} '{a}' + {plant_c} '{p}' + {alt_c} '{alt}'"
+                )
+            return result
+
+        # ACROSS_GROUPS (default): same COMPONENT under different A-P-Alt combinations
+        combo = keys[asm_c] + "|" + keys[plant_c] + "|" + keys[alt_c]
+        sub   = pd.DataFrame({"comp": comp[eligible], "combo": combo[eligible]})
+        if sub.empty:
+            return result
+
+        n_combos = sub.groupby("comp")["combo"].transform("nunique")
+        for idx in sub.index[n_combos > 1]:
+            a, p, alt, c = (keys.at[idx, x] for x in cols)
             result[idx] = (
-                f"DUPLICATE_VALUES: ASSEMBLYMATERIAL '{am}' + ROOT_PLANT '{rp}' "
-                f"+ ALTERNATIVE '{alt}' occurs {int(group_size.at[idx])} times"
+                f"DUPLICATE_COMPONENT: COMPONENT '{c}' is used in {int(n_combos.at[idx])} different "
+                f"{asm_c}-{plant_c}-{alt_c} combinations (this row: '{a}' / '{p}' / '{alt}')"
             )
         return result
 
@@ -185,8 +227,9 @@ class BOMBusinessTableValidator:
     def __init__(self, bom_path: str):
         self.bom_path   = bom_path
         self.df         = pd.DataFrame()
-        self.error_map  = {}   # row_idx -> [failed field names]
-        self.reason_map = {}   # row_idx -> {field: reason}
+        self.dup_cols   = None   # resolved [ASSEMBLY, PLANT, ALTERNATE, COMPONENT] columns
+        self.error_map  = {}     # row_idx -> [failed field names]
+        self.reason_map = {}     # row_idx -> {field: reason}
 
     def load(self):
         self.df = pd.read_csv(self.bom_path, sep="\t", dtype=str)
@@ -195,8 +238,12 @@ class BOMBusinessTableValidator:
     def validate(self):
         engine = BOMBusinessRuleEngine()
 
-        # ── Pre-compute duplicates over the whole dataset ──
-        dup_reasons = engine.find_duplicates(self.df)
+        # ── Pre-compute duplicate components over the whole dataset ──
+        self.dup_cols = engine.resolve_duplicate_columns(self.df)
+        dup_reasons = (
+            engine.find_duplicate_components(self.df, self.dup_cols)
+            if self.dup_cols else {}
+        )
 
         for idx, row in self.df.iterrows():
             try:
@@ -251,9 +298,12 @@ class BOMBusinessReportWriter:
             "Negative values are not allowed.",
         ],
         DUPLICATE_FIELD: [
-            "ASSEMBLYMATERIAL, ROOT_PLANT and ALTERNATIVE values should not be the "
-            "same across rows. If the combination repeats, all such records are "
-            "considered DUPLICATES and flagged.",
+            "An ASSEMBLYMATERIAL / ROOT_PLANT / ALTERNATE combination should have only "
+            "one COMPONENT value. If the same COMPONENT is present for different "
+            "ASSEMBLYMATERIAL-ROOT_PLANT-ALTERNATE combinations, it is an error."
+            if DUPLICATE_COMPONENT_MODE == "ACROSS_GROUPS" else
+            "The same COMPONENT must not be repeated within the same "
+            "ASSEMBLYMATERIAL-ROOT_PLANT-ALTERNATE combination.",
         ],
     }
 
@@ -289,6 +339,13 @@ class BOMBusinessReportWriter:
             cell.alignment = Alignment(horizontal="center", vertical="center")
             if fill:
                 cell.fill = fill
+
+    def _highlight_cols_for(self, field_name: str) -> list:
+        """Source columns to highlight red when `field_name` fails.
+        DUPLICATE_COMPONENT highlights ASSEMBLY + PLANT + ALTERNATE + COMPONENT."""
+        if field_name == DUPLICATE_FIELD:
+            return list(self.validator.dup_cols or [])
+        return [field_name]
 
     # ══════════════════════════════════════════
     #  Summary sheet  (only fields that have business rules)
@@ -417,9 +474,14 @@ class BOMBusinessReportWriter:
                 lambda i: field_err_series.get(i, "")
             )
 
-            # Group duplicate records together so they are easy to compare
-            if field_name == DUPLICATE_FIELD:
-                sort_cols = [c for c in DUPLICATE_KEYS if c in subset.columns]
+            # Sort so the rows involved in each duplicate sit together
+            if field_name == DUPLICATE_FIELD and self.validator.dup_cols:
+                asm_c, plant_c, alt_c, comp_c = self.validator.dup_cols
+                if DUPLICATE_COMPONENT_MODE == "ACROSS_GROUPS":
+                    sort_cols = [comp_c, asm_c, plant_c, alt_c]
+                else:
+                    sort_cols = [asm_c, plant_c, alt_c, comp_c]
+                sort_cols = [c for c in sort_cols if c in subset.columns]
                 if sort_cols:
                     subset = subset.sort_values(sort_cols, kind="stable", na_position="last")
 
@@ -436,10 +498,10 @@ class BOMBusinessReportWriter:
 
                 # Highlight every column involved in this row's failure
                 # (VALIDFROM + VALIDTO together when the order rule fires;
-                #  ASSEMBLYMATERIAL + ROOT_PLANT + ALTERNATIVE for duplicates).
+                #  ASSEMBLY + PLANT + ALTERNATE + COMPONENT for duplicate components).
                 row_reasons = self.validator.reason_map.get(orig_idx, {})
                 for involved_field in row_reasons:
-                    for target_col in FIELD_HIGHLIGHT_COLS.get(involved_field, [involved_field]):
+                    for target_col in self._highlight_cols_for(involved_field):
                         if target_col in col_idx_map:
                             target_cell      = ws.cell(row=excel_row, column=col_idx_map[target_col])
                             target_cell.fill = RED_FILL
