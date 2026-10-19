@@ -1,0 +1,11 @@
+IF(ReferencePart.TCPL::MaterialType.Value = "BLND" AND PartClass.Value = "SFG" AND Type.Value = "BLND", "BLND",
+IF(ReferencePart.TCPL::MaterialType.Value = "FERT" AND PartClass.Value = "FG" AND (TCPL::IBPStatus = "IBP" OR TCPL::IBPStatus = "IBP Exp") AND Type.Value = "FERT", "FERT",
+IF(ReferencePart.TCPL::MaterialType.Value = "HALB" AND PartClass.Value = "SFG" AND Type.Value = "HALB", "HALB",
+IF(ReferencePart.TCPL::MaterialType.Value = "HAWA" AND PartClass.Value = "FG" AND (TCPL::IBPStatus = "IBP" OR TCPL::IBPStatus = "IBP Exp") AND Type.Value = "FERT", "FERT",
+IF(ReferencePart.TCPL::MaterialType.Value = "HAWA" AND PartClass.Value = "RM" AND TCPL::IBPStatus <> "IBP" AND TCPL::IBPStatus <> "IBP Exp" AND Type.Value = "ROH", "ROH",
+IF(ReferencePart.TCPL::MaterialType.Value = "HIBE" AND PartClass.Value = "PM" AND Type.Value = "VERP", "VERP",
+IF(ReferencePart.TCPL::MaterialType.Value = "ROH" AND PartClass.Value = "RM" AND Type.Value = "ROH", "ROH",
+IF(ReferencePart.TCPL::MaterialType.Value = "UNBW" AND PartClass.Value = "FG" AND Type.Value = "UNBW", "UNBW",
+IF(ReferencePart.TCPL::MaterialType.Value = "VERP" AND PartClass.Value = "PM" AND Type.Value = "VERP", "VERP",
+IF(ReferencePart.TCPL::MaterialType.Value = "BASB" AND PartClass.Value = "SFG" AND Type.Value = "BLND", "BLND",
+""))))))))))
