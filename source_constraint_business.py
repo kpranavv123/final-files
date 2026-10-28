@@ -1,4 +1,5 @@
 import re
+from collections import defaultdict
 from datetime import datetime
 import pandas as pd
 from openpyxl import Workbook
@@ -10,7 +11,35 @@ from openpyxl.utils import get_column_letter
 #  FILE PATHS
 # ─────────────────────────────────────────────
 SOURCE_CONSTRAINT_INPUT_FILE = r"C:\Users\SW526XH\Downloads\Go Live-2\SourceConstraint\SourceConstraint.tab"
+PARTSOURCE_MAKE_INPUT_FILE   = r"C:\Users\SW526XH\Downloads\Go Live-2\PartSource(Make)\PartSource_Make.tab"
+PARTMASTER_INPUT_FILE        = r"C:\Users\SW526XH\Downloads\Go Live-2\Part\Part.tab"   # <-- update to your Part extract file
 OUTPUT_FILE                  = r"C:\Users\SW526XH\Downloads\Go Live-2\SourceConstraint\Validated_SourceConstraint_Business.xlsx"
+
+
+# ─────────────────────────────────────────────
+#  COLUMN NAMES  (after .strip().upper())
+# ─────────────────────────────────────────────
+# Source Constraint extract
+SC_MATERIAL_COL         = "MATERIAL"
+SC_PLANT_CANDIDATES     = ["MKALPLANT", "PLANT"]   # whichever exists in the file is used (first match wins)
+SC_FACTOR_COL           = "CONSTRAINTFACTOR"
+
+# PartSource (Make) extract
+PS_MATERIAL_COL = "MATERIAL"
+PS_PLANT_COL    = "PLANT"
+
+# Part extract
+PM_MATERIAL_COL        = "MATERIALNUMBER"
+PM_PLANT_COL           = "PLANT"
+PM_PROCTYPE_CANDIDATES = ["PROCUREMENTYPE", "PROCUREMENTTYPE"]   # whichever exists is used
+
+# Required PROCUREMENTTYPE in Part extract for every Source Constraint Material-Plant
+REQUIRED_PROCUREMENT_TYPE = "E"
+
+# Sub-rule (a) scope:
+#   True  -> only rows where CONSTRAINTFACTOR is maintained (non-blank) are checked against PartSource (Make)
+#   False -> every Source Constraint row is checked
+SUBRULE_A_ONLY_WHEN_FACTOR_MAINTAINED = True
 
 
 # ─────────────────────────────────────────────
@@ -25,6 +54,7 @@ WHITE_FILL      = PatternFill("solid", start_color="FFFFFF", end_color="FFFFFF")
 STATS_FILL      = PatternFill("solid", start_color="EDEDED", end_color="EDEDED")
 SUMM_HDR_FILL   = PatternFill("solid", start_color="BDD7EE", end_color="BDD7EE")
 SUMM_TITLE_FILL = PatternFill("solid", start_color="BDD7EE", end_color="BDD7EE")
+SUBROW_FILL     = PatternFill("solid", start_color="F7F7F7", end_color="F7F7F7")
 
 HDR_FONT    = Font(bold=True, name="Arial")
 BODY_FONT   = Font(name="Arial", size=10)
@@ -39,9 +69,19 @@ THIN_BORDER = Border(
 # ─────────────────────────────────────────────
 FIELD_ORDER = ["CONSTRAINTFACTOR", "FIXEDCONSTRAINTFACTOR"]
 
+# CONSTRAINTFACTOR sub-category keys (used as counters + Summary sub-rows)
+SUB_ZERO = "Value is 0"
+SUB_A    = "a) Not in PartSource (Make)"
+SUB_B    = f"b) PROCUREMENTTYPE not '{REQUIRED_PROCUREMENT_TYPE}' in Part"
+
+CONSTRAINTFACTOR_SUBS = [SUB_ZERO, SUB_A, SUB_B]
+
 # Single-line reason shown in Summary sheet for each field
 FIELD_REASON = {
-    "CONSTRAINTFACTOR":      "CONSTRAINTFACTOR: Value is 0",
+    "CONSTRAINTFACTOR": (
+        "CONSTRAINTFACTOR: Value is 0 / Material-Plant not found in PartSource (Make) / "
+        f"PROCUREMENTTYPE is not '{REQUIRED_PROCUREMENT_TYPE}' in Part extract"
+    ),
     "FIXEDCONSTRAINTFACTOR": "FIXEDCONSTRAINTFACTOR: Value is 0",
 }
 
@@ -52,10 +92,27 @@ FIELD_REASON = {
 class SourceConstraintBusinessRuleEngine:
     """
     Rules:
-      CONSTRAINTFACTOR       - must not be 0 (negative and positive values are allowed).
-      FIXEDCONSTRAINTFACTOR  - must not be 0 (negative and positive values are allowed).
+      CONSTRAINTFACTOR
+        - must not be 0 (negative and positive values are allowed).
+        a) The MATERIAL / PLANT combination maintained for CONSTRAINTFACTOR must
+           also be present in the PartSource (Make) extract (MATERIAL / PLANT).
+        b) The MATERIAL / PLANT combination maintained in Source Constraint must
+           have PROCUREMENTTYPE = "E" in the Part extract.
+      FIXEDCONSTRAINTFACTOR
+        - must not be 0 (negative and positive values are allowed).
     Both fields are independent of each other.
+    Sub-rules (a) and (b) are cross-extract checks and are reported under CONSTRAINTFACTOR.
     """
+
+    def __init__(self, material_col: str, plant_col, ps_keys=None, partmaster_lookup=None):
+        self.material_col      = material_col
+        self.plant_col         = plant_col          # None -> sub-rules (a)/(b) skipped
+        self.ps_keys           = ps_keys            # {(material, plant)} in PartSource (Make); None -> (a) skipped
+        self.partmaster_lookup = partmaster_lookup  # {(material, plant): {proc types}};     None -> (b) skipped
+
+    @staticmethod
+    def _is_blank(value) -> bool:
+        return pd.isna(value) or str(value).strip() == ""
 
     @staticmethod
     def _parse_number(value):
@@ -75,16 +132,73 @@ class SourceConstraintBusinessRuleEngine:
             return f"{field_name}: '{str(raw).strip()}' is 0"
         return ""
 
-    def validate_row(self, row) -> dict:
-        """Returns {field_name: reason} for whichever fields failed on this row."""
+    def _validate_constraintfactor(self, row):
+        """Returns (list_of_reasons, list_of_sub_category_keys) for CONSTRAINTFACTOR."""
+        reasons = []
+        subs    = []
+
+        # ── Existing: must not be 0 ──
+        zero_reason = self._validate_nonzero_field(row, SC_FACTOR_COL)
+        if zero_reason:
+            reasons.append(zero_reason)
+            subs.append(SUB_ZERO)
+
+        # ── Sub-rules (a) / (b) need a usable MATERIAL + PLANT ──
+        if self.plant_col is None:
+            return reasons, subs
+
+        mat_raw   = row.get(self.material_col, "")
+        plant_raw = row.get(self.plant_col, "")
+        if self._is_blank(mat_raw) or self._is_blank(plant_raw):
+            return reasons, subs
+
+        mat   = str(mat_raw).strip()
+        plant = str(plant_raw).strip()
+        key   = (mat, plant)
+
+        # ── a) Present in PartSource (Make) ──
+        if self.ps_keys is not None:
+            factor_maintained = not self._is_blank(row.get(SC_FACTOR_COL, ""))
+            if factor_maintained or not SUBRULE_A_ONLY_WHEN_FACTOR_MAINTAINED:
+                if key not in self.ps_keys:
+                    reasons.append(
+                        f"CONSTRAINTFACTOR: {SC_MATERIAL_COL} '{mat}' + {self.plant_col} '{plant}' "
+                        f"is not present in PartSource (Make) extract (MATERIAL/PLANT)"
+                    )
+                    subs.append(SUB_A)
+
+        # ── b) PROCUREMENTTYPE must be 'E' in Part extract ──
+        if self.partmaster_lookup is not None:
+            found = self.partmaster_lookup.get(key)
+            if found is None:
+                reasons.append(
+                    f"CONSTRAINTFACTOR: {SC_MATERIAL_COL} '{mat}' + {self.plant_col} '{plant}' "
+                    f"not found in Part extract (expected PROCUREMENTTYPE '{REQUIRED_PROCUREMENT_TYPE}')"
+                )
+                subs.append(SUB_B)
+            elif found != {REQUIRED_PROCUREMENT_TYPE}:
+                actual = ", ".join(sorted(v if v else "blank" for v in found))
+                reasons.append(
+                    f"CONSTRAINTFACTOR: {SC_MATERIAL_COL} '{mat}' + {self.plant_col} '{plant}' has "
+                    f"PROCUREMENTTYPE '{actual}' in Part extract (expected '{REQUIRED_PROCUREMENT_TYPE}')"
+                )
+                subs.append(SUB_B)
+
+        return reasons, subs
+
+    def validate_row(self, row):
+        """Returns ({field_name: reason}, [CONSTRAINTFACTOR sub_category_keys])."""
         reasons = {}
 
-        for field_name in FIELD_ORDER:
-            reason = self._validate_nonzero_field(row, field_name)
-            if reason:
-                reasons[field_name] = reason
+        cf_reasons, cf_subs = self._validate_constraintfactor(row)
+        if cf_reasons:
+            reasons[SC_FACTOR_COL] = " | ".join(cf_reasons)
 
-        return reasons
+        fixed_reason = self._validate_nonzero_field(row, "FIXEDCONSTRAINTFACTOR")
+        if fixed_reason:
+            reasons["FIXEDCONSTRAINTFACTOR"] = fixed_reason
+
+        return reasons, cf_subs
 
 
 # ══════════════════════════════════════════════
@@ -92,28 +206,118 @@ class SourceConstraintBusinessRuleEngine:
 # ══════════════════════════════════════════════
 class SourceConstraintBusinessTableValidator:
 
-    def __init__(self, source_constraint_path: str):
+    def __init__(self, source_constraint_path: str, ps_make_path: str, partmaster_path: str):
         self.source_constraint_path = source_constraint_path
-        self.df          = pd.DataFrame()
-        self.error_map    = {}   # row_idx -> [failed field names]
-        self.reason_map   = {}   # row_idx -> {field: reason}
+        self.ps_make_path           = ps_make_path
+        self.partmaster_path        = partmaster_path
+
+        self.df                = pd.DataFrame()
+        self.ps_df             = pd.DataFrame()
+        self.pm_df             = pd.DataFrame()
+        self.sc_plant_col      = None
+        self.pm_proctype_col   = None
+        self.ps_keys           = None
+        self.partmaster_lookup = None
+
+        self.error_map   = {}   # row_idx -> [failed field names]
+        self.reason_map  = {}   # row_idx -> {field: reason}
+        self.sub_map     = {}   # row_idx -> [CONSTRAINTFACTOR sub-category keys]
+
+        # CONSTRAINTFACTOR sub-category counters for Summary sheet breakdown
+        self.sub_counts = {k: 0 for k in CONSTRAINTFACTOR_SUBS}
+
+    @staticmethod
+    def _clean(series: pd.Series) -> pd.Series:
+        return series.fillna("").astype(str).str.strip()
+
+    @staticmethod
+    def _read(path: str) -> pd.DataFrame:
+        df = pd.read_csv(path, sep="\t", dtype=str)
+        df.columns = [c.strip().upper() for c in df.columns]
+        return df
 
     def load(self):
-        self.df = pd.read_csv(self.source_constraint_path, sep="\t", dtype=str)
-        self.df.columns = [c.strip().upper() for c in self.df.columns]
+        self.df    = self._read(self.source_constraint_path)
+        self.ps_df = self._read(self.ps_make_path)
+        self.pm_df = self._read(self.partmaster_path)
+
+        self.sc_plant_col = next((c for c in SC_PLANT_CANDIDATES if c in self.df.columns), None)
+
+        self._build_ps_keys()
+        self._build_partmaster_lookup()
+
+    def _build_ps_keys(self):
+        """Builds {(material, plant)} from PartSource (Make). None -> sub-rule (a) skipped."""
+        sc_missing = []
+        if SC_MATERIAL_COL not in self.df.columns:
+            sc_missing.append(SC_MATERIAL_COL)
+        if self.sc_plant_col is None:
+            sc_missing.append("/".join(SC_PLANT_CANDIDATES))
+        ps_missing = [c for c in (PS_MATERIAL_COL, PS_PLANT_COL) if c not in self.ps_df.columns]
+
+        if sc_missing or ps_missing:
+            if sc_missing:
+                print(f"⚠️   Sub-rule (a) skipped — Source Constraint column(s) not found: {sc_missing}")
+            if ps_missing:
+                print(f"⚠️   Sub-rule (a) skipped — PartSource (Make) column(s) not found: {ps_missing}")
+            self.ps_keys = None
+            return
+
+        mats   = self._clean(self.ps_df[PS_MATERIAL_COL])
+        plants = self._clean(self.ps_df[PS_PLANT_COL])
+        self.ps_keys = {(m, p) for m, p in zip(mats, plants) if m and p}
+
+    def _build_partmaster_lookup(self):
+        """Builds {(material, plant): {procurement types}} from the Part extract.
+        None -> sub-rule (b) skipped."""
+        self.pm_proctype_col = next(
+            (c for c in PM_PROCTYPE_CANDIDATES if c in self.pm_df.columns), None
+        )
+
+        sc_missing = []
+        if SC_MATERIAL_COL not in self.df.columns:
+            sc_missing.append(SC_MATERIAL_COL)
+        if self.sc_plant_col is None:
+            sc_missing.append("/".join(SC_PLANT_CANDIDATES))
+        pm_missing = [c for c in (PM_MATERIAL_COL, PM_PLANT_COL) if c not in self.pm_df.columns]
+        if self.pm_proctype_col is None:
+            pm_missing.append("/".join(PM_PROCTYPE_CANDIDATES))
+
+        if sc_missing or pm_missing:
+            if sc_missing:
+                print(f"⚠️   Sub-rule (b) skipped — Source Constraint column(s) not found: {sc_missing}")
+            if pm_missing:
+                print(f"⚠️   Sub-rule (b) skipped — Part extract column(s) not found: {pm_missing}")
+            self.partmaster_lookup = None
+            return
+
+        mats   = self._clean(self.pm_df[PM_MATERIAL_COL])
+        plants = self._clean(self.pm_df[PM_PLANT_COL])
+        ptypes = self._clean(self.pm_df[self.pm_proctype_col])
+
+        lookup = defaultdict(set)
+        for m, p, t in zip(mats, plants, ptypes):
+            if m and p:
+                lookup[(m, p)].add(t)
+        self.partmaster_lookup = dict(lookup)
 
     def validate(self):
-        engine = SourceConstraintBusinessRuleEngine()
+        engine = SourceConstraintBusinessRuleEngine(
+            SC_MATERIAL_COL, self.sc_plant_col, self.ps_keys, self.partmaster_lookup
+        )
 
         for idx, row in self.df.iterrows():
             try:
-                reasons = engine.validate_row(row)
+                reasons, cf_subs = engine.validate_row(row)
             except Exception:
-                reasons = {}
+                reasons, cf_subs = {}, []
 
             if reasons:
                 self.error_map[idx]  = list(reasons.keys())
                 self.reason_map[idx] = reasons
+                self.sub_map[idx]    = cf_subs
+                for s in cf_subs:
+                    self.sub_counts[s] += 1
 
     def get_error_series(self) -> pd.Series:
         result = {}
@@ -147,6 +351,10 @@ class SourceConstraintBusinessReportWriter:
     RULES_CONTENT = {
         "CONSTRAINTFACTOR": [
             "CONSTRAINTFACTOR must not be 0.",
+            "a) The MATERIAL / PLANT combination maintained for CONSTRAINTFACTOR should also "
+            "be present in the PartSource (Make) extract (MATERIAL / PLANT columns).",
+            "b) The MATERIAL / PLANT combination maintained in Source Constraint should have "
+            f"PROCUREMENTTYPE as \"{REQUIRED_PROCUREMENT_TYPE}\" in the Part extract.",
         ],
         "FIXEDCONSTRAINTFACTOR": [
             "FIXEDCONSTRAINTFACTOR must not be 0.",
@@ -177,7 +385,7 @@ class SourceConstraintBusinessReportWriter:
 
     def _style_summary_data_row(self, ws, row_num: int, num_cols: int = 7,
                                 bold: bool = False, fill: PatternFill = None,
-                                italic: bool = False):
+                                italic: bool = False, indent_col2: bool = False):
         for c in range(1, num_cols + 1):
             cell           = ws.cell(row=row_num, column=c)
             cell.font      = Font(name="Arial", bold=bold, italic=italic, size=10)
@@ -185,11 +393,32 @@ class SourceConstraintBusinessReportWriter:
             cell.alignment = Alignment(horizontal="center", vertical="center")
             if fill:
                 cell.fill = fill
+        if indent_col2:
+            ws.cell(row=row_num, column=2).alignment = Alignment(
+                horizontal="left", vertical="center", indent=2
+            )
+
+    def _highlight_cols_for_row(self, field_name: str, orig_idx) -> list:
+        """Source columns to highlight red for this row on this field's sheet."""
+        v = self.validator
+        if field_name != SC_FACTOR_COL:
+            return [field_name]
+
+        cols = []
+        subs = v.sub_map.get(orig_idx, [])
+        if SUB_ZERO in subs:
+            cols.append(SC_FACTOR_COL)
+        if SUB_A in subs or SUB_B in subs:
+            cols.append(SC_MATERIAL_COL)
+            if v.sc_plant_col:
+                cols.append(v.sc_plant_col)
+        return cols
 
     # ══════════════════════════════════════════
     #  Summary sheet
     # ══════════════════════════════════════════
     def _write_summary_sheet_into(self, ws, error_map: dict, total_rows: int):
+        v = self.validator
 
         # ── Row 1 : Title ──
         ws.merge_cells("A1:G1")
@@ -236,12 +465,30 @@ class SourceConstraintBusinessReportWriter:
             ws.cell(row=row_num, column=6, value=f"{pct_error}%")
             ws.cell(row=row_num, column=7, value=reason_text)
 
-            self._style_summary_data_row(ws, row_num, fill=WHITE_FILL)
+            self._style_summary_data_row(ws, row_num, bold=(col_name == SC_FACTOR_COL), fill=WHITE_FILL)
             ws.cell(row=row_num, column=7).alignment = Alignment(
                 horizontal="left", vertical="center", wrap_text=True
             )
             row_num += 1
             field_num += 1
+
+            # ── CONSTRAINTFACTOR sub-rows ──
+            if col_name == SC_FACTOR_COL:
+                for sub_label in CONSTRAINTFACTOR_SUBS:
+                    sub_count      = v.sub_counts.get(sub_label, 0)
+                    sub_pct_error  = round((sub_count / total_rows) * 100, 2) if total_rows else 0
+                    sub_pct_health = round(100 - sub_pct_error, 2)
+
+                    ws.cell(row=row_num, column=1, value="")
+                    ws.cell(row=row_num, column=2, value=f"└─ {sub_label}")
+                    ws.cell(row=row_num, column=3, value=sub_count)
+                    ws.cell(row=row_num, column=4, value=total_rows)
+                    ws.cell(row=row_num, column=5, value=f"{sub_pct_health}%")
+                    ws.cell(row=row_num, column=6, value=f"{sub_pct_error}%")
+                    ws.cell(row=row_num, column=7, value="")
+                    self._style_summary_data_row(ws, row_num, italic=True, fill=SUBROW_FILL,
+                                                  indent_col2=True)
+                    row_num += 1
 
         # ── TOTAL row ──
         total_errors        = sum(col_error_counts.values())
@@ -289,7 +536,7 @@ class SourceConstraintBusinessReportWriter:
             row_num += 1
 
         # ── Column widths ──
-        col_widths = [6, 42, 14, 16, 12, 12, 70]
+        col_widths = [6, 48, 14, 16, 12, 12, 90]
         for c_idx, width in enumerate(col_widths, start=1):
             ws.column_dimensions[get_column_letter(c_idx)].width = width
 
@@ -324,12 +571,13 @@ class SourceConstraintBusinessReportWriter:
                     cell.fill      = WHITE_FILL
                     cell.border    = THIN_BORDER
 
-                # Each of these fields is independent, so only its own column
-                # gets highlighted for a failure on this sheet.
-                if field_name in col_idx_map:
-                    target_cell      = ws.cell(row=excel_row, column=col_idx_map[field_name])
-                    target_cell.fill = RED_FILL
-                    target_cell.font = ERR_FONT
+                # CONSTRAINTFACTOR sheet: highlight CONSTRAINTFACTOR for the zero check,
+                # MATERIAL + PLANT for sub-rules (a)/(b). Other sheets: own column only.
+                for target_col in self._highlight_cols_for_row(field_name, orig_idx):
+                    if target_col in col_idx_map:
+                        target_cell      = ws.cell(row=excel_row, column=col_idx_map[target_col])
+                        target_cell.fill = RED_FILL
+                        target_cell.font = ERR_FONT
 
             self._set_widths(ws)
             ws.freeze_panes = "A2"
@@ -397,7 +645,7 @@ class SourceConstraintBusinessReportWriter:
 
         ws.column_dimensions["A"].width = 6
         ws.column_dimensions["B"].width = 45
-        ws.column_dimensions["C"].width = 75
+        ws.column_dimensions["C"].width = 100
 
     # ── Main write ────────────────────────────
     def write(self):
@@ -426,6 +674,8 @@ class SourceConstraintBusinessReportWriter:
         print(f"\n✅  Output saved  → {self.output_path}")
         print(f"   Total rows    : {len(df)}")
         print(f"   Error rows    : {len(v.error_map)}")
+        for sub_label in CONSTRAINTFACTOR_SUBS:
+            print(f"     CONSTRAINTFACTOR - {sub_label:<42}: {v.sub_counts[sub_label]}")
         print(f"   Field sheets  : {fields_with_errors}")
 
 
@@ -434,16 +684,26 @@ class SourceConstraintBusinessReportWriter:
 # ══════════════════════════════════════════════
 class SourceConstraintBusinessTableProcessor:
 
-    def __init__(self, source_constraint_path: str, output_path: str):
-        self.validator = SourceConstraintBusinessTableValidator(source_constraint_path)
+    def __init__(self, source_constraint_path: str, ps_make_path: str,
+                 partmaster_path: str, output_path: str):
+        self.validator = SourceConstraintBusinessTableValidator(
+            source_constraint_path, ps_make_path, partmaster_path
+        )
         self.writer    = SourceConstraintBusinessReportWriter(self.validator, output_path)
 
     def run(self):
-        print("📂  Loading file …")
+        print("📂  Loading files …")
         self.validator.load()
-        print(f"    SourceConstraint columns detected : {list(self.validator.df.columns)}")
+        v = self.validator
+        print(f"    SourceConstraint columns detected  : {list(v.df.columns)}")
+        print(f"    Source Constraint plant column used: {v.sc_plant_col}")
+        print(f"    Part extract PROCUREMENTTYPE column: {v.pm_proctype_col}")
+        if v.ps_keys is not None:
+            print(f"    PartSource (Make) Material-Plants  : {len(v.ps_keys)}")
+        if v.partmaster_lookup is not None:
+            print(f"    Part extract Material-Plants       : {len(v.partmaster_lookup)}")
         print("🔍  Validating business rules …")
-        self.validator.validate()
+        v.validate()
         print("📝  Writing report …")
         self.writer.write()
 
@@ -454,6 +714,8 @@ class SourceConstraintBusinessTableProcessor:
 if __name__ == "__main__":
     processor = SourceConstraintBusinessTableProcessor(
         source_constraint_path = SOURCE_CONSTRAINT_INPUT_FILE,
-        output_path             = OUTPUT_FILE,
+        ps_make_path           = PARTSOURCE_MAKE_INPUT_FILE,
+        partmaster_path        = PARTMASTER_INPUT_FILE,
+        output_path            = OUTPUT_FILE,
     )
     processor.run()
