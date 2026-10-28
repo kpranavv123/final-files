@@ -34,6 +34,7 @@ BOM_PLANT_COL    = "ROOT_PLANT"
 # ─────────────────────────────────────────────
 SC_MATERIAL_COL = "MATERIAL"
 SC_PLANT_COL    = "MKALPLANT"
+SC_FACTOR_COL   = "CONSTRAINTFACTOR"
 
 # ─────────────────────────────────────────────
 #  PART MASTER COLUMN NAMES  (after .strip().upper())
@@ -41,10 +42,16 @@ SC_PLANT_COL    = "MKALPLANT"
 # ─────────────────────────────────────────────
 PM_MATERIAL_COL = "MATERIALNUMBER"
 PM_PLANT_COL    = "PLANT"
-PM_PROCTYPE_COL = "PROCUREMENTTYPE"
+# Whichever of these exists in the Part file is used (handles the PROCUREMENTTYPE / PROCUREMENTYPE spelling)
+PM_PROCTYPE_CANDIDATES = ["PROCUREMENTTYPE", "PROCUREMENTYPE"]
 
 # Required PROCUREMENTTYPE in Part master for every PartSource(Make) Part-Site
 REQUIRED_PROCUREMENT_TYPE = "E"
+
+# Sub-rule (a) behaviour when the Part-Site is NOT present in the Source Constraint extract at all:
+#   False -> not flagged again here (already reported by the "Not in Source Constraint" sub-category)
+#   True  -> also flagged as "CONSTRAINTFACTOR not maintained"
+FACTOR_MISSING_COMBO_IS_ERROR = False
 
 
 # ─────────────────────────────────────────────
@@ -72,24 +79,31 @@ THIN_BORDER  = Border(
 
 # ─────────────────────────────────────────────
 #  FIELD ORDER  (only fields with business rules)
-#  Note: MATERIAL_PROCUREMENTTYPE is a rule name, not a source column
+#  ACTIVE: MATERIAL only.  All other rules are commented out below.
 # ─────────────────────────────────────────────
-FIELD_ORDER = ["MAXIMUMLOTSIZE", "MINIMUMLOTSIZE", "ROUNDINGVALUE", "MATERIAL",
-               "MATERIAL_PROCUREMENTTYPE"]
+# FIELD_ORDER = ["MAXIMUMLOTSIZE", "MINIMUMLOTSIZE", "ROUNDINGVALUE", "MATERIAL",
+#                "MATERIAL_PROCUREMENTTYPE"]
+FIELD_ORDER = ["MATERIAL"]
 
 # Single-line reason shown in Summary sheet for the simple fields
 FIELD_REASON = {
-    "MAXIMUMLOTSIZE": "MAXIMUMLOTSIZE: Value not greater than 0",
-    "MINIMUMLOTSIZE": "MINIMUMLOTSIZE: Value not greater than 0",
-    "ROUNDINGVALUE":  "ROUNDINGVALUE: Value not greater than 0",
-    "MATERIAL_PROCUREMENTTYPE": (
-        f"MATERIAL_PROCUREMENTTYPE: Part-Site PROCUREMENTTYPE is not "
-        f"'{REQUIRED_PROCUREMENT_TYPE}' in Part master"
-    ),
+    # "MAXIMUMLOTSIZE": "MAXIMUMLOTSIZE: Value not greater than 0",
+    # "MINIMUMLOTSIZE": "MINIMUMLOTSIZE: Value not greater than 0",
+    # "ROUNDINGVALUE":  "ROUNDINGVALUE: Value not greater than 0",
+    # "MATERIAL_PROCUREMENTTYPE": (
+    #     f"MATERIAL_PROCUREMENTTYPE: Part-Site PROCUREMENTTYPE is not "
+    #     f"'{REQUIRED_PROCUREMENT_TYPE}' in Part master"
+    # ),
 }
 
-# Sub-category reasons shown as indented rows under MATERIAL in Summary
-MATERIAL_SUB_CATEGORIES = ["Blank", "Not in BOM", "Not in Source Constraint"]
+# MATERIAL sub-category keys (used as counters + Summary sub-rows)
+SUB_BLANK  = "Blank"
+SUB_NO_BOM = "Not in BOM"
+SUB_NO_SC  = "Not in Source Constraint"
+SUB_FACTOR = "CONSTRAINTFACTOR not maintained / Zero"
+SUB_PROC   = f"PROCUREMENTTYPE not '{REQUIRED_PROCUREMENT_TYPE}' in Part"
+
+MATERIAL_SUB_CATEGORIES = [SUB_BLANK, SUB_NO_BOM, SUB_NO_SC, SUB_FACTOR, SUB_PROC]
 
 
 # ══════════════════════════════════════════════
@@ -97,29 +111,31 @@ MATERIAL_SUB_CATEGORIES = ["Blank", "Not in BOM", "Not in Source Constraint"]
 # ══════════════════════════════════════════════
 class PartSourceMakeBusinessRuleEngine:
     """
-    Rules:
-      MAXIMUMLOTSIZE  - must be > 0.
-      MINIMUMLOTSIZE  - must be > 0.
-      ROUNDINGVALUE   - must be > 0.
+    ACTIVE RULE:
       MATERIAL
         - The MATERIAL / PLANT (Part-Site) combination must be present in the
           BOM extract as ROOT_MATERIAL / ROOT_PLANT, AND must also be present
           in the Source Constraint extract as MATERIAL / MKALPLANT.
-      MATERIAL_PROCUREMENTTYPE
-        - For a Part-Site (MATERIAL + PLANT in PartSource(Make)), the
-          PROCUREMENTTYPE maintained in Part master must be "E".
-    All numeric rules are independent of each other. MATERIAL is independent
-    of the numeric fields but cross-references two separate master sets.
-    MATERIAL_PROCUREMENTTYPE cross-references the Part master.
+        a) The Part-Site combination must have CONSTRAINTFACTOR maintained
+           (not blank) and it must not be zero in the Source Constraint extract.
+        b) The Part-Site combination must have PROCUREMENTTYPE maintained as
+           "E" in the Part extract.
+
+    COMMENTED OUT (kept for reference):
+      MAXIMUMLOTSIZE / MINIMUMLOTSIZE / ROUNDINGVALUE - must be > 0.
+      MATERIAL_PROCUREMENTTYPE - superseded by MATERIAL sub-rule (b).
     """
 
     def __init__(self, valid_bom_combos: set, valid_sc_combos: set,
-                 partmaster_lookup=None):
+                 partmaster_lookup=None, sc_factor_lookup=None):
         self.valid_bom_combos  = valid_bom_combos
         self.valid_sc_combos   = valid_sc_combos
         # {(material, plant): {procurement types found in Part master}}
-        # None -> MATERIAL_PROCUREMENTTYPE rule is skipped
+        # None -> sub-rule (b) is skipped
         self.partmaster_lookup = partmaster_lookup
+        # {(material, plant): [CONSTRAINTFACTOR values found in Source Constraint]}
+        # None -> sub-rule (a) is skipped
+        self.sc_factor_lookup  = sc_factor_lookup
 
     @staticmethod
     def _is_blank(value) -> bool:
@@ -135,16 +151,18 @@ class PartSourceMakeBusinessRuleEngine:
         except ValueError:
             return None
 
-    def _validate_positive_field(self, row, field_name: str) -> str:
-        """Returns a reason string if field_name is present but not > 0, else ''."""
-        raw = row.get(field_name, "")
-        num = self._parse_number(raw)
-        if num is not None and num <= 0:
-            return f"{field_name}: '{str(raw).strip()}' is not greater than 0"
-        return ""
+    # ── COMMENTED OUT: numeric > 0 rules ──────────────────────────────
+    # def _validate_positive_field(self, row, field_name: str) -> str:
+    #     """Returns a reason string if field_name is present but not > 0, else ''."""
+    #     raw = row.get(field_name, "")
+    #     num = self._parse_number(raw)
+    #     if num is not None and num <= 0:
+    #         return f"{field_name}: '{str(raw).strip()}' is not greater than 0"
+    #     return ""
 
-    def _validate_material(self, row) -> str:
-        """Returns a combined reason string for MATERIAL, or '' if it passes."""
+    def _validate_material(self, row):
+        """Returns (reason_string, [sub_category_keys]).
+        reason_string is '' (and the list empty) if MATERIAL passes."""
         mat_raw   = row.get(PS_MATERIAL_COL, "")
         plant_raw = row.get(PS_PLANT_COL, "")
         mat_blank   = self._is_blank(mat_raw)
@@ -156,77 +174,116 @@ class PartSourceMakeBusinessRuleEngine:
                 missing.append(PS_MATERIAL_COL)
             if plant_blank:
                 missing.append(PS_PLANT_COL)
-            return f"MATERIAL: Blank field(s) - {', '.join(missing)}"
+            return f"MATERIAL: Blank field(s) - {', '.join(missing)}", [SUB_BLANK]
 
         mat   = str(mat_raw).strip()
         plant = str(plant_raw).strip()
         key   = f"{mat}|{plant}"
 
         problems = []
+        subs     = []
+
+        # ── Existing: presence in BOM ──
         if key not in self.valid_bom_combos:
             problems.append("not found in BOM extract (ROOT_MATERIAL/ROOT_PLANT)")
+            subs.append(SUB_NO_BOM)
+
+        # ── Existing: presence in Source Constraint ──
         if key not in self.valid_sc_combos:
             problems.append("not found in Source Constraint extract (MATERIAL/MKALPLANT)")
+            subs.append(SUB_NO_SC)
+
+        # ── NEW (a): CONSTRAINTFACTOR maintained and not zero ──
+        if self.sc_factor_lookup is not None:
+            factors = self.sc_factor_lookup.get((mat, plant))
+            if factors is None:
+                if FACTOR_MISSING_COMBO_IS_ERROR:
+                    problems.append(
+                        f"{SC_FACTOR_COL} not maintained (combination not present in "
+                        f"Source Constraint extract)"
+                    )
+                    subs.append(SUB_FACTOR)
+            else:
+                has_blank = any(f == "" for f in factors)
+                has_zero  = any((self._parse_number(f) == 0) for f in factors if f != "")
+                if has_blank and has_zero:
+                    problems.append(f"{SC_FACTOR_COL} is blank and also '0' in Source Constraint extract")
+                    subs.append(SUB_FACTOR)
+                elif has_blank:
+                    problems.append(f"{SC_FACTOR_COL} is not maintained (blank) in Source Constraint extract")
+                    subs.append(SUB_FACTOR)
+                elif has_zero:
+                    problems.append(f"{SC_FACTOR_COL} is '0' in Source Constraint extract")
+                    subs.append(SUB_FACTOR)
+
+        # ── NEW (b): PROCUREMENTTYPE must be 'E' in Part extract ──
+        if self.partmaster_lookup is not None:
+            found = self.partmaster_lookup.get((mat, plant))
+            if found is None:
+                problems.append(
+                    f"not found in Part extract (expected PROCUREMENTTYPE "
+                    f"'{REQUIRED_PROCUREMENT_TYPE}')"
+                )
+                subs.append(SUB_PROC)
+            elif found != {REQUIRED_PROCUREMENT_TYPE}:
+                actual = ", ".join(sorted(v if v else "blank" for v in found))
+                problems.append(
+                    f"PROCUREMENTTYPE is '{actual}' in Part extract "
+                    f"(expected '{REQUIRED_PROCUREMENT_TYPE}')"
+                )
+                subs.append(SUB_PROC)
 
         if problems:
-            return f"MATERIAL: Part-Site combination '{mat}-{plant}' " + "; ".join(problems)
+            return f"MATERIAL: Part-Site combination '{mat}-{plant}' " + "; ".join(problems), subs
 
-        return ""
+        return "", []
 
-    def _validate_material_procurement_type(self, row) -> str:
-        """
-        Part-Site (MATERIAL + PLANT) lookup against Part master:
-        PROCUREMENTTYPE must be 'E'. Returns a reason string, or '' if it passes.
-        Rows with a blank MATERIAL / PLANT are skipped (already flagged by the
-        MATERIAL rule).
-        """
-        if self.partmaster_lookup is None:
-            return ""
+    # ── COMMENTED OUT: standalone MATERIAL_PROCUREMENTTYPE rule
+    #    (logic now lives inside MATERIAL sub-rule (b) above) ──────────
+    # def _validate_material_procurement_type(self, row) -> str:
+    #     if self.partmaster_lookup is None:
+    #         return ""
+    #     mat_raw   = row.get(PS_MATERIAL_COL, "")
+    #     plant_raw = row.get(PS_PLANT_COL, "")
+    #     if self._is_blank(mat_raw) or self._is_blank(plant_raw):
+    #         return ""
+    #     mat   = str(mat_raw).strip()
+    #     plant = str(plant_raw).strip()
+    #     found = self.partmaster_lookup.get((mat, plant))
+    #     if found is None:
+    #         return (
+    #             f"MATERIAL_PROCUREMENTTYPE: Part-Site '{mat}-{plant}' not found in "
+    #             f"Part master (expected PROCUREMENTTYPE '{REQUIRED_PROCUREMENT_TYPE}')"
+    #         )
+    #     if found != {REQUIRED_PROCUREMENT_TYPE}:
+    #         actual = ", ".join(sorted(v if v else "blank" for v in found))
+    #         return (
+    #             f"MATERIAL_PROCUREMENTTYPE: Part-Site '{mat}-{plant}' has "
+    #             f"PROCUREMENTTYPE '{actual}' in Part master "
+    #             f"(expected '{REQUIRED_PROCUREMENT_TYPE}')"
+    #         )
+    #     return ""
 
-        mat_raw   = row.get(PS_MATERIAL_COL, "")
-        plant_raw = row.get(PS_PLANT_COL, "")
-        if self._is_blank(mat_raw) or self._is_blank(plant_raw):
-            return ""
-
-        mat   = str(mat_raw).strip()
-        plant = str(plant_raw).strip()
-
-        found = self.partmaster_lookup.get((mat, plant))
-
-        if found is None:
-            return (
-                f"MATERIAL_PROCUREMENTTYPE: Part-Site '{mat}-{plant}' not found in "
-                f"Part master (expected PROCUREMENTTYPE '{REQUIRED_PROCUREMENT_TYPE}')"
-            )
-
-        if found != {REQUIRED_PROCUREMENT_TYPE}:
-            actual = ", ".join(sorted(v if v else "blank" for v in found))
-            return (
-                f"MATERIAL_PROCUREMENTTYPE: Part-Site '{mat}-{plant}' has "
-                f"PROCUREMENTTYPE '{actual}' in Part master "
-                f"(expected '{REQUIRED_PROCUREMENT_TYPE}')"
-            )
-
-        return ""
-
-    def validate_row(self, row) -> dict:
-        """Returns {field_name: reason} for whichever fields failed on this row."""
+    def validate_row(self, row):
+        """Returns ({field_name: reason}, [material_sub_category_keys])."""
         reasons = {}
 
-        for field_name in ("MAXIMUMLOTSIZE", "MINIMUMLOTSIZE", "ROUNDINGVALUE"):
-            reason = self._validate_positive_field(row, field_name)
-            if reason:
-                reasons[field_name] = reason
+        # ── COMMENTED OUT: numeric > 0 rules ──
+        # for field_name in ("MAXIMUMLOTSIZE", "MINIMUMLOTSIZE", "ROUNDINGVALUE"):
+        #     reason = self._validate_positive_field(row, field_name)
+        #     if reason:
+        #         reasons[field_name] = reason
 
-        material_reason = self._validate_material(row)
+        material_reason, material_subs = self._validate_material(row)
         if material_reason:
             reasons["MATERIAL"] = material_reason
 
-        proc_reason = self._validate_material_procurement_type(row)
-        if proc_reason:
-            reasons["MATERIAL_PROCUREMENTTYPE"] = proc_reason
+        # ── COMMENTED OUT: standalone MATERIAL_PROCUREMENTTYPE rule ──
+        # proc_reason = self._validate_material_procurement_type(row)
+        # if proc_reason:
+        #     reasons["MATERIAL_PROCUREMENTTYPE"] = proc_reason
 
-        return reasons
+        return reasons, material_subs
 
 
 # ══════════════════════════════════════════════
@@ -245,61 +302,90 @@ class PartSourceMakeBusinessTableValidator:
         self.pm_df             = pd.DataFrame()
         self.valid_bom_combos  = set()
         self.valid_sc_combos   = set()
+        self.sc_factor_lookup  = None
         self.partmaster_lookup = None
+        self.pm_proctype_col   = None
         self.error_map         = {}   # row_idx -> [failed field names]
         self.reason_map        = {}   # row_idx -> {field: reason}
 
         # MATERIAL sub-category counters for Summary sheet breakdown
-        self.material_blank_count      = 0
-        self.material_not_in_bom_count = 0
-        self.material_not_in_sc_count  = 0
+        self.material_sub_counts = {k: 0 for k in MATERIAL_SUB_CATEGORIES}
+
+    @staticmethod
+    def _clean(series: pd.Series) -> pd.Series:
+        return series.fillna("").astype(str).str.strip()
 
     def load(self):
         self.df = pd.read_csv(self.ps_make_path, sep="\t", dtype=str)
         self.df.columns = [c.strip().upper() for c in self.df.columns]
 
+        # ── BOM ──
         bom_df = pd.read_csv(self.bom_path, sep="\t", dtype=str)
         bom_df.columns = [c.strip().upper() for c in bom_df.columns]
-        for _, r in bom_df.iterrows():
-            mat   = str(r.get(BOM_MATERIAL_COL, "")).strip()
-            plant = str(r.get(BOM_PLANT_COL, "")).strip()
+        bom_mat   = self._clean(bom_df[BOM_MATERIAL_COL])
+        bom_plant = self._clean(bom_df[BOM_PLANT_COL])
+        for mat, plant in zip(bom_mat, bom_plant):
             if mat == "" or plant == "":
                 continue
             self.valid_bom_combos.add(f"{mat}|{plant}")
 
+        # ── Source Constraint (combos + CONSTRAINTFACTOR values) ──
         sc_df = pd.read_csv(self.source_constraint_path, sep="\t", dtype=str)
         sc_df.columns = [c.strip().upper() for c in sc_df.columns]
-        for _, r in sc_df.iterrows():
-            mat   = str(r.get(SC_MATERIAL_COL, "")).strip()
-            plant = str(r.get(SC_PLANT_COL, "")).strip()
+        sc_mat   = self._clean(sc_df[SC_MATERIAL_COL])
+        sc_plant = self._clean(sc_df[SC_PLANT_COL])
+        for mat, plant in zip(sc_mat, sc_plant):
             if mat == "" or plant == "":
                 continue
             self.valid_sc_combos.add(f"{mat}|{plant}")
 
+        self._build_sc_factor_lookup(sc_df, sc_mat, sc_plant)
+
+        # ── Part master ──
         self.pm_df = pd.read_csv(self.partmaster_path, sep="\t", dtype=str)
         self.pm_df.columns = [c.strip().upper() for c in self.pm_df.columns]
         self._build_partmaster_lookup()
 
+    def _build_sc_factor_lookup(self, sc_df, sc_mat, sc_plant):
+        """Builds {(material, plant): [CONSTRAINTFACTOR values]} from Source Constraint.
+        Leaves the lookup as None (sub-rule (a) skipped) if CONSTRAINTFACTOR is missing."""
+        if SC_FACTOR_COL not in sc_df.columns:
+            print(f"⚠️   MATERIAL sub-rule (a) skipped — Source Constraint column not found: {SC_FACTOR_COL}")
+            self.sc_factor_lookup = None
+            return
+
+        sc_factor = self._clean(sc_df[SC_FACTOR_COL])
+        lookup = defaultdict(list)
+        for m, p, f in zip(sc_mat, sc_plant, sc_factor):
+            if m and p:
+                lookup[(m, p)].append(f)
+        self.sc_factor_lookup = dict(lookup)
+
     def _build_partmaster_lookup(self):
         """Builds {(material, plant): {procurement types}} from the Part master.
-        Leaves the lookup as None (rule skipped) if required columns are missing."""
+        Leaves the lookup as None (sub-rule (b) skipped) if required columns are missing."""
+        self.pm_proctype_col = next(
+            (c for c in PM_PROCTYPE_CANDIDATES if c in self.pm_df.columns), None
+        )
+
         ps_missing = [c for c in (PS_MATERIAL_COL, PS_PLANT_COL)
                       if c not in self.df.columns]
-        pm_missing = [c for c in (PM_MATERIAL_COL, PM_PLANT_COL, PM_PROCTYPE_COL)
+        pm_missing = [c for c in (PM_MATERIAL_COL, PM_PLANT_COL)
                       if c not in self.pm_df.columns]
+        if self.pm_proctype_col is None:
+            pm_missing.append("/".join(PM_PROCTYPE_CANDIDATES))
 
         if ps_missing or pm_missing:
             if ps_missing:
-                print(f"⚠️   MATERIAL_PROCUREMENTTYPE rule skipped — PartSource(Make) column(s) not found: {ps_missing}")
+                print(f"⚠️   MATERIAL sub-rule (b) skipped — PartSource(Make) column(s) not found: {ps_missing}")
             if pm_missing:
-                print(f"⚠️   MATERIAL_PROCUREMENTTYPE rule skipped — Part master column(s) not found: {pm_missing}")
+                print(f"⚠️   MATERIAL sub-rule (b) skipped — Part master column(s) not found: {pm_missing}")
             self.partmaster_lookup = None
             return
 
-        pm = self.pm_df[[PM_MATERIAL_COL, PM_PLANT_COL, PM_PROCTYPE_COL]].fillna("")
-        mats   = pm[PM_MATERIAL_COL].astype(str).str.strip()
-        plants = pm[PM_PLANT_COL].astype(str).str.strip()
-        ptypes = pm[PM_PROCTYPE_COL].astype(str).str.strip()
+        mats   = self._clean(self.pm_df[PM_MATERIAL_COL])
+        plants = self._clean(self.pm_df[PM_PLANT_COL])
+        ptypes = self._clean(self.pm_df[self.pm_proctype_col])
 
         lookup = defaultdict(set)
         for m, p, t in zip(mats, plants, ptypes):
@@ -310,27 +396,22 @@ class PartSourceMakeBusinessTableValidator:
 
     def validate(self):
         engine = PartSourceMakeBusinessRuleEngine(
-            self.valid_bom_combos, self.valid_sc_combos, self.partmaster_lookup
+            self.valid_bom_combos, self.valid_sc_combos,
+            self.partmaster_lookup, self.sc_factor_lookup
         )
 
         for idx, row in self.df.iterrows():
             try:
-                reasons = engine.validate_row(row)
+                reasons, material_subs = engine.validate_row(row)
             except Exception:
-                reasons = {}
+                reasons, material_subs = {}, []
 
             if reasons:
                 self.error_map[idx]  = list(reasons.keys())
                 self.reason_map[idx] = reasons
 
-                material_reason = reasons.get("MATERIAL", "")
-                if material_reason.startswith("MATERIAL: Blank field(s)"):
-                    self.material_blank_count += 1
-                elif material_reason:
-                    if "not found in BOM extract" in material_reason:
-                        self.material_not_in_bom_count += 1
-                    if "not found in Source Constraint extract" in material_reason:
-                        self.material_not_in_sc_count += 1
+                for sub in material_subs:
+                    self.material_sub_counts[sub] += 1
 
     def get_error_series(self) -> pd.Series:
         result = {}
@@ -362,26 +443,30 @@ class PartSourceMakeBusinessReportWriter:
     SHEET_RULES   = "Rules"
 
     RULES_CONTENT = {
-        "MAXIMUMLOTSIZE": [
-            "MAXIMUMLOTSIZE must be greater than 0.",
-        ],
-        "MINIMUMLOTSIZE": [
-            "MINIMUMLOTSIZE must be greater than 0.",
-        ],
-        "ROUNDINGVALUE": [
-            "ROUNDINGVALUE must be greater than 0.",
-        ],
+        # "MAXIMUMLOTSIZE": [
+        #     "MAXIMUMLOTSIZE must be greater than 0.",
+        # ],
+        # "MINIMUMLOTSIZE": [
+        #     "MINIMUMLOTSIZE must be greater than 0.",
+        # ],
+        # "ROUNDINGVALUE": [
+        #     "ROUNDINGVALUE must be greater than 0.",
+        # ],
         "MATERIAL": [
             "The MATERIAL / PLANT (Part-Site) combination must be present in the "
             "BOM extract as ROOT_MATERIAL / ROOT_PLANT.",
             "The MATERIAL / PLANT (Part-Site) combination must also be present in "
             "the Source Constraint extract as MATERIAL / MKALPLANT.",
+            "a) The Part-Site combination here should have CONSTRAINTFACTOR maintained "
+            "in the Source Constraint extract and it should not be zero.",
+            "b) The Part-Site combination here should have PROCUREMENTTYPE maintained "
+            f"as \"{REQUIRED_PROCUREMENT_TYPE}\" in the Part extract.",
         ],
-        "MATERIAL_PROCUREMENTTYPE": [
-            "For a Part-Site combination here (MATERIAL and PLANT columns in the "
-            "PartSource(Make) extract), the part-site's PROCUREMENTTYPE should be "
-            f"maintained as \"{REQUIRED_PROCUREMENT_TYPE}\" in the Part master.",
-        ],
+        # "MATERIAL_PROCUREMENTTYPE": [
+        #     "For a Part-Site combination here (MATERIAL and PLANT columns in the "
+        #     "PartSource(Make) extract), the part-site's PROCUREMENTTYPE should be "
+        #     f"maintained as \"{REQUIRED_PROCUREMENT_TYPE}\" in the Part master.",
+        # ],
     }
 
     def __init__(self, validator: PartSourceMakeBusinessTableValidator, output_path: str):
@@ -465,7 +550,9 @@ class PartSourceMakeBusinessReportWriter:
 
             if col_name == "MATERIAL":
                 reason_text = ("Blank / not found in BOM (ROOT_MATERIAL-ROOT_PLANT) / "
-                               "not found in Source Constraint (MATERIAL-MKALPLANT)") if has_errors else ""
+                               "not found in Source Constraint (MATERIAL-MKALPLANT) / "
+                               f"CONSTRAINTFACTOR not maintained or zero / "
+                               f"PROCUREMENTTYPE not '{REQUIRED_PROCUREMENT_TYPE}' in Part") if has_errors else ""
             else:
                 reason_text = FIELD_REASON.get(col_name, "") if has_errors else ""
 
@@ -484,15 +571,10 @@ class PartSourceMakeBusinessReportWriter:
             row_num += 1
             field_num += 1
 
-            # ── MATERIAL sub-rows: Blank / Not in BOM / Not in Source Constraint ──
+            # ── MATERIAL sub-rows ──
             if col_name == "MATERIAL":
-                sub_counts = {
-                    "Blank":                    v.material_blank_count,
-                    "Not in BOM":               v.material_not_in_bom_count,
-                    "Not in Source Constraint": v.material_not_in_sc_count,
-                }
                 for sub_label in MATERIAL_SUB_CATEGORIES:
-                    sub_count      = sub_counts.get(sub_label, 0)
+                    sub_count      = v.material_sub_counts.get(sub_label, 0)
                     sub_pct_error  = round((sub_count / total_rows) * 100, 2) if total_rows else 0
                     sub_pct_health = round(100 - sub_pct_error, 2)
 
@@ -553,7 +635,7 @@ class PartSourceMakeBusinessReportWriter:
             row_num += 1
 
         # ── Column widths ──
-        col_widths = [6, 42, 14, 16, 12, 12, 70]
+        col_widths = [6, 48, 14, 16, 12, 12, 90]
         for c_idx, width in enumerate(col_widths, start=1):
             ws.column_dimensions[get_column_letter(c_idx)].width = width
 
@@ -580,10 +662,8 @@ class PartSourceMakeBusinessReportWriter:
             self._write_header(ws, subset.columns)
             col_idx_map = {col: i for i, col in enumerate(subset.columns, start=1)}
 
-            # Fields to highlight per sheet: MATERIAL and MATERIAL_PROCUREMENTTYPE sheets
-            # highlight MATERIAL + PLANT (the Part-Site combo); numeric sheets highlight
-            # just themselves.
-            if field_name in ("MATERIAL", "MATERIAL_PROCUREMENTTYPE"):
+            # MATERIAL sheet highlights MATERIAL + PLANT (the Part-Site combo)
+            if field_name == "MATERIAL":
                 highlight_cols = (PS_MATERIAL_COL, PS_PLANT_COL)
             else:
                 highlight_cols = (field_name,)
@@ -669,7 +749,7 @@ class PartSourceMakeBusinessReportWriter:
 
         ws.column_dimensions["A"].width = 6
         ws.column_dimensions["B"].width = 45
-        ws.column_dimensions["C"].width = 90
+        ws.column_dimensions["C"].width = 100
 
     # ── Main write ────────────────────────────
     def write(self):
@@ -696,12 +776,11 @@ class PartSourceMakeBusinessReportWriter:
 
         fields_with_errors = [f for f in FIELD_ORDER if f in v.get_errors_by_field()]
         print(f"\n✅  Output saved  → {self.output_path}")
-        print(f"   Total rows                       : {len(df)}")
-        print(f"   Error rows                       : {len(v.error_map)}")
-        print(f"     MATERIAL - Blank                : {v.material_blank_count}")
-        print(f"     MATERIAL - Not in BOM            : {v.material_not_in_bom_count}")
-        print(f"     MATERIAL - Not in Source Constr. : {v.material_not_in_sc_count}")
-        print(f"   Field sheets                      : {fields_with_errors}")
+        print(f"   Total rows                          : {len(df)}")
+        print(f"   Error rows                          : {len(v.error_map)}")
+        for sub_label in MATERIAL_SUB_CATEGORIES:
+            print(f"     MATERIAL - {sub_label:<38}: {v.material_sub_counts[sub_label]}")
+        print(f"   Field sheets                        : {fields_with_errors}")
 
 
 # ══════════════════════════════════════════════
@@ -722,6 +801,8 @@ class PartSourceMakeBusinessTableProcessor:
         print(f"    PartSource(Make) columns detected : {list(self.validator.df.columns)}")
         print(f"    Valid BOM Part-Site combinations   : {len(self.validator.valid_bom_combos)}")
         print(f"    Valid SourceConstraint combinations: {len(self.validator.valid_sc_combos)}")
+        if self.validator.sc_factor_lookup is not None:
+            print(f"    Source Constraint factor lookup    : {len(self.validator.sc_factor_lookup)}")
         if self.validator.partmaster_lookup is not None:
             print(f"    Part master Part-Site combinations : {len(self.validator.partmaster_lookup)}")
         print("🔍  Validating business rules …")
