@@ -1,268 +1,447 @@
+"""
+PRODUCTHIERARCHY (FG) - Excel Data Validation Tool
+Validates fields (for ALL material types) and generates a formatted Excel report.
+"""
+
+import math
+import os
+from collections import defaultdict
+from typing import Optional
+
 import pandas as pd
-from openpyxl import Workbook
+import openpyxl
 from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
-from collections import defaultdict
 
 
 # ─────────────────────────────────────────────
-#  FILE PATHS
+#  FILE PATHS  –  update these
 # ─────────────────────────────────────────────
-INPUT_FILE  = r"C:\Users\SW526XH\Downloads\Go Live-1\ProductH\ProductHierarchy_2026-05-06-1313.tab"
-OUTPUT_FILE = r"C:\Users\SW526XH\Downloads\Go Live-1\ProductH\ProductHierarchy_Business_Rules.xlsx"
+INPUT_FILE  = r"C:\Users\SW526XH\Downloads\Go Live-1\ProductH\ProductHierarchy_Without_Z3_Materials.tab"
+OUTPUT_FILE = r"C:\Users\SW526XH\Downloads\Go Live-1\ProductH\Validated_Product Hierarchy_Technical.xlsx"
 
+# ─────────────────────────────────────────────
+#  CONSTANTS & CONFIGURATION
+# ─────────────────────────────────────────────
 
-# ─────────────────────────────────────────────
-#  PARENT-CHILD PAIR DEFINITIONS
-#  Rule: one child value must map to exactly one unique parent value.
-#  Tuple order: (parent_col, child_col)
-# ─────────────────────────────────────────────
-PARENT_CHILD_PAIRS = [
-    ("CATEGORYDESCRIPTION",    "PRODUCTDESCRIPTION"),
-    ("PRODUCTDESCRIPTION",     "VARIANTDESCRIPTION"),
-    ("VARIANTDESCRIPTION",     "BRANDDESCRIPTION"),
-    ("BRANDDESCRIPTION",       "SUBBRANDDESCRIPTION"),
-    ("SUBBRANDDESCRIPTION",    "BRANDVARIANTDESCRIPTION"),
-    ("BRANDVARIANTDESCRIPTION","PACKSIZEDESCRIPTION"),
-    ("PACKSIZEDESCRIPTION",    "MARKETSKUDESCRIPTION"),
-    ("MARKETSKUDESCRIPTION",   "MATERIALNUMBER"),
+# IBPSTATUS: allowed values are IBP, IBP EXP or blank (compared case-insensitively)
+VALID_IBP_STATUSES = {"IBP", "IBP EXP"}
+
+# Fields that must not be blank
+NOT_BLANK_FIELDS = [
+    "MATERIALNUMBER", "MATERIALDESCRIPTION", "PRODUCTGROUP", "MATLGRPDESC",
+    "DIVISION", "DIVISIONDESCRIPTION", "PRODUCTTYPE",
+    "CATEGORY", "CATEGORYDESCRIPTION", "PRODUCT", "PRODUCTDESCRIPTION",
+    "VARIANT", "VARIANTDESCRIPTION", "BRAND", "BRANDDESCRIPTION",
+    "SUBBRAND", "SUBBRANDDESCRIPTION", "BRANDVARIANT", "BRANDVARIANTDESCRIPTION",
+    "PACKSIZE", "PACKSIZEDESCRIPTION", "MARKETSKU", "MARKETSKUDESCRIPTION",
+    "SUPPLY_FAMILY",
 ]
 
-# Sheet name for each pair  (Excel max 31 chars)
-def _sheet_name(parent_col: str, child_col: str) -> str:
-    raw = f"{child_col}__{parent_col}"
-    return raw[:31]
+# Fields that must be a number greater than 0 (blank / non-numeric also fail)
+POSITIVE_FIELDS = ["NETWEIGHT", "GROSSWEIGHT", "LENGTH", "WIDTH", "HEIGHT"]
 
-# Reason text per pair
-def _reason(parent_col: str, child_col: str) -> str:
-    return (
-        f"{child_col}: mapped to multiple {parent_col} values — "
-        f"one {child_col} must map to exactly one {parent_col}"
-    )
+# Canonical duplicate-check label (single source of truth)
+DUPLICATE_SUMMARY_LABEL = "Duplicate value found in PRODUCT column"
 
-# Rules sheet description lines per pair
-def _rule_lines(parent_col: str, child_col: str) -> list:
-    return [
-        f"Each unique {child_col} value must map to exactly one {parent_col} value.",
-        f"All rows where {child_col} appears with more than one distinct {parent_col} are flagged.",
-        f"Both the {parent_col} and {child_col} cells are highlighted in red.",
-    ]
+# GROSSWEIGHT has two sub rules: (1) > 0  and  (2) >= NETWEIGHT
+GW_VS_NET_REASON = "GROSSWEIGHT: must be >= NETWEIGHT."
 
+# Defines ALL fields that appear in the Summary (order matters).
+ALL_SUMMARY_FIELDS = (
+    NOT_BLANK_FIELDS + POSITIVE_FIELDS + ["MATERIALTYPE", "IBPSTATUS", "DUPLICATE_CHECK"]
+)
+
+RULES_CONTENT = {
+    **{f: ["Must not be blank."] for f in NOT_BLANK_FIELDS},
+    **{f: ["Field must be greater than 0."] for f in POSITIVE_FIELDS},
+    "GROSSWEIGHT": [
+        "Field must be greater than 0.",
+        "GROSSWEIGHT must be >= NETWEIGHT.",
+    ],
+    "MATERIALTYPE": [
+        "Must not be blank.",
+    ],
+    "IBPSTATUS": [
+        "Allowed values: IBP, IBP EXP or blank.",
+        "Any other value is treated as an error.",
+    ],
+    "DUPLICATE_CHECK": [
+        "The PRODUCT column must not contain duplicate values across the extract.",
+    ],
+}
+
+# Centralised reason messages (matches what the Summary Reason column shows)
+FIELD_REASON_MAP = {
+    **{f: f"{f}: is blank." for f in NOT_BLANK_FIELDS},
+    **{f: f"{f}: must be greater than 0." for f in POSITIVE_FIELDS},
+    "MATERIALTYPE":    "MATERIALTYPE: is blank.",
+    "IBPSTATUS":       "IBPSTATUS: Invalid value - must be 'IBP', 'IBP EXP' or blank.",
+    "DUPLICATE_CHECK": DUPLICATE_SUMMARY_LABEL,
+}
+
+# Summary sub-rows:  field -> [(label, key, reason shown in Summary, substring marker in row reason)]
+SUB_ROW_DEFS = {
+    "GROSSWEIGHT": [
+        ("  ↳ Not greater than 0", "gw_positive",
+         FIELD_REASON_MAP["GROSSWEIGHT"],
+         "must be greater than 0"),
+        ("  ↳ Less than NETWEIGHT", "gw_vs_net",
+         GW_VS_NET_REASON,
+         "must be >= NETWEIGHT"),
+    ],
+}
 
 # ─────────────────────────────────────────────
-#  STYLING CONSTANTS  (identical across all scripts)
+#  Colours
 # ─────────────────────────────────────────────
-RED_FILL   = PatternFill("solid", fgColor="FF0000")
-ROW_FILL   = PatternFill("solid", fgColor="FFF2CC")
-HDR_FILL   = PatternFill("solid", fgColor="D9E1F2")
-RULE_FILL  = PatternFill("solid", fgColor="E2EFDA")
-TITLE_FILL = PatternFill("solid", fgColor="BDD7EE")
-TOTAL_FILL = PatternFill("solid", fgColor="F2F2F2")
-WHITE_FILL = PatternFill("solid", fgColor="FFFFFF")
-STATS_FILL = PatternFill("solid", fgColor="EDEDED")
+RED_FILL       = PatternFill("solid", start_color="FF0000", end_color="FF0000")
+ROW_ERROR_FILL = PatternFill("solid", start_color="FFF2CC", end_color="FFF2CC")
+HDR_FILL       = PatternFill("solid", start_color="D9E1F2", end_color="D9E1F2")
+RULE_FILL      = PatternFill("solid", start_color="E2EFDA", end_color="E2EFDA")
+TITLE_FILL     = PatternFill("solid", start_color="BDD7EE", end_color="BDD7EE")
+WHITE_FILL     = PatternFill("solid", start_color="FFFFFF", end_color="FFFFFF")
+TOTAL_FILL     = PatternFill("solid", start_color="F2F2F2", end_color="F2F2F2")
+STATS_FILL     = PatternFill("solid", start_color="EDEDED", end_color="EDEDED")
 
-HDR_FONT  = Font(bold=True, name="Arial")
-BODY_FONT = Font(name="Arial", size=10)
-ERR_FONT  = Font(name="Arial", size=10, bold=True, color="FFFFFF")
-
+HDR_FONT    = Font(bold=True, name="Arial")
+BODY_FONT   = Font(name="Arial", size=10)
+ERR_FONT    = Font(name="Arial", size=10, bold=True, color="FFFFFF")
 THIN_BORDER = Border(
     left=Side(style="thin"), right=Side(style="thin"),
     top=Side(style="thin"),  bottom=Side(style="thin"),
 )
 
 
-# ══════════════════════════════════════════════
-#  Rule Engine
-# ══════════════════════════════════════════════
-class PHBusinessRuleEngine:
+# ─────────────────────────────────────────────
+#  HELPER UTILITIES
+# ─────────────────────────────────────────────
+
+def is_blank(value) -> bool:
+    if value is None:
+        return True
+    if isinstance(value, float):
+        return math.isnan(value)
+    return str(value).strip() == ""
+
+
+def to_float(value) -> Optional[float]:
+    """Return the value as a float, or None if blank / not numeric."""
+    if is_blank(value):
+        return None
+    try:
+        num = float(str(value).strip())
+    except (ValueError, TypeError):
+        return None
+    if math.isnan(num):
+        return None
+    return num
+
+
+def style_header_row(ws, row: int, num_cols: int):
+    for col in range(1, num_cols + 1):
+        cell           = ws.cell(row=row, column=col)
+        cell.fill      = HDR_FILL
+        cell.font      = HDR_FONT
+        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        cell.border    = THIN_BORDER
+
+
+def auto_width(ws, min_w=10, max_w=60):
+    for col in ws.columns:
+        length = max((len(str(c.value)) if c.value else 0) for c in col)
+        ws.column_dimensions[get_column_letter(col[0].column)].width = min(max(length + 3, min_w), max_w)
+
+
+# ─────────────────────────────────────────────
+#  VALIDATION ENGINE
+# ─────────────────────────────────────────────
+
+class FieldValidator:
+    def __init__(self, field: str, rule_description: str):
+        self.field            = field
+        self.rule_description = rule_description
+
+    def validate(self, row: pd.Series) -> Optional[str]:
+        raise NotImplementedError
+
+
+class NotBlankValidator(FieldValidator):
+    """Field must not be blank (all material types)."""
+    def validate(self, row: pd.Series) -> Optional[str]:
+        if is_blank(row.get(self.field)):
+            return FIELD_REASON_MAP.get(self.field, f"{self.field}: is blank.")
+        return None
+
+
+class PositiveNumberValidator(FieldValidator):
+    """Field must be a number > 0. Blank and non-numeric values fail."""
+    def validate(self, row: pd.Series) -> Optional[str]:
+        num = to_float(row.get(self.field))
+        if num is None or num <= 0:
+            return FIELD_REASON_MAP[self.field]
+        return None
+
+
+class MaterialTypeValidator(FieldValidator):
+    def validate(self, row: pd.Series) -> Optional[str]:
+        if is_blank(row.get("MATERIALTYPE", "")):
+            return FIELD_REASON_MAP["MATERIALTYPE"]
+        return None
+
+
+class IBPStatusValidator(FieldValidator):
+    """IBPSTATUS must be IBP, IBP EXP or blank."""
+    def validate(self, row: pd.Series) -> Optional[str]:
+        raw = row.get("IBPSTATUS", "")
+        if is_blank(raw):
+            return None
+        if str(raw).strip().upper() not in VALID_IBP_STATUSES:
+            return FIELD_REASON_MAP["IBPSTATUS"]
+        return None
+
+
+class GrossWeightVsNetWeightValidator(FieldValidator):
     """
-    For each parent-child pair, builds child → set(distinct parents) map.
-    Any child with more than one distinct parent is a violation.
-    ALL rows in the violating group are flagged (keep=False logic).
-
-    Returns:
-        pc_error_map : dict
-            {
-              (parent_col, child_col) : {
-                  row_index : reason_string,
-                  ...
-              }
-            }
+    GROSSWEIGHT must be >= NETWEIGHT.
+    Only evaluated when both values are valid numbers; a blank / non-numeric
+    value is already reported by that field's own '> 0' rule.
     """
+    def validate(self, row: pd.Series) -> Optional[str]:
+        gross = to_float(row.get("GROSSWEIGHT"))
+        net   = to_float(row.get("NETWEIGHT"))
+        if gross is None or net is None:
+            return None
+        if gross < net:
+            return GW_VS_NET_REASON
+        return None
 
-    @staticmethod
-    def _is_blank(value) -> bool:
-        if value is None:
-            return True
-        try:
-            import math
-            if math.isnan(float(value)):
-                return True
-        except (TypeError, ValueError):
-            pass
-        return str(value).strip() == ""
 
-    def run(self, df: pd.DataFrame) -> dict:
-        pc_error_map: dict = {}
+# ─────────────────────────────────────────────
+#  VALIDATION ORCHESTRATOR
+# ─────────────────────────────────────────────
 
-        for parent_col, child_col in PARENT_CHILD_PAIRS:
-            if parent_col not in df.columns or child_col not in df.columns:
+class ProductHierarchyValidator:
+
+    def __init__(self):
+        self.validators: list[FieldValidator] = self._build_validators()
+        # Populated by _precompute_duplicates(); stores row indices that are dups
+        self._duplicate_indices: set = set()
+
+    def _build_validators(self) -> list[FieldValidator]:
+        validators = [
+            NotBlankValidator(f, "Field must not be blank")
+            for f in NOT_BLANK_FIELDS
+        ]
+        validators += [
+            PositiveNumberValidator(f, "Field must be greater than 0")
+            for f in POSITIVE_FIELDS
+        ]
+        validators.append(MaterialTypeValidator("MATERIALTYPE", "Field must not be blank"))
+        validators.append(IBPStatusValidator("IBPSTATUS", "Field values must be 'IBP', 'IBP EXP' or blank"))
+        validators.append(GrossWeightVsNetWeightValidator("GROSSWEIGHT", "GROSSWEIGHT must be >= NETWEIGHT"))
+
+        # NOTE: DUPLICATE_CHECK is handled separately (needs the full DataFrame context)
+        return validators
+
+    def _precompute_duplicates(self, df: pd.DataFrame):
+        """
+        Find every row where the MATERIALNUMBER value appears more than once.
+        All occurrences (not just the second) are flagged.
+        """
+        self._duplicate_indices = set()
+
+        if "MATERIALNUMBER" not in df.columns:
+            return
+
+        seen: dict = {}
+        for idx, row in df.iterrows():
+            materialnumber = row.get("MATERIALNUMBER", "")
+            if is_blank(materialnumber):
                 continue
+            seen.setdefault(str(materialnumber).strip(), []).append(idx)
 
-            # Build child → set of unique non-blank parent values
-            child_to_parents: dict[str, set] = defaultdict(set)
-            for _, row in df.iterrows():
-                p_val = str(row[parent_col]).strip() if not self._is_blank(row[parent_col]) else ""
-                c_val = str(row[child_col]).strip()  if not self._is_blank(row[child_col])  else ""
-                if c_val and p_val:
-                    child_to_parents[c_val].add(p_val)
+        for indices in seen.values():
+            if len(indices) > 1:
+                self._duplicate_indices.update(indices)
 
-            # Children that map to more than one parent
-            violating_children = {
-                c for c, parents in child_to_parents.items() if len(parents) > 1
-            }
+    def validate_row(self, row: pd.Series) -> list[str]:
+        errors = []
+        for v in self.validators:
+            if v.field in row.index or v.field in ("MATERIALTYPE", "IBPSTATUS"):
+                result = v.validate(row)
+                if result:
+                    errors.append(result)
+        return errors
 
-            if not violating_children:
+    def validate_dataframe(self, df: pd.DataFrame) -> pd.DataFrame:
+        df = df.copy()
+        df.columns = df.columns.str.strip().str.upper()
+
+        # All material types are validated (no FERT / HAWA filter)
+        df["MATERIALTYPE"] = df["MATERIALTYPE"].fillna("").str.strip().str.upper()
+
+        # Pre-compute duplicate rows across the extract
+        self._precompute_duplicates(df)
+        print(f"    Duplicate MATERIALNUMBER rows: {len(self._duplicate_indices)}")
+
+        error_list        = []
+        error_fields_list = []
+        error_detail_list = []
+
+        for idx, row in df.iterrows():
+            row_errors = self.validate_row(row)
+
+            # Duplicate check — appended as an extra error when applicable
+            if idx in self._duplicate_indices:
+                row_errors.append(DUPLICATE_SUMMARY_LABEL)
+
+            error_list.append(" | ".join(row_errors) if row_errors else "")
+
+            fields_in_error = set()
+            field_msgs: dict = {}
+
+            for e in row_errors:
+                # DUPLICATE_CHECK errors don't follow the "FIELD: reason" pattern,
+                # so they are keyed directly.
+                if e == DUPLICATE_SUMMARY_LABEL:
+                    field = "DUPLICATE_CHECK"
+                else:
+                    field = e.split(":")[0].strip()
+                fields_in_error.add(field)
+                field_msgs.setdefault(field, []).append(e)
+
+            # A field can fail more than one sub rule (e.g. GROSSWEIGHT) – keep all reasons
+            field_reason = {f: " | ".join(msgs) for f, msgs in field_msgs.items()}
+
+            error_fields_list.append(fields_in_error)
+            error_detail_list.append(field_reason)
+
+        df["ERROR_COLUMNS"] = error_list
+        df["_ERROR_FIELDS"] = error_fields_list
+        df["_ERROR_DETAIL"] = error_detail_list
+
+        return df
+
+
+# ─────────────────────────────────────────────
+#  EXCEL REPORT BUILDER
+# ─────────────────────────────────────────────
+
+class ExcelReportBuilder:
+
+    def __init__(self, df_validated: pd.DataFrame, output_path: str):
+        self.df           = df_validated
+        self.output       = output_path
+        self.wb           = openpyxl.Workbook()
+        self.wb.remove(self.wb.active)
+
+        self.error_df     = df_validated[df_validated["ERROR_COLUMNS"] != ""].copy()
+        self.error_fields = df_validated["_ERROR_FIELDS"]
+        self.error_detail = df_validated["_ERROR_DETAIL"]
+
+    def build(self):
+        self._write_main_sheet()
+        self._write_summary_sheet()
+        self._write_ruleset_sheet()
+        self._write_per_field_error_sheets()
+        self.wb.save(self.output)
+        print(f"\n✅  Report saved → {self.output}")
+
+    # ── Sub-count helper (substring based) ──
+    def _get_field_subcounts(self, field_name: str) -> dict:
+        defs   = SUB_ROW_DEFS.get(field_name, [])
+        counts = {key: 0 for _, key, _, _ in defs}
+        for detail in self.error_detail:
+            reason = detail.get(field_name, "")
+            if not reason:
                 continue
+            for _, key, _, marker in defs:
+                if marker in reason:
+                    counts[key] += 1
+        return counts
 
-            pair_errors: dict = {}
-            reason_text = _reason(parent_col, child_col)
+    # ── Sheet 1: PRODUCTHIERARCHY_FG ────────────────────
 
-            for idx, row in df.iterrows():
-                c_val = str(row[child_col]).strip() if not self._is_blank(row[child_col]) else ""
-                if c_val in violating_children:
-                    pair_errors[idx] = reason_text
+    def _write_main_sheet(self):
+        ws         = self.wb.create_sheet("PRODUCTHIERARCHY_FG")
+        display_df = self.df.drop(columns=["_ERROR_FIELDS", "_ERROR_DETAIL"])
+        headers    = list(display_df.columns)
 
-            if pair_errors:
-                pc_error_map[(parent_col, child_col)] = pair_errors
+        ws.append(headers)
+        style_header_row(ws, 1, len(headers))
+        ws.freeze_panes = "A2"
 
-        return pc_error_map
+        for r_idx, (_, row) in enumerate(display_df.iterrows(), start=2):
+            has_error      = bool(self.error_fields.iloc[r_idx - 2])
+            errored_fields = self.error_fields.iloc[r_idx - 2]
 
+            for c_idx, col in enumerate(headers, start=1):
+                cell           = ws.cell(row=r_idx, column=c_idx, value=row[col])
+                cell.font      = BODY_FONT
+                cell.border    = THIN_BORDER
+                cell.alignment = Alignment(horizontal="center", vertical="center")
 
-# ══════════════════════════════════════════════
-#  Validator
-# ══════════════════════════════════════════════
-class PHBusinessValidator:
+                if col in errored_fields:
+                    cell.fill = RED_FILL
+                    cell.font = ERR_FONT
+                elif has_error:
+                    cell.fill = ROW_ERROR_FILL
+                else:
+                    cell.fill = WHITE_FILL
 
-    def __init__(self, filepath: str):
-        self.filepath     = filepath
-        self.df           = pd.DataFrame()
-        self.pc_error_map = {}   # { (parent_col, child_col) : { row_idx : reason } }
-
-    def load(self):
-        path = self.filepath.lower()
-        if path.endswith(".csv"):
-            self.df = pd.read_csv(self.filepath, dtype=str)
-        elif path.endswith(".tab") or path.endswith(".tsv"):
-            self.df = pd.read_csv(
-                self.filepath,
-                sep="\t",
-                dtype=str,
-                encoding="latin-1",
-                engine="python",
-            )
-        elif path.endswith(".xlsx") or path.endswith(".xls"):
-            self.df = pd.read_excel(self.filepath, dtype=str, engine="openpyxl")
-        else:
-            raise ValueError(f"Unsupported file format: {self.filepath}")
-
-        self.df.columns = [c.strip().upper() for c in self.df.columns]
-
-    def validate(self):
-        engine            = PHBusinessRuleEngine()
-        self.pc_error_map = engine.run(self.df)
-
-    # Convenience: all row indices that have at least one PC error
-    def all_error_indices(self) -> set:
-        indices = set()
-        for pair_errors in self.pc_error_map.values():
-            indices.update(pair_errors.keys())
-        return indices
-
-
-# ══════════════════════════════════════════════
-#  Report Writer
-# ══════════════════════════════════════════════
-class PHBusinessReportWriter:
-
-    SHEET_SUMMARY = "Summary"
-    SHEET_RULES   = "Rules"
-
-    def __init__(self, validator: PHBusinessValidator, output_path: str):
-        self.validator   = validator
-        self.output_path = output_path
-
-    # ── Helpers ──────────────────────────────
-    def _write_header(self, ws, columns):
-        for c_idx, col_name in enumerate(columns, start=1):
-            cell           = ws.cell(row=1, column=c_idx, value=col_name)
-            cell.fill      = HDR_FILL
-            cell.font      = HDR_FONT
-            cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
-            cell.border    = THIN_BORDER
+        auto_width(ws)
         ws.row_dimensions[1].height = 30
 
-    def _auto_width(self, ws, min_w=10, max_w=60):
-        for col in ws.columns:
-            length = max((len(str(c.value)) if c.value else 0) for c in col)
-            ws.column_dimensions[get_column_letter(col[0].column)].width = min(
-                max(length + 3, min_w), max_w
-            )
+    # ── Sheet 2: Summary ─────────────────────────────────
 
-    def _safe_sheet_name(self, wb, name: str) -> str:
-        name     = name[:31]
-        existing = [s.title for s in wb.worksheets]
-        base     = name
-        counter  = 1
-        while name in existing:
-            name = f"{base[:28]}_{counter}"
-            counter += 1
-        return name
+    def _write_summary_sheet(self):
+        ws = self.wb.create_sheet("Summary")
 
-    # ── Summary Sheet ─────────────────────────
-    def _write_summary_sheet(self, wb):
-        ws         = wb.create_sheet(self.SHEET_SUMMARY)
-        v          = self.validator
-        total_rows = len(v.df)
+        total_rows          = len(self.df)
+        records_with_errors = len(self.error_df)
+        records_passing     = total_rows - records_with_errors
+
+        # Build per-field error counts from validated data
+        field_counts: dict[str, int] = defaultdict(int)
+        for fields_set in self.error_fields:
+            for f in fields_set:
+                field_counts[f] += 1
 
         # ── Title ──
         ws.merge_cells("A1:G1")
-        tc           = ws.cell(row=1, column=1,
-                               value="Product Hierarchy – Business Rules Validation Summary")
-        tc.font      = Font(name="Arial", bold=True, size=14)
-        tc.fill      = TITLE_FILL
-        tc.alignment = Alignment(horizontal="left", vertical="center")
-        ws.row_dimensions[1].height = 26
+        title_cell           = ws.cell(row=1, column=1, value="ProductHierarchy FG Validation Summary")
+        title_cell.font      = Font(name="Arial", bold=True, size=14)
+        title_cell.fill      = TITLE_FILL
+        title_cell.alignment = Alignment(horizontal="center", vertical="center")
+        ws.row_dimensions[1].height = 24
 
         # ── Column headers ──
-        headers = ["#", "Parent → Child Pair", "Error Count", "Record Count",
-                   "% Health", "% of Error", "Reason"]
+        headers = ["#", "Field Name", "Error Count", "Record Count", "% Health", "% of Error", "Reason"]
         for c_idx, h in enumerate(headers, start=1):
             cell           = ws.cell(row=2, column=c_idx, value=h)
             cell.fill      = TITLE_FILL
-            cell.font      = Font(name="Arial", bold=True, size=10)
+            cell.font      = Font(name="Arial", bold=True)
             cell.border    = THIN_BORDER
-            cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
-        ws.row_dimensions[2].height = 30
+            cell.alignment = Alignment(horizontal="center", vertical="center")
 
-        row_num    = 3
-        rule_num   = 1
-        all_counts = []
-
-        # One data row per PC pair (only pairs defined in PARENT_CHILD_PAIRS, in order)
-        for parent_col, child_col in PARENT_CHILD_PAIRS:
-            pair_errors = v.pc_error_map.get((parent_col, child_col), {})
-            count       = len(pair_errors)
-            all_counts.append(count)
-
+        # ── Per-field data rows: ALL fields always written ──
+        row_num = 3
+        for field_num, col_name in enumerate(ALL_SUMMARY_FIELDS, start=1):
+            count      = field_counts.get(col_name, 0)
             pct_error  = round((count / total_rows) * 100, 2) if total_rows else 0
             pct_health = round(100 - pct_error, 2)
-            reason     = _reason(parent_col, child_col) if count > 0 else ""
 
-            label = f"{parent_col}  →  {child_col}"
+            has_sub_rows = col_name in SUB_ROW_DEFS
 
-            ws.cell(row=row_num, column=1, value=rule_num)
-            ws.cell(row=row_num, column=2, value=label)
+            # Fields with sub-rows show their reasons on the sub-rows instead
+            if count > 0 and not has_sub_rows:
+                reason = FIELD_REASON_MAP.get(col_name, f"{col_name}: is blank.")
+            else:
+                reason = ""
+
+            ws.cell(row=row_num, column=1, value=field_num)
+            ws.cell(row=row_num, column=2, value=col_name)
             ws.cell(row=row_num, column=3, value=count)
             ws.cell(row=row_num, column=4, value=total_rows)
             ws.cell(row=row_num, column=5, value=f"{pct_health}%")
@@ -270,22 +449,49 @@ class PHBusinessReportWriter:
             ws.cell(row=row_num, column=7, value=reason)
 
             for c in range(1, 8):
-                cell           = ws.cell(row=row_num, column=c)
-                cell.font      = BODY_FONT
-                cell.fill      = WHITE_FILL
-                cell.border    = THIN_BORDER
-                cell.alignment = Alignment(
-                    horizontal="left" if c in (2, 7) else "center",
-                    vertical="center",
-                    wrap_text=(c == 7),
+                cell        = ws.cell(row=row_num, column=c)
+                cell.font   = BODY_FONT
+                cell.border = THIN_BORDER
+                cell.alignment = (
+                    Alignment(horizontal="left", vertical="center", wrap_text=True)
+                    if c == 7
+                    else Alignment(horizontal="center", vertical="center")
                 )
 
-            row_num  += 1
-            rule_num += 1
+            row_num += 1
+
+            # ── Sub-rows (multi-rule fields, shown only when the field has errors) ──
+            if has_sub_rows and count > 0:
+                subcounts = self._get_field_subcounts(col_name)
+                for sub_label, sub_key, sub_reason, _marker in SUB_ROW_DEFS[col_name]:
+                    sub_count      = subcounts.get(sub_key, 0)
+                    sub_pct_err    = round((sub_count / total_rows) * 100, 2) if total_rows else 0
+                    sub_pct_health = round(100 - sub_pct_err, 2)
+
+                    ws.cell(row=row_num, column=1, value="")
+                    ws.cell(row=row_num, column=2, value=sub_label)
+                    ws.cell(row=row_num, column=3, value=sub_count)
+                    ws.cell(row=row_num, column=4, value=total_rows)
+                    ws.cell(row=row_num, column=5, value=f"{sub_pct_health}%")
+                    ws.cell(row=row_num, column=6, value=f"{sub_pct_err}%")
+                    ws.cell(row=row_num, column=7, value=sub_reason)
+
+                    for c in range(1, 8):
+                        cell        = ws.cell(row=row_num, column=c)
+                        cell.font   = Font(name="Arial", size=10, italic=True)
+                        cell.border = THIN_BORDER
+                        if c == 2:
+                            cell.alignment = Alignment(horizontal="left", vertical="center", indent=1)
+                        elif c == 7:
+                            cell.alignment = Alignment(horizontal="left", vertical="center", wrap_text=True)
+                        else:
+                            cell.alignment = Alignment(horizontal="center", vertical="center")
+
+                    row_num += 1
 
         # ── TOTAL row ──
-        total_errors       = sum(all_counts)
-        total_record_count = total_rows * len(PARENT_CHILD_PAIRS)
+        total_errors       = sum(field_counts.values())
+        total_record_count = total_rows * len(ALL_SUMMARY_FIELDS)
         total_pct_error    = round((total_errors / total_record_count) * 100, 2) if total_record_count else 0
         total_pct_health   = round(100 - total_pct_error, 2)
 
@@ -295,7 +501,7 @@ class PHBusinessReportWriter:
             start=1,
         ):
             cell           = ws.cell(row=row_num, column=c_idx, value=val)
-            cell.font      = Font(name="Arial", bold=True, size=10)
+            cell.font      = Font(name="Arial", bold=True)
             cell.fill      = TOTAL_FILL
             cell.border    = THIN_BORDER
             cell.alignment = Alignment(horizontal="center", vertical="center")
@@ -303,216 +509,204 @@ class PHBusinessReportWriter:
         row_num += 2
 
         # ── Stats block ──
-        all_error_indices   = v.all_error_indices()
-        records_with_errors = len(all_error_indices)
-        records_passing     = total_rows - records_with_errors
-
         for label, value in [
             ("Total Records:",       total_rows),
             ("Records with Errors:", records_with_errors),
             ("Records Passing:",     records_passing),
         ]:
-            ws.merge_cells(start_row=row_num, start_column=1,
-                           end_row=row_num, end_column=2)
-            lc           = ws.cell(row=row_num, column=1, value=label)
-            lc.font      = Font(name="Arial", bold=True, size=10)
-            lc.fill      = STATS_FILL
-            lc.border    = THIN_BORDER
-            lc.alignment = Alignment(horizontal="left", vertical="center")
+            ws.merge_cells(start_row=row_num, start_column=1, end_row=row_num, end_column=2)
+            label_cell           = ws.cell(row=row_num, column=1, value=label)
+            label_cell.font      = Font(name="Arial", bold=True, size=10)
+            label_cell.fill      = STATS_FILL
+            label_cell.border    = THIN_BORDER
+            label_cell.alignment = Alignment(horizontal="left", vertical="center")
 
-            vc           = ws.cell(row=row_num, column=3, value=value)
-            vc.font      = BODY_FONT
-            vc.border    = THIN_BORDER
-            vc.alignment = Alignment(horizontal="center", vertical="center")
+            value_cell           = ws.cell(row=row_num, column=3, value=value)
+            value_cell.font      = BODY_FONT
+            value_cell.border    = THIN_BORDER
+            value_cell.alignment = Alignment(horizontal="center", vertical="center")
+
             row_num += 1
 
-        # ── Column widths ──
-        col_widths = [6, 55, 14, 16, 12, 12, 75]
-        for c_idx, width in enumerate(col_widths, start=1):
-            ws.column_dimensions[get_column_letter(c_idx)].width = width
+        auto_width(ws, min_w=8, max_w=70)
 
-    # ── Rules Sheet ───────────────────────────
-    def _write_rules_sheet(self, wb):
-        ws = wb.create_sheet(self.SHEET_RULES)
+    # ── Sheet 3: Rule_Set ────────────────────────────────
+
+    def _write_ruleset_sheet(self):
+        ws = self.wb.create_sheet("Rule_Set")
 
         ws.merge_cells("A1:C1")
-        tc           = ws.cell(row=1, column=1,
-                               value="Product Hierarchy – Business Validation Rules")
-        tc.font      = Font(name="Arial", bold=True, size=13)
-        tc.fill      = TITLE_FILL
-        tc.alignment = Alignment(horizontal="center", vertical="center")
+        title_cell           = ws.cell(row=1, column=1, value="ProductHierarchy FG – Validation Rules")
+        title_cell.font      = Font(name="Arial", bold=True, size=13)
+        title_cell.fill      = TITLE_FILL
+        title_cell.alignment = Alignment(horizontal="center")
         ws.row_dimensions[1].height = 22
 
-        # Sub-title explaining the main rule
-        ws.merge_cells("A2:C2")
-        sc           = ws.cell(row=2, column=1,
-                               value="Main Rule: Each child value must map to exactly one parent value. "
-                                     "All occurrences of a violating child are flagged.")
-        sc.font      = Font(name="Arial", italic=True, size=10)
-        sc.fill      = RULE_FILL
-        sc.alignment = Alignment(horizontal="left", vertical="center", wrap_text=True)
-        ws.row_dimensions[2].height = 20
-
-        for c_idx, h in enumerate(["#", "Parent  →  Child Pair", "Rule Description"], start=1):
-            cell           = ws.cell(row=4, column=c_idx, value=h)
+        for c_idx, h in enumerate(["#", "Field", "Rule Description"], start=1):
+            cell           = ws.cell(row=3, column=c_idx, value=h)
             cell.fill      = HDR_FILL
             cell.font      = HDR_FONT
             cell.border    = THIN_BORDER
-            cell.alignment = Alignment(horizontal="center", vertical="center")
+            cell.alignment = Alignment(horizontal="center")
 
-        current_row = 5
-        for rule_num, (parent_col, child_col) in enumerate(PARENT_CHILD_PAIRS, start=1):
-            rules_list = _rule_lines(parent_col, child_col)
-            num_rules  = len(rules_list)
-            pair_label = f"{parent_col}  →  {child_col}"
+        current_row = 4
+        rule_num    = 1
+
+        for field, rules_list in RULES_CONTENT.items():
+            num_rules = len(rules_list)
 
             for r_idx, rule_text in enumerate(rules_list):
-                nc           = ws.cell(row=current_row, column=1,
-                                       value=rule_num if r_idx == 0 else "")
-                nc.fill      = RULE_FILL
-                nc.font      = Font(name="Arial", size=10, bold=(r_idx == 0))
-                nc.border    = THIN_BORDER
-                nc.alignment = Alignment(horizontal="center", vertical="center")
+                num_cell           = ws.cell(row=current_row, column=1, value=rule_num if r_idx == 0 else "")
+                num_cell.font      = Font(name="Arial", size=10, bold=(r_idx == 0))
+                num_cell.fill      = RULE_FILL
+                num_cell.border    = THIN_BORDER
+                num_cell.alignment = Alignment(horizontal="center", vertical="center")
 
-                fc           = ws.cell(row=current_row, column=2,
-                                       value=pair_label if r_idx == 0 else "")
-                fc.fill      = RULE_FILL
-                fc.font      = Font(name="Arial", size=10, bold=(r_idx == 0))
-                fc.border    = THIN_BORDER
-                fc.alignment = Alignment(horizontal="left", vertical="center",
-                                         wrap_text=True)
+                field_cell           = ws.cell(row=current_row, column=2, value=field if r_idx == 0 else "")
+                field_cell.font      = Font(name="Arial", size=10, bold=(r_idx == 0))
+                field_cell.fill      = RULE_FILL
+                field_cell.border    = THIN_BORDER
+                field_cell.alignment = Alignment(horizontal="center", vertical="center")
 
-                dc           = ws.cell(row=current_row, column=3, value=rule_text)
-                dc.font      = BODY_FONT
-                dc.border    = THIN_BORDER
-                dc.alignment = Alignment(wrap_text=True, vertical="center",
-                                         horizontal="left")
+                desc_cell           = ws.cell(row=current_row, column=3, value=rule_text)
+                desc_cell.font      = BODY_FONT
+                desc_cell.border    = THIN_BORDER
+                desc_cell.alignment = Alignment(wrap_text=True, vertical="center", horizontal="center")
+
                 current_row += 1
 
-            # Vertically merge # and pair columns across rule lines
             if num_rules > 1:
                 s = current_row - num_rules
                 e = current_row - 1
                 ws.merge_cells(start_row=s, start_column=1, end_row=e, end_column=1)
                 ws.merge_cells(start_row=s, start_column=2, end_row=e, end_column=2)
 
+            rule_num += 1
+
         ws.column_dimensions["A"].width = 6
-        ws.column_dimensions["B"].width = 50
-        ws.column_dimensions["C"].width = 70
+        ws.column_dimensions["B"].width = 30
+        ws.column_dimensions["C"].width = 65
 
-    # ── Error Sheets — one per PC pair ────────
-    def _write_error_sheets(self, wb):
-        """
-        One sheet per violating PC pair (only created when violations exist).
-        Sheet order mirrors PARENT_CHILD_PAIRS definition order.
-        ALL columns from the input file are shown.
-        Both parent and child cells are highlighted red on each error row.
-        """
-        v              = self.validator
-        all_input_cols = list(v.df.columns)
+    # ── Per-field error sheets ───────────────────────────
 
-        for parent_col, child_col in PARENT_CHILD_PAIRS:
-            pair_errors = v.pc_error_map.get((parent_col, child_col))
-            if not pair_errors:
-                continue
+    def _write_per_field_error_sheets(self):
+        if self.error_df.empty:
+            return
 
-            row_indices = list(pair_errors.keys())
+        field_rows: dict[str, list] = defaultdict(list)
+        for idx, row in self.error_df.iterrows():
+            for field in self.error_fields.loc[idx]:
+                field_rows[field].append(idx)
 
-            # Subset of the full dataframe — all input columns
-            subset = v.df.loc[row_indices, all_input_cols].copy()
+        display_cols = [c for c in self.df.columns if c not in ("_ERROR_FIELDS", "_ERROR_DETAIL")]
 
-            # Append reason column
-            subset["ERROR_REASON"] = subset.index.map(
-                lambda i: pair_errors.get(i, "")
-            )
+        for field, row_indices in sorted(field_rows.items()):
+            sheet_name = field[:31]
+            existing   = [s.title for s in self.wb.worksheets]
+            counter    = 1
+            base_name  = sheet_name
+            while sheet_name in existing:
+                sheet_name = f"{base_name[:28]}_{counter}"
+                counter   += 1
 
-            sheet_name = self._safe_sheet_name(
-                wb, _sheet_name(parent_col, child_col)
-            )
-            ws = wb.create_sheet(sheet_name)
+            ws = self.wb.create_sheet(sheet_name)
 
-            all_cols    = list(subset.columns)
-            col_idx_map = {col: i for i, col in enumerate(all_cols, start=1)}
+            subset = self.df.loc[row_indices, display_cols].copy()
 
-            self._write_header(ws, all_cols)
+            # Show the actual reason(s) this row failed for this field
+            default_reason = FIELD_REASON_MAP.get(field, f"{field}: is blank.")
+            subset["ERROR_COLUMNS"] = [
+                self.error_detail.loc[i].get(field, default_reason) for i in subset.index
+            ]
 
-            for r_idx, (orig_idx, row_data) in enumerate(subset.iterrows(), start=2):
-                for col, value in zip(all_cols, row_data):
-                    c_idx          = col_idx_map[col]
-                    cell           = ws.cell(row=r_idx, column=c_idx, value=value)
+            final_cols = list(subset.columns)
+            ws.append(final_cols)
+            style_header_row(ws, 1, len(final_cols))
+            ws.freeze_panes = "A2"
+
+            col_idx_map = {col: i for i, col in enumerate(final_cols, start=1)}
+
+            for r_idx, (orig_idx, row) in enumerate(subset.iterrows(), start=2):
+                for c_idx, col in enumerate(final_cols, start=1):
+                    cell           = ws.cell(row=r_idx, column=c_idx, value=row[col])
                     cell.font      = BODY_FONT
                     cell.border    = THIN_BORDER
-                    cell.alignment = Alignment(
-                        horizontal="center", vertical="center", wrap_text=True
-                    )
-                    cell.fill = ROW_FILL
+                    cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+                    cell.fill      = ROW_ERROR_FILL
 
-                # Red highlight on both parent and child columns
-                for highlight_col in (parent_col, child_col):
-                    if highlight_col in col_idx_map:
-                        tc      = ws.cell(row=r_idx, column=col_idx_map[highlight_col])
-                        tc.fill = RED_FILL
-                        tc.font = ERR_FONT
+                # For DUPLICATE_CHECK highlight the PRODUCT column in red;
+                # for all other fields highlight the field's own column.
+                if field == "DUPLICATE_CHECK":
+                    if "PRODUCT" in col_idx_map:
+                        target_cell      = ws.cell(row=r_idx, column=col_idx_map["PRODUCT"])
+                        target_cell.fill = RED_FILL
+                        target_cell.font = ERR_FONT
+                elif field in col_idx_map:
+                    target_cell      = ws.cell(row=r_idx, column=col_idx_map[field])
+                    target_cell.fill = RED_FILL
+                    target_cell.font = ERR_FONT
 
-            self._auto_width(ws, min_w=10, max_w=60)
-            ws.freeze_panes = "A2"
+                # GROSSWEIGHT >= NETWEIGHT failures: highlight NETWEIGHT too
+                if field == "GROSSWEIGHT" and GW_VS_NET_REASON in str(row["ERROR_COLUMNS"]):
+                    if "NETWEIGHT" in col_idx_map:
+                        net_cell      = ws.cell(row=r_idx, column=col_idx_map["NETWEIGHT"])
+                        net_cell.fill = RED_FILL
+                        net_cell.font = ERR_FONT
 
             note_row = len(row_indices) + 3
             ws.cell(
                 row=note_row, column=1,
-                value=(
-                    f"Total error rows for '{child_col} → {parent_col}' "
-                    f"mapping violation: {len(row_indices)}"
-                ),
+                value=f"Total error rows for '{field}': {len(row_indices)}",
             ).font = Font(name="Arial", italic=True, size=9, bold=True)
 
-    # ── Orchestrate ───────────────────────────
-    def write(self):
-        v  = self.validator
-        wb = Workbook()
-
-        if "Sheet" in wb.sheetnames:
-            del wb["Sheet"]
-
-        self._write_summary_sheet(wb)
-        self._write_rules_sheet(wb)
-        self._write_error_sheets(wb)
-
-        wb.save(self.output_path)
-
-        print(f"\n✅  Output saved  → {self.output_path}")
-        print(f"   Total rows            : {len(v.df)}")
-        print(f"   Rows with any error   : {len(v.all_error_indices())}")
-        print()
-        print("   Per-pair violation counts:")
-        for parent_col, child_col in PARENT_CHILD_PAIRS:
-            count = len(v.pc_error_map.get((parent_col, child_col), {}))
-            if count:
-                print(f"     {parent_col:30s} → {child_col:30s} : {count} rows")
+            auto_width(ws, min_w=10, max_w=60)
 
 
-# ══════════════════════════════════════════════
-#  Orchestrator
-# ══════════════════════════════════════════════
-class PHBusinessProcessor:
+# ─────────────────────────────────────────────
+#  PIPELINE CONTROLLER
+# ─────────────────────────────────────────────
+
+class ValidationPipeline:
 
     def __init__(self, input_path: str, output_path: str):
-        self.validator = PHBusinessValidator(input_path)
-        self.writer    = PHBusinessReportWriter(self.validator, output_path)
+        self.input_path  = input_path
+        self.output_path = output_path
+        self.validator   = ProductHierarchyValidator()
 
     def run(self):
-        print("📂  Loading file …")
-        self.validator.load()
-        print(f"    Columns detected : {list(self.validator.df.columns)}")
-        print("🔍  Running parent-child mapping rules …")
-        self.validator.validate()
-        print("📝  Writing report …")
-        self.writer.write()
+        print(f"📂  Reading: {self.input_path}")
+        df = self._read_input()
+
+        print(f"🔍  Validating {len(df)} rows …")
+        df_validated = self.validator.validate_dataframe(df)
+
+        error_count = (df_validated["ERROR_COLUMNS"] != "").sum()
+        print(f"⚠️   Errors found in {error_count} row(s)")
+
+        print("📝  Building Excel report …")
+        builder = ExcelReportBuilder(df_validated, self.output_path)
+        builder.build()
+
+    def _read_input(self) -> pd.DataFrame:
+        ext = os.path.splitext(self.input_path)[1].lower()
+        if ext in (".xlsx", ".xlsm", ".xls"):
+            return pd.read_excel(self.input_path, dtype=str)
+        elif ext in (".csv", ".tab"):
+            return pd.read_csv(
+                self.input_path,
+                dtype=str,
+                sep="\t",
+                encoding="latin-1",
+            )
+        else:
+            raise ValueError(f"Unsupported file type: {ext}")
 
 
-# ══════════════════════════════════════════════
+# ─────────────────────────────────────────────
 #  ENTRY POINT
-# ══════════════════════════════════════════════
+# ─────────────────────────────────────────────
+
 if __name__ == "__main__":
-    processor = PHBusinessProcessor(INPUT_FILE, OUTPUT_FILE)
-    processor.run()
+    pipeline = ValidationPipeline(INPUT_FILE, OUTPUT_FILE)
+    pipeline.run()
+
