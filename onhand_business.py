@@ -1,3 +1,4 @@
+
 import re
 import pandas as pd
 from openpyxl import Workbook
@@ -8,8 +9,8 @@ from openpyxl.utils import get_column_letter
 # ─────────────────────────────────────────────
 #  FILE PATHS
 # ─────────────────────────────────────────────
-ONHAND_INPUT_FILE = r"C:\Users\SW526XH\Downloads\Go Live-2\Onhand\Onhand.tab"
-OUTPUT_FILE        = r"C:\Users\SW526XH\Downloads\Go Live-2\Onhand\Validated_Onhand_Business.xlsx"
+ONHAND_INPUT_FILE = r"C:\Users\SW526XH\Downloads\Go Live-2\OnHand\New_extract_for_business_onHand.tab"
+OUTPUT_FILE        = r"C:\Users\SW526XH\Downloads\Go Live-2\Onhand\Validated_Onhand_Business2.xlsx"
 
 
 # ─────────────────────────────────────────────
@@ -21,37 +22,51 @@ DATE_PATTERN = re.compile(r'^\d{4}(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])$')  # YYY
 # ─────────────────────────────────────────────
 #  NETTABLE / NON-NETTABLE CONFIGURATION
 # ─────────────────────────────────────────────
-NETTABLE_FIELD = "TYPE_SUBTYPE_STORELOCATION"     # logical field name for this rule
-NETTABLE_COLS  = ["TYPE", "SUBTYPE", "STORELOCATION"]
+NETTABLE_FIELD = "TYPE_SUBTYPE_STORAGELOCATION"     # logical field name for this rule
+NETTABLE_COLS  = ["MATERIALTYPE", "TYPE", "SUBTYPE", "STORAGELOCATION"]
 
 NETTABLE       = "NETTABLE"
 NON_NETTABLE   = "NONNETTABLE"
 
+# Rule 1: MATERIALTYPE FERT / HAWA
 # TYPE -> allowed SUBTYPE values (normalised: upper-case, no spaces/underscores/hyphens)
-TYPE_ALLOWED_SUBTYPES = {
+TYPE_RULES_FERT_HAWA = {
     "BLOCKEDSTOCK":                    {NON_NETTABLE},
     "BLOCKEDSTOCKRETURNS":             {NON_NETTABLE},
     "QUALITYINSPECTION":               {NETTABLE, NON_NETTABLE},
     "SCHEDULEDFORDELIVERY":            {NON_NETTABLE},
     "VALUATEDUNRESTRICTEDUSESTOCK":    {NETTABLE, NON_NETTABLE},
     "TENTATIVEINVENTORYPOSTINGSHIFTS": {NON_NETTABLE},
+    "VENDORSTOCK":                     {NETTABLE},
 }
 
-# Valid STORELOCATION values (stored upper-case; blank is represented by the token below)
+# Rule 2: MATERIALTYPE ROH / VERP
+TYPE_RULES_ROH_VERP = {
+    "BLOCKEDSTOCK":                 {NON_NETTABLE},
+    "BLOCKEDSTOCKRETURNS":          {NON_NETTABLE},
+    "QUALITYINSPECTION":            {NETTABLE},
+    "SCHEDULEDFORDELIVERY":         {NON_NETTABLE},
+    "VALUATEDUNRESTRICTEDUSESTOCK": {NETTABLE},
+    "VENDORSTOCK":                  {NETTABLE},
+}
+
+# MATERIALTYPE -> TYPE/SUBTYPE rule set (other material types are not checked)
+MATERIAL_TYPE_RULES = {
+    "FERT": TYPE_RULES_FERT_HAWA,
+    "HAWA": TYPE_RULES_FERT_HAWA,
+    "ROH":  TYPE_RULES_ROH_VERP,
+    "VERP": TYPE_RULES_ROH_VERP,
+}
+
+# Nettable STORAGELOCATION sub-rule applies only to these material types (for now)
+LOCATION_CHECK_MATERIAL_TYPES = {"FERT", "HAWA"}
+
+# Blank location is represented by this token
 BLANK_LOCATION_TOKEN = "BLANK LOCATION"
-
-NON_NETTABLE_LOCATIONS = {
-    "001", "012", "013", "014", "015", "016",
-    "018", "019", "020", "021", "023",
-    "034", "035", "039",
-    "9053", "9999",
-    "FG02", "FG03", "PD01",
-    "37", "QM01",
-}
 
 NETTABLE_LOCATIONS = {
     BLANK_LOCATION_TOKEN,
-    "007", "003", "009", "036", "040",
+    "0007", "0003", "0009", "0036", "0037", "0040",
     "1809", "1817", "1879", "FG01",
 }
 
@@ -101,23 +116,20 @@ SUB_ROW_DEFS = {
         ("  ↳ Invalid Format (not YYYYMMDD)", "bad_format",
          "DATEOFLASTGOODSRECEIPT: Does not follow required format YYYYMMDD",
          "does not follow required format"),
-        ("  ↳ Duplicate Value", "duplicate",
-         "DATEOFLASTGOODSRECEIPT: Value is not unique (duplicate found)",
-         "duplicate value"),
+        # ("  ↳ Duplicate Value", "duplicate",
+        #  "DATEOFLASTGOODSRECEIPT: Value is not unique (duplicate found)",
+        #  "duplicate value"),
     ],
     NETTABLE_FIELD: [
-        ("  ↳ Unrecognised TYPE", "unknown_type",
-         "TYPE: Value is not one of the recognised Onhand types",
+        ("  ↳ Unrecognised TYPE for MATERIALTYPE", "unknown_type",
+         "TYPE: Value is not valid for the given MATERIALTYPE",
          "is not a recognised Onhand TYPE"),
         ("  ↳ Invalid SUBTYPE for TYPE", "bad_subtype",
-         "SUBTYPE: Value not allowed for the given TYPE (Nettable / Non Nettable)",
+         "SUBTYPE: Value not allowed for the given MATERIALTYPE / TYPE (Nettable / Non Nettable)",
          "is not an allowed SUBTYPE for TYPE"),
-        ("  ↳ Non Nettable – Invalid STORELOCATION", "nn_location",
-         "STORELOCATION: Not in the allowed Non Nettable location list",
-         "not a valid location for Non Nettable"),
-        ("  ↳ Nettable – Invalid STORELOCATION", "n_location",
-         "STORELOCATION: Not in the allowed Nettable location list",
-         "not a valid location for Nettable"),
+        ("  ↳ Nettable – Invalid STORAGELOCATION (FERT/HAWA)", "n_location",
+         "STORAGELOCATION: Not in the allowed Nettable location list",
+         "is not a valid Nettable location"),
     ],
 }
 
@@ -142,31 +154,26 @@ class OnhandBusinessRuleEngine:
     Rules:
       DATEOFLASTGOODSRECEIPT
         a) Field should not be blank.
-        b) Values should be unique — no duplicates.
-        c) Field should be in the format YYYYMMDD.
+        b) Field should be in the format YYYYMMDD.
+        (Uniqueness check is currently disabled.)
 
-      TYPE / SUBTYPE / STORELOCATION  (Nettable / Non-Nettable & Location ID check)
-        a) TYPE must be one of the recognised Onhand types.
-        b) SUBTYPE must be an allowed value for that TYPE
-           (Nettable / Non Nettable as per the TYPE mapping).
-        c) If Non Nettable -> STORELOCATION must be in the Non Nettable list.
-        d) If Nettable     -> STORELOCATION must be in the Nettable list
-                              (blank STORELOCATION counts as "Blank location").
-
-    Uniqueness is a whole-column property, so the engine is given
-    pre-computed value counts (built by the Validator across all rows)
-    rather than deriving it row-by-row.
+      MATERIALTYPE / TYPE / SUBTYPE / STORAGELOCATION
+        Only MATERIALTYPE FERT, HAWA, ROH, VERP are checked.
+        a) TYPE must be recognised for the MATERIALTYPE.
+        b) SUBTYPE must be allowed for that MATERIALTYPE + TYPE.
+        c) FERT / HAWA only: if SUBTYPE is Nettable, STORAGELOCATION must be in
+           the Nettable location list (blank location is valid).
     """
 
     def __init__(self, value_counts: dict, check_nettable: bool = True):
         self.value_counts   = value_counts    # normalized value (str) -> occurrence count
-        self.check_nettable = check_nettable  # False if TYPE/SUBTYPE/STORELOCATION missing
+        self.check_nettable = check_nettable  # False if required columns are missing
 
     # ── DATEOFLASTGOODSRECEIPT ────────────────
     def _check_dlgr(self, row, reasons: dict):
         val = row.get("DATEOFLASTGOODSRECEIPT", "")
 
-        # ── Rule a: blank check ──
+        # ── Blank check ──
         if _is_blank(val):
             reasons["DATEOFLASTGOODSRECEIPT"] = "DATEOFLASTGOODSRECEIPT: Field is blank"
             return
@@ -174,74 +181,73 @@ class OnhandBusinessRuleEngine:
         val_str = str(val).strip()
         sub_reasons = []
 
-        # ── Rule c: format check ──
+        # ── Format check ──
         if not DATE_PATTERN.match(val_str):
             sub_reasons.append(
                 f"DATEOFLASTGOODSRECEIPT: '{val_str}' does not follow required format YYYYMMDD"
             )
 
-        # ── Rule b: uniqueness check ──
-        occurrences = self.value_counts.get(val_str, 0)
-        if occurrences > 1:
-            sub_reasons.append(
-                f"DATEOFLASTGOODSRECEIPT: '{val_str}' is a duplicate value (appears {occurrences} times)"
-            )
+        # ── Uniqueness check (disabled) ──
+        # occurrences = self.value_counts.get(val_str, 0)
+        # if occurrences > 1:
+        #     sub_reasons.append(
+        #         f"DATEOFLASTGOODSRECEIPT: '{val_str}' is a duplicate value (appears {occurrences} times)"
+        #     )
 
         if sub_reasons:
             reasons["DATEOFLASTGOODSRECEIPT"] = " | ".join(sub_reasons)
 
-    # ── TYPE / SUBTYPE / STORELOCATION ────────
+    # ── MATERIALTYPE / TYPE / SUBTYPE / STORAGELOCATION ────────
     def _check_nettable(self, row, reasons: dict):
         if not self.check_nettable:
             return
 
+        mat_raw     = row.get("MATERIALTYPE", "")
         type_raw    = row.get("TYPE", "")
         subtype_raw = row.get("SUBTYPE", "")
-        loc_raw     = row.get("STORELOCATION", "")
+        loc_raw     = row.get("STORAGELOCATION", "")
 
+        mat_key      = "" if pd.isna(mat_raw)     else str(mat_raw).strip().upper()
         type_disp    = "" if pd.isna(type_raw)    else str(type_raw).strip()
         subtype_disp = "" if pd.isna(subtype_raw) else str(subtype_raw).strip()
         loc_disp     = "" if pd.isna(loc_raw)     else str(loc_raw).strip()
 
-        # ── Sub-rule a: TYPE must be recognised ──
+        # Only FERT / HAWA / ROH / VERP are in scope
+        type_rules = MATERIAL_TYPE_RULES.get(mat_key)
+        if type_rules is None:
+            return
+
+        # ── Sub-rule a: TYPE must be recognised for this MATERIALTYPE ──
         type_key = _norm_key(type_disp) if type_disp else ""
-        if type_key not in TYPE_ALLOWED_SUBTYPES:
+        if type_key not in type_rules:
             shown = type_disp if type_disp else "<blank>"
             reasons[NETTABLE_FIELD] = (
-                f"TYPE: '{shown}' is not a recognised Onhand TYPE"
+                f"TYPE: '{shown}' is not a recognised Onhand TYPE for MATERIALTYPE '{mat_key}'"
             )
             return
 
-        # ── Sub-rule b: SUBTYPE must be allowed for this TYPE ──
+        # ── Sub-rule b: SUBTYPE must be allowed for this MATERIALTYPE + TYPE ──
         subtype_key = _norm_key(subtype_disp) if subtype_disp else ""
-        allowed     = TYPE_ALLOWED_SUBTYPES[type_key]
+        allowed     = type_rules[type_key]
         if subtype_key not in allowed:
-            shown_sub = subtype_disp if subtype_disp else "<blank>"
+            shown_sub   = subtype_disp if subtype_disp else "<blank>"
             allowed_txt = " / ".join(
                 "Nettable" if a == NETTABLE else "Non Nettable" for a in sorted(allowed)
             )
             reasons[NETTABLE_FIELD] = (
                 f"SUBTYPE: '{shown_sub}' is not an allowed SUBTYPE for TYPE '{type_disp}' "
-                f"(allowed: {allowed_txt})"
+                f"with MATERIALTYPE '{mat_key}' (allowed: {allowed_txt})"
             )
             return
 
-        # ── Sub-rules c / d: STORELOCATION check ──
-        loc_key = loc_disp.upper() if loc_disp else BLANK_LOCATION_TOKEN
-
-        if subtype_key == NON_NETTABLE:
-            if loc_key not in NON_NETTABLE_LOCATIONS:
-                shown_loc = loc_disp if loc_disp else "<blank>"
-                reasons[NETTABLE_FIELD] = (
-                    f"STORELOCATION: '{shown_loc}' is not a valid location for Non Nettable "
-                    f"stock (TYPE '{type_disp}')"
-                )
-        else:  # NETTABLE
+        # ── Sub-rule c: Nettable stock must sit in a valid Nettable location (FERT/HAWA only) ──
+        if mat_key in LOCATION_CHECK_MATERIAL_TYPES and subtype_key == NETTABLE:
+            loc_key = loc_disp.upper() if loc_disp else BLANK_LOCATION_TOKEN
             if loc_key not in NETTABLE_LOCATIONS:
                 shown_loc = loc_disp if loc_disp else "<blank>"
                 reasons[NETTABLE_FIELD] = (
-                    f"STORELOCATION: '{shown_loc}' is not a valid location for Nettable "
-                    f"stock (TYPE '{type_disp}')"
+                    f"STORAGELOCATION: '{shown_loc}' is not a valid Nettable location "
+                    f"(MATERIALTYPE '{mat_key}', TYPE '{type_disp}')"
                 )
 
     # ── Row entry point ──
@@ -268,14 +274,8 @@ class OnhandBusinessTableValidator:
         self.df.columns = [c.strip().upper() for c in self.df.columns]
 
     def validate(self):
-        # ── Pre-compute value counts for the uniqueness rule ──
-        value_counts: dict = {}
-        if "DATEOFLASTGOODSRECEIPT" in self.df.columns:
-            for raw_val in self.df["DATEOFLASTGOODSRECEIPT"]:
-                if pd.isna(raw_val) or str(raw_val).strip() == "":
-                    continue
-                v = str(raw_val).strip()
-                value_counts[v] = value_counts.get(v, 0) + 1
+        # Uniqueness counts (rule currently disabled)
+        value_counts = {}
 
         # ── Make sure the columns needed for the Nettable rule exist ──
         missing = [c for c in NETTABLE_COLS if c not in self.df.columns]
@@ -342,15 +342,16 @@ class OnhandBusinessReportWriter:
             "Field must follow the format: YYYYMMDD.",
         ],
         NETTABLE_FIELD: [
-            "TYPE must be one of: BLOCKEDSTOCK, BLOCKEDSTOCKRETURNS, QUALITYINSPECTION, "
-            "SCHEDULEDFORDELIVERY, VALUATEDUNRESTRICTEDUSESTOCK, TentativeInventoryPostingShifts.",
-            "SUBTYPE must be valid for the TYPE — BLOCKEDSTOCK, BLOCKEDSTOCKRETURNS, "
-            "SCHEDULEDFORDELIVERY, TentativeInventoryPostingShifts: Non Nettable only; "
-            "QUALITYINSPECTION, VALUATEDUNRESTRICTEDUSESTOCK: Nettable or Non Nettable.",
-            "If Non Nettable, STORELOCATION must be one of: "
-            + ", ".join(sorted(NON_NETTABLE_LOCATIONS)) + ".",
-            "If Nettable, STORELOCATION must be one of: "
+            "MATERIALTYPE FERT / HAWA: TYPE/SUBTYPE must be valid — BLOCKEDSTOCK, BLOCKEDSTOCKRETURNS, "
+            "SCHEDULEDFORDELIVERY, TENTATIVEINVENTORYPOSTINGSHIFTS: Non Nettable only; "
+            "QUALITYINSPECTION, VALUATEDUNRESTRICTEDUSESTOCK: Nettable or Non Nettable; "
+            "VENDORSTOCK: Nettable only.",
+            "MATERIALTYPE FERT / HAWA: If SUBTYPE is Nettable, STORAGELOCATION must be one of: "
             + ", ".join(["Blank location"] + sorted(NETTABLE_LOCATIONS - {BLANK_LOCATION_TOKEN})) + ".",
+            "MATERIALTYPE ROH / VERP: TYPE/SUBTYPE must be valid — BLOCKEDSTOCK, BLOCKEDSTOCKRETURNS, "
+            "SCHEDULEDFORDELIVERY: Non Nettable only; QUALITYINSPECTION, "
+            "VALUATEDUNRESTRICTEDUSESTOCK, VENDORSTOCK: Nettable only. "
+            "(TENTATIVEINVENTORYPOSTINGSHIFTS is not valid for these material types.)",
         ],
     }
 
