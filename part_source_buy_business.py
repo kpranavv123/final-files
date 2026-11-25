@@ -10,9 +10,9 @@ from openpyxl.utils import get_column_letter
 # ─────────────────────────────────────────────
 #  FILE PATHS
 # ─────────────────────────────────────────────
-PARTSOURCE_BUY_INPUT_FILE = r"C:\Users\SW526XH\Downloads\Go Live-2\PartSource_Buy\PartSource_Buy_2026-07-17-1905.tab"
-PARTMASTER_INPUT_FILE     = r"C:\Users\SW526XH\Downloads\Go Live-2\Part\Part.tab"   # <-- update to your Part master file
-OUTPUT_FILE                = r"C:\Users\SW526XH\Downloads\Go Live-2\PartSource_Buy\Validated_PartSourceBuy_Business.xlsx"
+PARTSOURCE_BUY_INPUT_FILE = r"C:\Users\SW526XH\Downloads\Go Live-2\GL2 Extracts\PartSource_Buy.tab"
+BOM_INPUT_FILE            = r"C:\Users\SW526XH\Downloads\Go Live-2\GL2 Extracts\BOM.tab"   # <-- update to your BOM extract
+OUTPUT_FILE               = r"C:\Users\SW526XH\Downloads\Go Live-2\PartSource_Buy\Validated_PartSourceBuy_Business_NEW.xlsx"
 
 
 # ─────────────────────────────────────────────
@@ -38,46 +38,33 @@ THIN_BORDER = Border(
 )
 
 # ─────────────────────────────────────────────
-#  PART MASTER LOOKUP CONFIG
+#  BOM LOOKUP CONFIG
 # ─────────────────────────────────────────────
 # PartSource(Buy) columns used by the MATERIALNUMBER rule
 PS_MATERIAL_COL    = "MATERIALNUMBER"
 PS_PLANT_COL       = "PLANT"
 PS_ORDERPOLICY_COL = "ORDERPOLICY"
 
-# Part master columns (adjust here if the Part master uses different names)
-PM_MATERIAL_COL = "MATERIALNUMBER"
-PM_PLANT_COL    = "PLANT"
-PM_PROCTYPE_COL = "PROCUREMENTTYPE"
+# BOM extract columns searched for the (MATERIALNUMBER, PLANT) combination
+BOM_COMPONENT_COL = "COMPONENT"
+BOM_PLANT_COL     = "PLANT"
 
-# ORDERPOLICY (upper-cased)  ->  (display label, required PROCUREMENTTYPE)
-ORDERPOLICY_RULES = {
-    "BUY":    ("BUY",    "F"),
-    "SUBCON": ("SubCon", "30"),
-}
+# ORDERPOLICY value (upper-cased) that triggers the BOM check
+SUBCON_POLICY = "SUBCON"
 
 # ─────────────────────────────────────────────
 #  FIELD ORDER  (only fields with business rules)
 # ─────────────────────────────────────────────
-FIELD_ORDER = ["MATERIALNUMBER", "MAXIMUMPOQUANTITY", "MINIMUMPOQUANTITY",
-               "ROUNDINGVALUE", "PLANNEDELIVERYTIME"]
+FIELD_ORDER = ["MATERIALNUMBER", "PLANNEDELIVERYTIME"]
 
 # Fields that get the simple "must be > 0" check
-POSITIVE_FIELDS = ["MAXIMUMPOQUANTITY", "MINIMUMPOQUANTITY",
-                   "ROUNDINGVALUE", "PLANNEDELIVERYTIME"]
+POSITIVE_FIELDS = ["PLANNEDELIVERYTIME"]
 
-FIELDS_WITH_SUB_ROWS = {
-    "MATERIALNUMBER",
-    "MAXIMUMPOQUANTITY",
-    "MINIMUMPOQUANTITY",
-}
+FIELDS_WITH_SUB_ROWS = set()
 
 # Single-line reason shown in Summary sheet for each field
 FIELD_REASON = {
-    "MATERIALNUMBER":     "",   # sub-rows carry reasons
-    "MAXIMUMPOQUANTITY":  "",   # sub-rows carry reasons
-    "MINIMUMPOQUANTITY":  "",   # sub-rows carry reasons
-    "ROUNDINGVALUE":      "ROUNDINGVALUE: Value not greater than 0",
+    "MATERIALNUMBER":     "MATERIALNUMBER: Part-Site with ORDERPOLICY 'SubCon' not found in BOM (COMPONENT + PLANT)",
     "PLANNEDELIVERYTIME": "PLANNEDELIVERYTIME: Value not greater than 0",
 }
 
@@ -95,22 +82,16 @@ FIELD_HIGHLIGHT_COLS = {
 class PartSourceBuyBusinessRuleEngine:
     """
     Rules:
-      MATERIALNUMBER      - For a Part-Site (MATERIALNUMBER + PLANT) with ORDERPOLICY 'BUY',
-                            PROCUREMENTTYPE in Part master must be 'F'.
-                          - For a Part-Site with ORDERPOLICY 'SubCon',
-                            PROCUREMENTTYPE in Part master must be '30'.
-      MAXIMUMPOQUANTITY   - must be > 0.
-                          - maximum should be greater than or equal to minimum.
-      MINIMUMPOQUANTITY   - must be > 0.
-                          - minimum should be lesser than or equal to maximum.
-      ROUNDINGVALUE       - must be > 0.
+      MATERIALNUMBER      - For every Part-Site (MATERIALNUMBER + PLANT) with ORDERPOLICY 'SubCon',
+                            the same combination must be present in the BOM extract
+                            (BOM COMPONENT = MATERIALNUMBER and BOM PLANT = PLANT).
       PLANNEDELIVERYTIME  - must be > 0.
     """
 
-    def __init__(self, partmaster_lookup=None):
-        # {(material, plant): {procurement types found in Part master}}
+    def __init__(self, bom_lookup=None):
+        # {(component, plant)} built from the BOM extract
         # None -> MATERIALNUMBER rule is skipped
-        self.partmaster_lookup = partmaster_lookup
+        self.bom_lookup = bom_lookup
 
     @staticmethod
     def _parse_number(value):
@@ -138,49 +119,17 @@ class PartSourceBuyBusinessRuleEngine:
 
         return reasons
 
-    def _validate_min_max_relation(self, row) -> dict:
+    def _validate_bom_presence(self, row) -> list:
         """
-        Validates relation between MINIMUMPOQUANTITY and MAXIMUMPOQUANTITY.
-
-        If minimum > maximum:
-          - MINIMUMPOQUANTITY fails because minimum should be <= maximum
-          - MAXIMUMPOQUANTITY fails because maximum should be >= minimum
-        """
-        reasons = {
-            "MAXIMUMPOQUANTITY": [],
-            "MINIMUMPOQUANTITY": [],
-        }
-
-        min_raw = row.get("MINIMUMPOQUANTITY", "")
-        max_raw = row.get("MAXIMUMPOQUANTITY", "")
-
-        min_num = self._parse_number(min_raw)
-        max_num = self._parse_number(max_raw)
-
-        # Apply relation check only when both values are valid numbers
-        if min_num is not None and max_num is not None:
-            if min_num > max_num:
-                reasons["MINIMUMPOQUANTITY"].append(
-                    f"MINIMUMPOQUANTITY: Minimum '{str(min_raw).strip()}' is greater than MAXIMUMPOQUANTITY '{str(max_raw).strip()}'"
-                )
-                reasons["MAXIMUMPOQUANTITY"].append(
-                    f"MAXIMUMPOQUANTITY: Maximum '{str(max_raw).strip()}' is less than MINIMUMPOQUANTITY '{str(min_raw).strip()}'"
-                )
-
-        return reasons
-
-    def _validate_procurement_type(self, row) -> list:
-        """
-        Part-Site (MATERIALNUMBER + PLANT) lookup against Part master.
-          ORDERPOLICY BUY    -> PROCUREMENTTYPE must be 'F'
-          ORDERPOLICY SubCon -> PROCUREMENTTYPE must be '30'
+        Part-Site (MATERIALNUMBER + PLANT) with ORDERPOLICY 'SubCon'
+        must exist in the BOM extract as (COMPONENT + PLANT).
         Other order policies, and rows with a blank material/plant, are skipped.
         """
-        if self.partmaster_lookup is None:
+        if self.bom_lookup is None:
             return []
 
-        policy_key = self._clean(row.get(PS_ORDERPOLICY_COL, "")).upper()
-        if policy_key not in ORDERPOLICY_RULES:
+        policy = self._clean(row.get(PS_ORDERPOLICY_COL, "")).upper()
+        if policy != SUBCON_POLICY:
             return []
 
         material = self._clean(row.get(PS_MATERIAL_COL, ""))
@@ -188,20 +137,10 @@ class PartSourceBuyBusinessRuleEngine:
         if not material or not plant:
             return []
 
-        label, expected = ORDERPOLICY_RULES[policy_key]
-        found = self.partmaster_lookup.get((material, plant))
-
-        if found is None:
+        if (material, plant) not in self.bom_lookup:
             return [
-                f"MATERIALNUMBER: Part-Site '{material}-{plant}' with ORDERPOLICY '{label}' "
-                f"not found in Part master (expected PROCUREMENTTYPE '{expected}')"
-            ]
-
-        if found != {expected}:
-            actual = ", ".join(sorted(v if v else "blank" for v in found))
-            return [
-                f"MATERIALNUMBER: Part-Site '{material}-{plant}' with ORDERPOLICY '{label}' "
-                f"has PROCUREMENTTYPE '{actual}' in Part master (expected '{expected}')"
+                f"MATERIALNUMBER: Part-Site '{material}-{plant}' with ORDERPOLICY 'SubCon' "
+                f"not found in BOM (COMPONENT '{material}' + PLANT '{plant}')"
             ]
 
         return []
@@ -210,23 +149,16 @@ class PartSourceBuyBusinessRuleEngine:
         """Returns {field_name: [reasons]} for whichever fields failed on this row."""
         reasons = {}
 
-        # Rule 1: Part-Site ORDERPOLICY vs Part master PROCUREMENTTYPE
-        proc_reasons = self._validate_procurement_type(row)
-        if proc_reasons:
-            reasons["MATERIALNUMBER"] = proc_reasons
+        # Rule 1: SubCon Part-Site must exist in BOM
+        bom_reasons = self._validate_bom_presence(row)
+        if bom_reasons:
+            reasons["MATERIALNUMBER"] = bom_reasons
 
         # Rule 2: positive check for the numeric fields
         for field_name in POSITIVE_FIELDS:
             field_reasons = self._validate_positive_field(row, field_name)
             if field_reasons:
                 reasons[field_name] = field_reasons
-
-        # Rule 3: min/max relationship check
-        relation_reasons = self._validate_min_max_relation(row)
-
-        for field_name, field_reasons in relation_reasons.items():
-            if field_reasons:
-                reasons.setdefault(field_name, []).extend(field_reasons)
 
         return reasons
 
@@ -236,54 +168,48 @@ class PartSourceBuyBusinessRuleEngine:
 # ══════════════════════════════════════════════
 class PartSourceBuyBusinessTableValidator:
 
-    def __init__(self, ps_buy_path: str, partmaster_path: str):
-        self.ps_buy_path     = ps_buy_path
-        self.partmaster_path = partmaster_path
-        self.df              = pd.DataFrame()
-        self.pm_df           = pd.DataFrame()
-        self.partmaster_lookup = None
-        self.error_map       = {}   # row_idx -> [failed field names]
-        self.reason_map      = {}   # row_idx -> {field: reason}
+    def __init__(self, ps_buy_path: str, bom_path: str):
+        self.ps_buy_path = ps_buy_path
+        self.bom_path    = bom_path
+        self.df          = pd.DataFrame()
+        self.bom_df      = pd.DataFrame()
+        self.bom_lookup  = None
+        self.error_map   = {}   # row_idx -> [failed field names]
+        self.reason_map  = {}   # row_idx -> {field: reason}
 
     def load(self):
         self.df = pd.read_csv(self.ps_buy_path, sep="\t", dtype=str)
         self.df.columns = [c.strip().upper() for c in self.df.columns]
 
-        self.pm_df = pd.read_csv(self.partmaster_path, sep="\t", dtype=str)
-        self.pm_df.columns = [c.strip().upper() for c in self.pm_df.columns]
+        self.bom_df = pd.read_csv(self.bom_path, sep="\t", dtype=str)
+        self.bom_df.columns = [c.strip().upper() for c in self.bom_df.columns]
 
-        self._build_partmaster_lookup()
+        self._build_bom_lookup()
 
-    def _build_partmaster_lookup(self):
-        """Builds {(material, plant): {procurement types}} from the Part master.
+    def _build_bom_lookup(self):
+        """Builds a set of (COMPONENT, PLANT) from the BOM extract.
         Leaves the lookup as None (rule skipped) if required columns are missing."""
-        ps_missing = [c for c in (PS_MATERIAL_COL, PS_PLANT_COL, PS_ORDERPOLICY_COL)
-                      if c not in self.df.columns]
-        pm_missing = [c for c in (PM_MATERIAL_COL, PM_PLANT_COL, PM_PROCTYPE_COL)
-                      if c not in self.pm_df.columns]
+        ps_missing  = [c for c in (PS_MATERIAL_COL, PS_PLANT_COL, PS_ORDERPOLICY_COL)
+                       if c not in self.df.columns]
+        bom_missing = [c for c in (BOM_COMPONENT_COL, BOM_PLANT_COL)
+                       if c not in self.bom_df.columns]
 
-        if ps_missing or pm_missing:
+        if ps_missing or bom_missing:
             if ps_missing:
                 print(f"⚠️   MATERIALNUMBER rule skipped — PartSource(Buy) column(s) not found: {ps_missing}")
-            if pm_missing:
-                print(f"⚠️   MATERIALNUMBER rule skipped — Part master column(s) not found: {pm_missing}")
-            self.partmaster_lookup = None
+            if bom_missing:
+                print(f"⚠️   MATERIALNUMBER rule skipped — BOM column(s) not found: {bom_missing}")
+            self.bom_lookup = None
             return
 
-        pm = self.pm_df[[PM_MATERIAL_COL, PM_PLANT_COL, PM_PROCTYPE_COL]].fillna("")
-        mats   = pm[PM_MATERIAL_COL].astype(str).str.strip()
-        plants = pm[PM_PLANT_COL].astype(str).str.strip()
-        ptypes = pm[PM_PROCTYPE_COL].astype(str).str.strip()
+        bom = self.bom_df[[BOM_COMPONENT_COL, BOM_PLANT_COL]].fillna("")
+        components = bom[BOM_COMPONENT_COL].astype(str).str.strip()
+        plants     = bom[BOM_PLANT_COL].astype(str).str.strip()
 
-        lookup = defaultdict(set)
-        for m, p, t in zip(mats, plants, ptypes):
-            if m and p:
-                lookup[(m, p)].add(t)
-
-        self.partmaster_lookup = dict(lookup)
+        self.bom_lookup = {(c, p) for c, p in zip(components, plants) if c and p}
 
     def validate(self):
-        engine = PartSourceBuyBusinessRuleEngine(self.partmaster_lookup)
+        engine = PartSourceBuyBusinessRuleEngine(self.bom_lookup)
 
         for idx, row in self.df.iterrows():
             try:
@@ -330,55 +256,6 @@ class PartSourceBuyBusinessTableValidator:
                 field_errors.setdefault(col, []).append(row_idx)
         return field_errors
 
-    def get_quantity_error_subcounts(self, field_name: str) -> dict:
-        counts = {
-            "not_greater_than_zero": 0,
-            "min_max_relation": 0,
-        }
-
-        for idx, col_reason in self.reason_map.items():
-            reason_value = col_reason.get(field_name, "")
-
-            if not reason_value:
-                continue
-
-            if not isinstance(reason_value, list):
-                reason_list = [reason_value]
-            else:
-                reason_list = reason_value
-
-            for reason in reason_list:
-                reason_lower = str(reason).lower()
-
-                if "not greater than 0" in reason_lower:
-                    counts["not_greater_than_zero"] += 1
-                elif "maximumpoquantity" in reason_lower and "minimumpoquantity" in reason_lower:
-                    counts["min_max_relation"] += 1
-
-        return counts
-
-    def get_material_error_subcounts(self) -> dict:
-        """Counts MATERIALNUMBER failures by ORDERPOLICY (BUY vs SubCon)."""
-        counts = {"BUY": 0, "SUBCON": 0}
-
-        for idx, col_reason in self.reason_map.items():
-            reason_value = col_reason.get("MATERIALNUMBER", "")
-
-            if not reason_value:
-                continue
-
-            reason_list = reason_value if isinstance(reason_value, list) else [reason_value]
-
-            for reason in reason_list:
-                reason_lower = str(reason).lower()
-
-                if "orderpolicy 'buy'" in reason_lower:
-                    counts["BUY"] += 1
-                elif "orderpolicy 'subcon'" in reason_lower:
-                    counts["SUBCON"] += 1
-
-        return counts
-
 
 # ══════════════════════════════════════════════
 #  Report Writer
@@ -390,21 +267,9 @@ class PartSourceBuyBusinessReportWriter:
 
     RULES_CONTENT = {
         "MATERIALNUMBER": [
-            "For a Part-Site (MATERIALNUMBER and PLANT) combination with \"BUY\" ORDERPOLICY, "
-            "the part-site's PROCUREMENTTYPE should be maintained as \"F\" in the Part master file.",
-            "For a Part-Site combination with \"SubCon\" ORDERPOLICY, "
-            "the part-site's PROCUREMENTTYPE should be maintained as \"30\" in the Part master file.",
-        ],
-        "MAXIMUMPOQUANTITY": [
-            "MAXIMUMPOQUANTITY must be greater than 0.",
-            "Maximum should be greater than or equal to minimum.",
-        ],
-        "MINIMUMPOQUANTITY": [
-            "MINIMUMPOQUANTITY must be greater than 0.",
-            "Minimum should be lesser than or equal to maximum.",
-        ],
-        "ROUNDINGVALUE": [
-            "ROUNDINGVALUE must be greater than 0.",
+            "For every Part-Site (MATERIALNUMBER and PLANT) combination with \"SubCon\" ORDERPOLICY, "
+            "the combination should be present in the BOM extract "
+            "(MATERIALNUMBER matched to COMPONENT, PLANT matched to PLANT).",
         ],
         "PLANNEDELIVERYTIME": [
             "PLANNEDELIVERYTIME must be greater than 0.",
@@ -503,10 +368,6 @@ class PartSourceBuyBusinessReportWriter:
             for col in bad_cols:
                 col_error_counts[col] = col_error_counts.get(col, 0) + 1
 
-        max_qty_sub = self.validator.get_quantity_error_subcounts("MAXIMUMPOQUANTITY")
-        min_qty_sub = self.validator.get_quantity_error_subcounts("MINIMUMPOQUANTITY")
-        material_sub = self.validator.get_material_error_subcounts()
-
         row_num   = 3
         field_num = 1
 
@@ -538,53 +399,6 @@ class PartSourceBuyBusinessReportWriter:
                 horizontal="left", vertical="center", wrap_text=True
             )
             row_num += 1
-
-            # ── Sub-rows immediately beneath their own parent field ──
-            if col_name == "MATERIALNUMBER" and has_errors:
-                sub_definitions = [
-                    (
-                        "  ↳ BUY: PROCUREMENTTYPE not 'F'",
-                        material_sub["BUY"],
-                        "MATERIALNUMBER: Part-Site with ORDERPOLICY 'BUY' should have PROCUREMENTTYPE 'F' in Part master",
-                    ),
-                    (
-                        "  ↳ SubCon: PROCUREMENTTYPE not '30'",
-                        material_sub["SUBCON"],
-                        "MATERIALNUMBER: Part-Site with ORDERPOLICY 'SubCon' should have PROCUREMENTTYPE '30' in Part master",
-                    ),
-                ]
-                row_num = self._write_sub_rows(ws, row_num, sub_definitions, total_rows)
-
-            elif col_name == "MAXIMUMPOQUANTITY" and has_errors:
-                sub_definitions = [
-                    (
-                        "  ↳ Not greater than 0",
-                        max_qty_sub["not_greater_than_zero"],
-                        "MAXIMUMPOQUANTITY: Value not greater than 0",
-                    ),
-                    (
-                        "  ↳ Maximum less than Minimum",
-                        max_qty_sub["min_max_relation"],
-                        "MAXIMUMPOQUANTITY: Maximum should be greater than or equal to minimum",
-                    ),
-                ]
-                row_num = self._write_sub_rows(ws, row_num, sub_definitions, total_rows)
-
-            elif col_name == "MINIMUMPOQUANTITY" and has_errors:
-                sub_definitions = [
-                    (
-                        "  ↳ Not greater than 0",
-                        min_qty_sub["not_greater_than_zero"],
-                        "MINIMUMPOQUANTITY: Value not greater than 0",
-                    ),
-                    (
-                        "  ↳ Minimum greater than Maximum",
-                        min_qty_sub["min_max_relation"],
-                        "MINIMUMPOQUANTITY: Minimum should be lesser than or equal to maximum",
-                    ),
-                ]
-                row_num = self._write_sub_rows(ws, row_num, sub_definitions, total_rows)
-
             field_num += 1
 
         # ── TOTAL row ──
@@ -661,7 +475,7 @@ class PartSourceBuyBusinessReportWriter:
             col_idx_map = {col: i for i, col in enumerate(subset.columns, start=1)}
 
             # Columns to highlight on this sheet: every column involved in the rule
-            # (MATERIALNUMBER + PLANT + ORDERPOLICY for the Part master check),
+            # (MATERIALNUMBER + PLANT + ORDERPOLICY for the BOM check),
             # otherwise just the field itself.
             highlight_cols = FIELD_HIGHLIGHT_COLS.get(field_name, [field_name])
 
@@ -782,15 +596,15 @@ class PartSourceBuyBusinessReportWriter:
 # ══════════════════════════════════════════════
 class PartSourceBuyBusinessTableProcessor:
 
-    def __init__(self, ps_buy_path: str, partmaster_path: str, output_path: str):
-        self.validator = PartSourceBuyBusinessTableValidator(ps_buy_path, partmaster_path)
+    def __init__(self, ps_buy_path: str, bom_path: str, output_path: str):
+        self.validator = PartSourceBuyBusinessTableValidator(ps_buy_path, bom_path)
         self.writer    = PartSourceBuyBusinessReportWriter(self.validator, output_path)
 
     def run(self):
         print("📂  Loading files …")
         self.validator.load()
         print(f"    PartSource(Buy) columns detected : {list(self.validator.df.columns)}")
-        print(f"    Part master columns detected     : {list(self.validator.pm_df.columns)}")
+        print(f"    BOM columns detected             : {list(self.validator.bom_df.columns)}")
         print("🔍  Validating business rules …")
         self.validator.validate()
         print("📝  Writing report …")
@@ -802,8 +616,8 @@ class PartSourceBuyBusinessTableProcessor:
 # ══════════════════════════════════════════════
 if __name__ == "__main__":
     processor = PartSourceBuyBusinessTableProcessor(
-        ps_buy_path     = PARTSOURCE_BUY_INPUT_FILE,
-        partmaster_path = PARTMASTER_INPUT_FILE,
-        output_path     = OUTPUT_FILE,
+        ps_buy_path = PARTSOURCE_BUY_INPUT_FILE,
+        bom_path    = BOM_INPUT_FILE,
+        output_path = OUTPUT_FILE,
     )
     processor.run()
