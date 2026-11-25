@@ -8,8 +8,8 @@ from openpyxl.utils import get_column_letter
 # ─────────────────────────────────────────────
 #  FILE PATHS
 # ─────────────────────────────────────────────
-PARTRMPM_INPUT_FILE = r"C:\Users\SW526XH\Downloads\Go Live-2\Part_RMPM\Part_RMPM.tab"
-OUTPUT_FILE         = r"C:\Users\SW526XH\Downloads\Go Live-2\Part_RMPM\Validated_Part_RMPM.xlsx"
+PARTRMPM_INPUT_FILE = r"C:\Users\SW526XH\Downloads\Go Live-2\GL2 Extracts\PARTSITE_2026-11-13-1920.tab"
+OUTPUT_FILE         = r"C:\Users\SW526XH\Downloads\Go Live-2\Part_RMPM\Validated_Part_RMPM_Technical_Updated.xlsx"
 
 
 # ─────────────────────────────────────────────
@@ -37,6 +37,7 @@ THIN_BORDER = Border(
 
 # ─────────────────────────────────────────────
 #  MATERIALNUMBER RANGE TABLE (per PRODUCTTYPE)
+#  (kept for reference – range check is currently disabled)
 # ─────────────────────────────────────────────
 PRODUCTTYPE_RANGE = {
     "BLND": ("0000A0000000000000", "0000ZZZZZZZZZZZZZZ"),
@@ -49,14 +50,14 @@ PRODUCTTYPE_RANGE = {
     "FERT": ("14000000000000", "14999999999999"),
 }
 
-# Allowed values for PRODUCTTYPE field (per rule 4a)
-VALID_PRODUCTTYPES = {"BLND", "HALB", "HAWA", "ROH", "HIBE", "VERP", "UNBW"}
+# Allowed values for PRODUCTTYPE field
+VALID_PRODUCTTYPES = {
+    "BLND", "BASB", "HALB", "RAWT", "FERT",
+    "HAWA", "UNBW", "ROH", "HIBE", "VERP",
+}
 
-# Allowed values for MRPTYPE field (per rule 7)
-VALID_MRPTYPES = {"ND", "PD"}
-
-# Consolidated PL (Plant) list (per rule 2a)
-VALIDATED_PLANT = {"1001", "1002"}
+# Allowed values for MRPTYPE field
+VALID_MRPTYPES = {"ND", "PD", "XO"}
 
 
 # ─────────────────────────────────────────────
@@ -67,10 +68,19 @@ KEEP_COLS = [
     "PLANT",
     "PRODUCTDESCRIPTION",
     "PRODUCTTYPE",
-    "PRODUCTHIERARCHY",
+    # "PRODUCTHIERARCHY",
     "BASEUNIT",
     "MRPTYPE",
     "PROCUREMENTTYPE",
+    "MINREMSHELFLIFE",
+    "INTERVALSTOEXPIRYDAYS",
+    "LOTSIZINGPROCEDURE",
+    "FIXEDLOTSIZEQUANTITY",
+    "CARRYINGCOST",          # NEW
+    "INVENTORYRATE",         # NEW
+    "BATCHMANAGED",          # NEW
+    "SPECIALPROCUREMENT",    # NEW
+    # "XPLANTMATSTATUS",
 ]
 
 FIELD_ORDER = [
@@ -78,10 +88,19 @@ FIELD_ORDER = [
     "PLANT",
     "PRODUCTDESCRIPTION",
     "PRODUCTTYPE",
-    "PRODUCTHIERARCHY",
+    # "PRODUCTHIERARCHY",
     "BASEUNIT",
     "MRPTYPE",
     "PROCUREMENTTYPE",
+    "MINREMSHELFLIFE",
+    "INTERVALSTOEXPIRYDAYS",
+    "LOTSIZINGPROCEDURE",
+    "FIXEDLOTSIZEQUANTITY",
+    "CARRYINGCOST",          # NEW
+    "INVENTORYRATE",         # NEW
+    "BATCHMANAGED",          # NEW
+    "SPECIALPROCUREMENT",    # NEW
+    # "XPLANTMATSTATUS",
     "DUPLICATE_CHECK",
 ]
 
@@ -95,15 +114,24 @@ FIELDS_WITH_SUB_ROWS = {
 
 # Per-field single-line reason shown in summary (blank for sub-row fields)
 FIELD_REASON = {
-    "MATERIALNUMBER":       "",   # sub-rows carry reasons
-    "PLANT":                "",   # sub-rows carry reasons
-    "PRODUCTDESCRIPTION":   "PRODUCTDESCRIPTION: Field is blank",
-    "PRODUCTTYPE":          "",   # sub-rows carry reasons
-    "PRODUCTHIERARCHY":     "PRODUCTHIERARCHY: Field is blank",
-    "BASEUNIT":             "BASEUNIT: Field is blank",
-    "MRPTYPE":              "",   # sub-rows carry reasons
-    "PROCUREMENTTYPE":      "PROCUREMENTTYPE: Field is blank",
-    "DUPLICATE_CHECK":      "DUPLICATE_CHECK: Duplicate MATERIALNUMBER-PLANT combination found in extract",
+    "MATERIALNUMBER":        "",   # sub-rows carry reasons
+    "PLANT":                 "",   # sub-rows carry reasons
+    "PRODUCTDESCRIPTION":    "PRODUCTDESCRIPTION: Field is blank",
+    "PRODUCTTYPE":           "",   # sub-rows carry reasons
+    # "PRODUCTHIERARCHY":    "PRODUCTHIERARCHY: Field is blank",
+    "BASEUNIT":              "BASEUNIT: Field is blank",
+    "MRPTYPE":               "",   # sub-rows carry reasons
+    "PROCUREMENTTYPE":       "PROCUREMENTTYPE: Field is blank",
+    "MINREMSHELFLIFE":       "MINREMSHELFLIFE: Field should not be blank",
+    "INTERVALSTOEXPIRYDAYS": "INTERVALSTOEXPIRYDAYS: Field should not be blank",
+    "LOTSIZINGPROCEDURE":    "LOTSIZINGPROCEDURE: Field should not be blank when PRODUCTTYPE is BLND",
+    "FIXEDLOTSIZEQUANTITY":  "FIXEDLOTSIZEQUANTITY: Field should not be blank when PRODUCTTYPE is BLND",
+    "CARRYINGCOST":          "CARRYINGCOST: Field should not be blank",         # NEW
+    "INVENTORYRATE":         "INVENTORYRATE: Field should not be blank",        # NEW
+    "BATCHMANAGED":          "BATCHMANAGED: Field should not be blank",         # NEW
+    "SPECIALPROCUREMENT":    "SPECIALPROCUREMENT: Field should not be blank",   # NEW
+    # "XPLANTMATSTATUS":     "XPLANTMATSTATUS: Field should not be blank",
+    "DUPLICATE_CHECK":       "DUPLICATE_CHECK: Duplicate MATERIALNUMBER-PLANT combination found in extract",
 }
 
 
@@ -118,30 +146,8 @@ class PartRMPMRuleEngine:
 
     # ── MATERIALNUMBER ────────────────────────
     def validate_materialnumber(self, row) -> str:
-        val = row.get("MATERIALNUMBER", "")
-        if self._is_blank(val):
+        if self._is_blank(row.get("MATERIALNUMBER", "")):
             return "MATERIALNUMBER: Field is blank"
-
-        val_str = str(val).strip().upper()
-        ptype   = str(row.get("PRODUCTTYPE", "")).strip().upper()
-
-        range_def = PRODUCTTYPE_RANGE.get(ptype)
-        if range_def is None:
-            # PRODUCTTYPE itself is blank/invalid -> no range to validate against;
-            # PRODUCTTYPE rule will report its own error separately.
-            return ""
-
-        low, high = range_def
-        if len(val_str) != len(low):
-            return (
-                f"MATERIALNUMBER: '{val_str}' does not match the expected "
-                f"number range/format defined for PRODUCTTYPE '{ptype}'"
-            )
-        if not (low <= val_str <= high):
-            return (
-                f"MATERIALNUMBER: '{val_str}' is outside the defined number "
-                f"range for PRODUCTTYPE '{ptype}'"
-            )
         return ""
 
     # ── PLANT ──────────────────────────────────
@@ -149,8 +155,6 @@ class PartRMPMRuleEngine:
         val = str(row.get("PLANT", "")).strip()
         if not val or val == "nan":
             return "PLANT: Field is blank"
-        if val not in VALIDATED_PLANT:
-            return f"PLANT: '{val}' is not present in the consolidated PL list"
         return ""
 
     # ── PRODUCTDESCRIPTION ─────────────────────
@@ -161,20 +165,17 @@ class PartRMPMRuleEngine:
 
     # ── PRODUCTTYPE ─────────────────────────────
     def validate_producttype(self, row) -> str:
-        val = str(row.get("PRODUCTTYPE", "")).strip().upper()
-        if not val or val == "NAN":
+        val = row.get("PRODUCTTYPE", "")
+        if self._is_blank(val):
             return "PRODUCTTYPE: Field is blank"
+
+        val = str(val).strip().upper()
         if val not in VALID_PRODUCTTYPES:
             return (
                 f"PRODUCTTYPE: '{val}' is not a valid value "
-                f"(allowed: BLND, HALB, HAWA, ROH, HIBE, VERP, UNBW)"
+                f"(allowed: BLND, BASB, HALB, RAWT, FERT, HAWA, "
+                f"UNBW, ROH, HIBE, VERP)"
             )
-        return ""
-
-    # ── PRODUCTHIERARCHY ────────────────────────
-    def validate_producthierarchy(self, row) -> str:
-        if self._is_blank(row.get("PRODUCTHIERARCHY")):
-            return "PRODUCTHIERARCHY: Field is blank"
         return ""
 
     # ── BASEUNIT ─────────────────────────────────
@@ -185,11 +186,13 @@ class PartRMPMRuleEngine:
 
     # ── MRPTYPE ───────────────────────────────────
     def validate_mrptype(self, row) -> str:
-        val = str(row.get("MRPTYPE", "")).strip().upper()
-        if not val or val == "NAN":
+        val = row.get("MRPTYPE", "")
+        if self._is_blank(val):
             return "MRPTYPE: Field is blank"
+
+        val = str(val).strip().upper()
         if val not in VALID_MRPTYPES:
-            return f"MRPTYPE: '{val}' is not a valid value (allowed: ND, PD)"
+            return f"MRPTYPE: '{val}' is not a valid value (allowed: ND, PD, XO)"
         return ""
 
     # ── PROCUREMENTTYPE ────────────────────────────
@@ -198,16 +201,75 @@ class PartRMPMRuleEngine:
             return "PROCUREMENTTYPE: Field is blank"
         return ""
 
+    # ── MINREMSHELFLIFE ────────────────────────────
+    def validate_minremshelflife(self, row) -> str:
+        if self._is_blank(row.get("MINREMSHELFLIFE")):
+            return "MINREMSHELFLIFE: Field should not be blank"
+        return ""
+
+    # ── INTERVALSTOEXPIRYDAYS ─────────────────────
+    def validate_intervalstoexpirydays(self, row) -> str:
+        if self._is_blank(row.get("INTERVALSTOEXPIRYDAYS")):
+            return "INTERVALSTOEXPIRYDAYS: Field should not be blank"
+        return ""
+
+    # ── LOTSIZINGPROCEDURE ───────────────────────
+    def validate_lotsizingprocedure(self, row) -> str:
+        producttype = str(row.get("PRODUCTTYPE", "")).strip().upper()
+        if producttype == "BLND" and self._is_blank(row.get("LOTSIZINGPROCEDURE", "")):
+            return "LOTSIZINGPROCEDURE: Field should not be blank when PRODUCTTYPE is BLND"
+        return ""
+
+    # ── FIXEDLOTSIZEQUANTITY ─────────────────────
+    def validate_fixedlotsizequantity(self, row) -> str:
+        producttype = str(row.get("PRODUCTTYPE", "")).strip().upper()
+        if producttype == "BLND" and self._is_blank(row.get("FIXEDLOTSIZEQUANTITY", "")):
+            return "FIXEDLOTSIZEQUANTITY: Field should not be blank when PRODUCTTYPE is BLND"
+        return ""
+
+    # ── CARRYINGCOST (NEW) ───────────────────────
+    def validate_carryingcost(self, row) -> str:
+        if self._is_blank(row.get("CARRYINGCOST")):
+            return "CARRYINGCOST: Field should not be blank"
+        return ""
+
+    # ── INVENTORYRATE (NEW) ──────────────────────
+    def validate_inventoryrate(self, row) -> str:
+        if self._is_blank(row.get("INVENTORYRATE")):
+            return "INVENTORYRATE: Field should not be blank"
+        return ""
+
+    # ── BATCHMANAGED (NEW) ───────────────────────
+    def validate_batchmanaged(self, row) -> str:
+        if self._is_blank(row.get("BATCHMANAGED")):
+            return "BATCHMANAGED: Field should not be blank"
+        return ""
+
+    # ── SPECIALPROCUREMENT (NEW) ─────────────────
+    def validate_specialprocurement(self, row) -> str:
+        if self._is_blank(row.get("SPECIALPROCUREMENT")):
+            return "SPECIALPROCUREMENT: Field should not be blank"
+        return ""
+
     def get_rules(self) -> dict:
         return {
-            "MATERIALNUMBER":      self.validate_materialnumber,
-            "PLANT":               self.validate_plant,
-            "PRODUCTDESCRIPTION":  self.validate_productdescription,
-            "PRODUCTTYPE":         self.validate_producttype,
-            "PRODUCTHIERARCHY":    self.validate_producthierarchy,
-            "BASEUNIT":            self.validate_baseunit,
-            "MRPTYPE":             self.validate_mrptype,
-            "PROCUREMENTTYPE":     self.validate_procurementtype,
+            "MATERIALNUMBER":        self.validate_materialnumber,
+            "PLANT":                 self.validate_plant,
+            "PRODUCTDESCRIPTION":    self.validate_productdescription,
+            "PRODUCTTYPE":           self.validate_producttype,
+            # "PRODUCTHIERARCHY":    self.validate_producthierarchy,
+            "BASEUNIT":              self.validate_baseunit,
+            "MRPTYPE":               self.validate_mrptype,
+            "PROCUREMENTTYPE":       self.validate_procurementtype,
+            "MINREMSHELFLIFE":       self.validate_minremshelflife,
+            "INTERVALSTOEXPIRYDAYS": self.validate_intervalstoexpirydays,
+            "LOTSIZINGPROCEDURE":    self.validate_lotsizingprocedure,
+            "FIXEDLOTSIZEQUANTITY":  self.validate_fixedlotsizequantity,
+            "CARRYINGCOST":          self.validate_carryingcost,         # NEW
+            "INVENTORYRATE":         self.validate_inventoryrate,        # NEW
+            "BATCHMANAGED":          self.validate_batchmanaged,         # NEW
+            "SPECIALPROCUREMENT":    self.validate_specialprocurement,   # NEW
+            # "XPLANTMATSTATUS":     self.validate_xplantmatstatus,
         }
 
 
@@ -223,12 +285,33 @@ class PartRMPMTableValidator:
         self.reason_map    = {}
 
     def load(self):
-        self.df = pd.read_csv(self.partrmpm_path, sep="\t", dtype=str)
+        self.df = pd.read_csv(
+            self.partrmpm_path,
+            sep="\t",
+            dtype=str
+        )
+
+        # Clean column names
         self.df.columns = [c.strip().upper() for c in self.df.columns]
+
+        # Clean PRODUCTTYPE without removing FERT or HAWA
+        if "PRODUCTTYPE" in self.df.columns:
+            self.df["PRODUCTTYPE"] = (
+                self.df["PRODUCTTYPE"]
+                .fillna("")
+                .astype(str)
+                .str.strip()
+                .str.upper()
+            )
 
     def validate(self):
         engine = PartRMPMRuleEngine()
         rules  = engine.get_rules()
+
+        # Warn if any rule column is missing from the extract
+        missing = [c for c in rules if c not in self.df.columns]
+        if missing:
+            print(f"⚠️   Columns not found in extract (rules skipped): {missing}")
 
         for idx, row in self.df.iterrows():
             failed_cols    = []
@@ -300,27 +383,19 @@ class PartRMPMTableValidator:
 
     # ── Sub-count helpers ─────────────────────
     def get_materialnumber_error_subcounts(self) -> dict:
-        counts = {"blank": 0, "out_of_range": 0}
+        counts = {"blank": 0}
         for idx, col_reason in self.reason_map.items():
             reason = col_reason.get("MATERIALNUMBER", "")
-            if not reason:
-                continue
-            if "blank" in reason.lower():
+            if reason and "blank" in reason.lower():
                 counts["blank"] += 1
-            else:
-                counts["out_of_range"] += 1
         return counts
 
     def get_plant_error_subcounts(self) -> dict:
-        counts = {"blank": 0, "not_in_pl_list": 0}
+        counts = {"blank": 0}
         for idx, col_reason in self.reason_map.items():
             reason = col_reason.get("PLANT", "")
-            if not reason:
-                continue
-            if "blank" in reason.lower():
+            if reason and "blank" in reason.lower():
                 counts["blank"] += 1
-            else:
-                counts["not_in_pl_list"] += 1
         return counts
 
     def get_producttype_error_subcounts(self) -> dict:
@@ -359,38 +434,50 @@ class PartRMPMReportWriter:
     RULES_CONTENT = {
         "MATERIALNUMBER": [
             "Must not be blank.",
-            "Must fall within the number range defined for its PRODUCTTYPE "
-            "(BLND/HALB: 0000A0000000000000–0000ZZZZZZZZZZZZZZ, "
-            "HAWA: 15000000000000–15999999999999, "
-            "ROH: 19000000000000–19999999999999, "
-            "HIBE: 16000000000000–16999999999999, "
-            "VERP: 20000000000000–20999999999999, "
-            "UNBW: 22000000000000–22999999999999, "
-            "FERT: 14000000000000–14999999999999).",
         ],
         "PLANT": [
             "Must not be blank.",
-            "Must be present in the consolidated PL list (1001, 1002).",
         ],
         "PRODUCTDESCRIPTION": [
             "Must not be blank.",
         ],
         "PRODUCTTYPE": [
             "Must not be blank.",
-            "Must be one of: BLND, HALB, HAWA, ROH, HIBE, VERP, UNBW.",
-        ],
-        "PRODUCTHIERARCHY": [
-            "Must not be blank.",
+            "Must be one of: BLND, BASB, HALB, RAWT, FERT, HAWA, UNBW, ROH, HIBE, VERP.",
         ],
         "BASEUNIT": [
             "Must not be blank.",
         ],
         "MRPTYPE": [
             "Must not be blank.",
-            "Must be either ND or PD.",
+            "Must be either ND, PD or XO.",
         ],
         "PROCUREMENTTYPE": [
             "Must not be blank.",
+        ],
+        "MINREMSHELFLIFE": [
+            "Field should not be blank.",
+        ],
+        "INTERVALSTOEXPIRYDAYS": [
+            "Field should not be blank.",
+        ],
+        "LOTSIZINGPROCEDURE": [
+            "Field should not be blank when PRODUCTTYPE is BLND.",
+        ],
+        "FIXEDLOTSIZEQUANTITY": [
+            "Field should not be blank when PRODUCTTYPE is BLND.",
+        ],
+        "CARRYINGCOST": [                      # NEW
+            "Field should not be blank.",
+        ],
+        "INVENTORYRATE": [                     # NEW
+            "Field should not be blank.",
+        ],
+        "BATCHMANAGED": [                      # NEW
+            "Field should not be blank.",
+        ],
+        "SPECIALPROCUREMENT": [                # NEW
+            "Field should not be blank.",
         ],
         "DUPLICATE_CHECK": [
             "The Part-Site combination (MATERIALNUMBER + PLANT) must be "
@@ -468,7 +555,7 @@ class PartRMPMReportWriter:
 
         # ── Row 2 : Column headers ──
         headers = ["#", "Field Name", "Error Count", "Record Count",
-                   "% Health", "% of Error", "Reason / Sub-Category"]
+                   "% Health", "% of Error", "Reason"]
         for c_idx, h in enumerate(headers, start=1):
             cell           = ws.cell(row=2, column=c_idx, value=h)
             cell.fill      = SUMM_HDR_FILL
@@ -522,64 +609,36 @@ class PartRMPMReportWriter:
             # ── MATERIALNUMBER sub-rows ──
             if col_name == "MATERIALNUMBER" and has_errors:
                 sub_definitions = [
-                    (
-                        "  ↳ Blank Material Number",
-                        matnum_sub["blank"],
-                        "MATERIALNUMBER: Field is blank",
-                    ),
-                    (
-                        "  ↳ Outside Defined Range for PRODUCTTYPE",
-                        matnum_sub["out_of_range"],
-                        "MATERIALNUMBER: Outside the number range defined for its PRODUCTTYPE",
-                    ),
+                    ("  ↳ Blank Material Number", matnum_sub["blank"],
+                     "MATERIALNUMBER: Field is blank"),
                 ]
                 row_num = self._write_sub_rows(ws, row_num, total_rows, sub_definitions)
 
             # ── PLANT sub-rows ──
             if col_name == "PLANT" and has_errors:
                 sub_definitions = [
-                    (
-                        "  ↳ Blank Plant",
-                        plant_sub["blank"],
-                        "PLANT: Field is blank",
-                    ),
-                    (
-                        "  ↳ Not in Consolidated PL List",
-                        plant_sub["not_in_pl_list"],
-                        "PLANT: Not present in the consolidated PL list (1001, 1002)",
-                    ),
+                    ("  ↳ Blank Plant", plant_sub["blank"],
+                     "PLANT: Field is blank"),
                 ]
                 row_num = self._write_sub_rows(ws, row_num, total_rows, sub_definitions)
 
             # ── PRODUCTTYPE sub-rows ──
             if col_name == "PRODUCTTYPE" and has_errors:
                 sub_definitions = [
-                    (
-                        "  ↳ Blank Product Type",
-                        ptype_sub["blank"],
-                        "PRODUCTTYPE: Field is blank",
-                    ),
-                    (
-                        "  ↳ Invalid Value",
-                        ptype_sub["invalid_value"],
-                        "PRODUCTTYPE: Not one of BLND, HALB, HAWA, ROH, HIBE, VERP, UNBW",
-                    ),
+                    ("  ↳ Blank Product Type", ptype_sub["blank"],
+                     "PRODUCTTYPE: Field is blank"),
+                    ("  ↳ Invalid Value", ptype_sub["invalid_value"],
+                     "PRODUCTTYPE: Not one of BLND, BASB, HALB, RAWT, FERT, HAWA, UNBW, ROH, HIBE, VERP"),
                 ]
                 row_num = self._write_sub_rows(ws, row_num, total_rows, sub_definitions)
 
             # ── MRPTYPE sub-rows ──
             if col_name == "MRPTYPE" and has_errors:
                 sub_definitions = [
-                    (
-                        "  ↳ Blank MRP Type",
-                        mrp_sub["blank"],
-                        "MRPTYPE: Field is blank",
-                    ),
-                    (
-                        "  ↳ Invalid Value",
-                        mrp_sub["invalid_value"],
-                        "MRPTYPE: Not ND or PD",
-                    ),
+                    ("  ↳ Blank MRP Type", mrp_sub["blank"],
+                     "MRPTYPE: Field is blank"),
+                    ("  ↳ Invalid Value", mrp_sub["invalid_value"],
+                     "MRPTYPE: Not one of ND, PD, XO"),
                 ]
                 row_num = self._write_sub_rows(ws, row_num, total_rows, sub_definitions)
 
