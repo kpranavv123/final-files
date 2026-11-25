@@ -7,11 +7,11 @@ from openpyxl.utils import get_column_letter
 # ─────────────────────────────────────────────
 #  FILE PATHS
 # ─────────────────────────────────────────────
-PART_INPUT_FILE              = r"C:\Users\SW526XH\Downloads\Go Live-2\Part\Part.tab"
-PARTSOURCE_MAKE_INPUT_FILE   = r"C:\Users\SW526XH\Downloads\Go Live-2\PartSource\PartSource_Make.tab"
-PARTSOURCE_BUY_INPUT_FILE    = r"C:\Users\SW526XH\Downloads\Go Live-2\PartSource\PartSource_Buy.tab"      # NEW
-SOURCE_CONSTRAINT_INPUT_FILE = r"C:\Users\SW526XH\Downloads\Go Live-2\SourceConstraint\SourceConstraint.tab"
-OUTPUT_FILE                  = r"C:\Users\SW526XH\Downloads\Go Live-2\Part\Validated_Part_Business.xlsx"
+PART_INPUT_FILE              = r"C:\Users\SW526XH\Downloads\Go Live-2\GL2 Extracts\PARTSITE_2026-11-13-1920.tab"
+PARTSOURCE_MAKE_INPUT_FILE   = r"C:\Users\SW526XH\Downloads\Go Live-2\GL2 Extracts\PartSource(Make)2026-11-13-1930.tsv"
+PARTSOURCE_BUY_INPUT_FILE    = r"C:\Users\SW526XH\Downloads\Go Live-2\GL2 Extracts\PartSource_Buy_2026-11-13-1935.tsv"
+SOURCE_CONSTRAINT_INPUT_FILE = r"C:\Users\SW526XH\Downloads\Go Live-2\GL2 Extracts\srcconstraint_2026-11-13-1929.tsv"
+OUTPUT_FILE                  = r"C:\Users\SW526XH\Downloads\Go Live-2\Part_RMPM\Validated_Part_Business.xlsx"
 
 
 # ─────────────────────────────────────────────
@@ -39,41 +39,65 @@ THIN_BORDER = Border(
 # ─────────────────────────────────────────────
 #  COLUMN CONFIG
 # ─────────────────────────────────────────────
-RULE_FIELD = "PROCUREMENTYPE"
+RULE_FIELD = "PROCUREMENTTYPE"
 
 # Part extract
 PART_MATERIAL_COL   = "MATERIALNUMBER"
 PART_PLANT_COL      = "PLANT"
-PROCUREMENT_COL     = "PROCUREMENTYPE"
+PROCUREMENT_COL     = "PROCUREMENTTYPE"
 PROCUREMENT_VALUE_E = "E"
-PROCUREMENT_VALUE_F = "F"                      # NEW
+PROCUREMENT_VALUE_F = "F"
 
 # PartSource (make) extract
 PS_MATERIAL_COL = "MATERIAL"
 PS_PLANT_COL    = "PLANT"
 
-# PartSource (buy) extract                                                   # NEW
+# PartSource (buy) extract
 PB_MATERIAL_COL = "MATERIALNUMBER"
 PB_PLANT_COL    = "PLANT"
 
 # Source Constraint extract
 SC_MATERIAL_COL = "MATERIAL"
-SC_PLANT_COL    = "PLANT"
+SC_PLANT_COL    = "WORKCENTERPLANT"
 SC_FACTOR_COL   = "CONSTRAINTFACTOR"
 
-# ── NEW field rules ──
-MINSHELFLIFE_COL      = "MINIMUMSHELFLIFE"     # must be  > 0
-INTERVALSEXPIRY_COL   = "INTERVALSTOEXPIRY"    # must be >= 0
-STANDARDPRICE_COL     = "STANDARDPRICE"        # non-zero for non FERT / HAWA rows
+# ── Field rules ──
+MINSHELFLIFE_COL    = "MINREMSHELFLIFE"          # must be > 0 when BATCHMANAGED = "Y"
+BATCHMANAGED_COL    = "BATCHMANAGED"             # NEW: Part extract column driving the MINREMSHELFLIFE rule
+BATCHMANAGED_YES    = "Y"                        # NEW
+INTERVALSEXPIRY_COL = "INTERVALSTOEXPIRYDAYS"    # must be >= 0
+STANDARDPRICE_COL   = "STANDARDPRICE"            # (a) non-zero for non FERT/HAWA, (b) non-zero for RM/PM/SFG part class
 
 # Material-type column in the Part extract (first candidate found is used)
 PRODUCT_TYPE_COL_CANDIDATES = ["PRODUCTYPE", "PRODUCTTYPE"]
 FG_HAWA_TYPES               = {"FERT", "HAWA"}
 
-# Blank handling for the numeric rules (MINIMUMSHELFLIFE, INTERVALSTOEXPIRY, STANDARDPRICE):
+# ── NEW: Part class derivation inputs (Part extract) ──
+IBPSTATUS_COL = "IBPSTATUS"
+MRPTYPE_COL   = "MRPTYPE"
+
+# Part class derivation table (PRODUCTTYPE + IBPSTATUS + MRPTYPE -> Part Class)
+#   "*" means any value (including blank).
+#   X0 / XO are treated as the same value.
+#
+#   PRODUCTTYPE | IBPSTATUS        | MRPTYPE | Part Class
+#   BLND        | *                | *       | SFG
+#   HALB        | *                | *       | SFG
+#   HAWA        | N                | *       | RM
+#   HIBE        | blank or X0      | *       | PM
+#   ROH         | *                | *       | RM
+#   VERP        | *                | *       | PM
+#   BASB        | *                | *       | SFG
+#   RAWT        | *                | X0      | SFG
+# Any other combination has no part class and is not checked by sub-rule (b).
+PART_CLASS_SCOPE = ("RM", "PM", "SFG")
+
+# Blank handling for the numeric rules (INTERVALSTOEXPIRYDAYS, STANDARDPRICE sub-rule a):
 #   False -> blank values are skipped (not flagged)       [suite convention]
 #   True  -> blank values are flagged as errors too
 # Non-numeric (non-blank) values are always flagged.
+# NOTE: STANDARDPRICE sub-rule (b) and MINREMSHELFLIFE (when BATCHMANAGED = Y)
+#       always flag blanks, because the value must be > 0 / non-zero.
 BLANK_FAILS_NUMERIC_CHECKS = False
 
 # Sub-rules (b) and (c) behaviour when a Part-Site has NO row at all in the
@@ -82,27 +106,39 @@ BLANK_FAILS_NUMERIC_CHECKS = False
 #   True  -> flagged as an error as well
 MISSING_IN_CONSTRAINT_IS_ERROR = False
 
-# PROCUREMENTYPE sub-rule ids
+# ── PROCUREMENTTYPE sub-rule ids ──
 SUB_A = "a"
 SUB_B = "b"
-SUB_C = "c"                                                                  # NEW
+SUB_C = "c"
 PROCUREMENT_SUBS = (SUB_A, SUB_B, SUB_C)
 
 SUB_RULE_REASON = {
-    SUB_A: "a) PROCUREMENTYPE is 'E' but MATERIALNUMBER-PLANT combination is not present "
+    SUB_A: "a) PROCUREMENTTYPE is 'E' but MATERIALNUMBER-PLANT combination is not present "
            "in PartSource (Make) extract (MATERIAL-PLANT)",
-    SUB_B: "b) PROCUREMENTYPE is 'E' but CONSTRAINTFACTOR is '0' for the MATERIAL-PLANT "
+    SUB_B: "b) PROCUREMENTTYPE is 'E' but CONSTRAINTFACTOR is '0' for the MATERIAL-PLANT "
            "combination in Source Constraint extract",
-    SUB_C: "c) PROCUREMENTYPE is 'F' but MATERIALNUMBER-PLANT combination is not present "
+    SUB_C: "c) PROCUREMENTTYPE is 'F' but MATERIALNUMBER-PLANT combination is not present "
            "in PartSource (Buy) extract (MATERIALNUMBER-PLANT)",
+}
+
+# ── NEW: STANDARDPRICE sub-rule ids ──
+STD_SUBS = (SUB_A, SUB_B)
+STD_SUB_REASON = {
+    SUB_A: "a) STANDARDPRICE must be non-zero for rows where the product type is not FERT or HAWA",
+    SUB_B: "b) STANDARDPRICE must be non-zero for rows whose part class is RM / PM / SFG "
+           "(derived from PRODUCTTYPE + IBPSTATUS + MRPTYPE)",
+}
+
+# Fields that use sub-rows in the Summary: field -> (sub ids, reason dict)
+FIELDS_WITH_SUBS = {
+    RULE_FIELD:        (PROCUREMENT_SUBS, SUB_RULE_REASON),
+    STANDARDPRICE_COL: (STD_SUBS,         STD_SUB_REASON),
 }
 
 # Reasons for the single-rule fields (no sub-rows in the Summary)
 FIELD_REASON = {
-    MINSHELFLIFE_COL:    "MINIMUMSHELFLIFE: must be a number greater than 0.",
-    INTERVALSEXPIRY_COL: "INTERVALSTOEXPIRY: must be a number greater than or equal to 0.",
-    STANDARDPRICE_COL:   "STANDARDPRICE: must be a non-zero number for rows where the product "
-                         "type is not FERT or HAWA.",
+    MINSHELFLIFE_COL:    "MINREMSHELFLIFE: must be a number greater than 0 when BATCHMANAGED is 'Y'.",
+    INTERVALSEXPIRY_COL: "INTERVALSTOEXPIRYDAYS: must be a number greater than or equal to 0.",
 }
 
 FIELD_ORDER = [RULE_FIELD, MINSHELFLIFE_COL, INTERVALSEXPIRY_COL, STANDARDPRICE_COL]
@@ -113,20 +149,16 @@ FIELD_ORDER = [RULE_FIELD, MINSHELFLIFE_COL, INTERVALSEXPIRY_COL, STANDARDPRICE_
 # ══════════════════════════════════════════════
 class PartBusinessRuleEngine:
     """
-    Rule: PROCUREMENTYPE
-      a) If PROCUREMENTYPE = 'E' for a MATERIALNUMBER-PLANT combination in the Part
-         extract, that combination must be present in the PartSource (Make) extract
-         (MATERIAL, PLANT).
-      b) If PROCUREMENTYPE = 'E' for a MATERIALNUMBER-PLANT combination in the Part
-         extract, CONSTRAINTFACTOR must not be '0' for that MATERIAL-PLANT
-         combination in the Source Constraint extract.
-      c) If PROCUREMENTYPE = 'F' for a MATERIALNUMBER-PLANT combination in the Part
-         extract, that combination must be present in the PartSource (Buy) extract
-         (MATERIALNUMBER, PLANT).                                                   [NEW]
+    Rule: PROCUREMENTTYPE
+      a) 'E' Part-Site must be present in the PartSource (Make) extract (MATERIAL, PLANT).
+      b) 'E' Part-Site must not have CONSTRAINTFACTOR '0' in the Source Constraint extract.
+      c) 'F' Part-Site must be present in the PartSource (Buy) extract (MATERIALNUMBER, PLANT).
 
-    Rule: MINIMUMSHELFLIFE   -> must be  > 0                                        [NEW]
-    Rule: INTERVALSTOEXPIRY  -> must be >= 0                                        [NEW]
-    Rule: STANDARDPRICE      -> must be non-zero when product type is not FERT/HAWA [NEW]
+    Rule: MINREMSHELFLIFE     -> when BATCHMANAGED = 'Y' the value must be > 0           [CHANGED]
+    Rule: INTERVALSTOEXPIRY   -> must be >= 0
+    Rule: STANDARDPRICE
+      a) non-zero when product type is not FERT/HAWA
+      b) non-zero when part class is RM / PM / SFG                                       [NEW]
     """
 
     @staticmethod
@@ -148,7 +180,7 @@ class PartBusinessRuleEngine:
         return [c for c in cols if c not in df.columns]
 
     def _proc_rows(self, part_df: pd.DataFrame, proc_value: str) -> pd.DataFrame:
-        """Part rows with PROCUREMENTYPE = proc_value and non-blank MATERIALNUMBER + PLANT.
+        """Part rows with PROCUREMENTTYPE = proc_value and non-blank MATERIALNUMBER + PLANT.
         Returns a frame indexed like part_df with cleaned mat / plant columns."""
         proc  = self._clean(part_df[PROCUREMENT_COL]).str.upper()
         mat   = self._clean(part_df[PART_MATERIAL_COL])
@@ -174,7 +206,7 @@ class PartBusinessRuleEngine:
         for idx, mat, plant in zip(rows.index, rows["mat"], rows["plant"]):
             if (mat, plant) not in other_keys:
                 result[idx] = (
-                    f"PROCUREMENTYPE: '{proc_value}' but {PART_MATERIAL_COL} '{mat}' + "
+                    f"PROCUREMENTTYPE: '{proc_value}' but {PART_MATERIAL_COL} '{mat}' + "
                     f"{PART_PLANT_COL} '{plant}' is not present in {extract_name} extract"
                 )
         return result
@@ -187,7 +219,7 @@ class PartBusinessRuleEngine:
             PROCUREMENT_VALUE_E, SUB_A, "PartSource (Make)",
         )
 
-    # ── Sub-rule (c)  NEW ──
+    # ── Sub-rule (c) ──
     def check_partsource_buy(self, part_df: pd.DataFrame, pb_df: pd.DataFrame) -> dict:
         """F rows whose MATERIALNUMBER-PLANT is missing from the PartSource (Buy) extract."""
         return self._check_presence(
@@ -226,17 +258,17 @@ class PartBusinessRuleEngine:
             key = (mat, plant)
             if key in zero_keys:
                 result[idx] = (
-                    f"PROCUREMENTYPE: 'E' but {SC_FACTOR_COL} is '0' for {SC_MATERIAL_COL} "
+                    f"PROCUREMENTTYPE: 'E' but {SC_FACTOR_COL} is '0' for {SC_MATERIAL_COL} "
                     f"'{mat}' + {SC_PLANT_COL} '{plant}' in Source Constraint extract"
                 )
             elif MISSING_IN_CONSTRAINT_IS_ERROR and key not in factors_by_key:
                 result[idx] = (
-                    f"PROCUREMENTYPE: 'E' but {SC_MATERIAL_COL} '{mat}' + "
+                    f"PROCUREMENTTYPE: 'E' but {SC_MATERIAL_COL} '{mat}' + "
                     f"{SC_PLANT_COL} '{plant}' is not present in Source Constraint extract"
                 )
         return result
 
-    # ── NEW: numeric field rules (> 0  /  >= 0) ──
+    # ── Numeric field rule (>= 0) ──
     def check_numeric_field(self, part_df: pd.DataFrame, field: str, mode: str) -> dict:
         """
         mode '>0'  : value must be greater than 0
@@ -265,7 +297,38 @@ class PartBusinessRuleEngine:
         reason = FIELD_REASON[field]
         return {idx: reason for idx in part_df.index[fail]}
 
-    # ── NEW: STANDARDPRICE (non-zero for non FERT / HAWA rows) ──
+    # ── NEW: MINREMSHELFLIFE > 0 when BATCHMANAGED = 'Y' ──
+    def check_minshelflife_batchmanaged(self, part_df: pd.DataFrame) -> dict:
+        miss = self._missing_cols(part_df, [MINSHELFLIFE_COL, BATCHMANAGED_COL])
+        if miss:
+            print(f"⚠️   Rule '{MINSHELFLIFE_COL}' skipped — column(s) not found in Part extract: {miss}")
+            return {}
+
+        batch = self._clean(part_df[BATCHMANAGED_COL]).str.upper()
+        in_scope = batch == BATCHMANAGED_YES.upper()
+
+        raw   = self._clean(part_df[MINSHELFLIFE_COL])
+        blank = raw == ""
+        num   = pd.to_numeric(raw, errors="coerce")
+        non_numeric = (~blank) & num.isna()
+        not_positive = num.notna() & (num <= 0)
+
+        fail = in_scope & (blank | non_numeric | not_positive)
+
+        result = {}
+        for idx in part_df.index[fail]:
+            if blank.loc[idx]:
+                result[idx] = (f"MINREMSHELFLIFE: is blank but {BATCHMANAGED_COL} is "
+                               f"'{BATCHMANAGED_YES}' (must be greater than 0)")
+            elif non_numeric.loc[idx]:
+                result[idx] = (f"MINREMSHELFLIFE: '{raw.loc[idx]}' is not a valid number "
+                               f"while {BATCHMANAGED_COL} is '{BATCHMANAGED_YES}'")
+            else:
+                result[idx] = (f"MINREMSHELFLIFE: '{raw.loc[idx]}' must be greater than 0 "
+                               f"when {BATCHMANAGED_COL} is '{BATCHMANAGED_YES}'")
+        return result
+
+    # ── STANDARDPRICE sub-rule (a): non-zero for non FERT / HAWA rows ──
     def check_standard_price(self, part_df: pd.DataFrame, type_col):
         if STANDARDPRICE_COL not in part_df.columns:
             print(f"⚠️   Rule '{STANDARDPRICE_COL}' skipped — column not found in Part extract")
@@ -300,6 +363,77 @@ class PartBusinessRuleEngine:
                                f"for a non FERT/HAWA row ({type_col} '{t}')")
         return result
 
+    # ── NEW: Part class derivation (vectorised) ──
+    def derive_part_class(self, part_df: pd.DataFrame, type_col) -> tuple:
+        """
+        Returns (part_class, ibp, mrp) as Series indexed like part_df.
+        part_class is 'SFG' / 'RM' / 'PM' or '' (no class).
+        Missing IBPSTATUS / MRPTYPE columns are treated as blank (a warning is printed).
+        """
+        ptype = self._clean(part_df[type_col]).str.upper()
+
+        if IBPSTATUS_COL in part_df.columns:
+            ibp = self._clean(part_df[IBPSTATUS_COL]).str.upper()
+        else:
+            print(f"⚠️   {IBPSTATUS_COL} column not found in Part extract — treated as blank "
+                  f"for part class derivation (HAWA rows will not get a class; HIBE rows will be PM)")
+            ibp = pd.Series("", index=part_df.index)
+
+        if MRPTYPE_COL in part_df.columns:
+            mrp = self._clean(part_df[MRPTYPE_COL]).str.upper()
+        else:
+            print(f"⚠️   {MRPTYPE_COL} column not found in Part extract — treated as blank "
+                  f"for part class derivation (RAWT rows will not get a class)")
+            mrp = pd.Series("", index=part_df.index)
+
+        ibp_x0 = ibp.isin({"X0", "XO"})
+        mrp_x0 = mrp.isin({"X0", "XO"})
+
+        sfg = ptype.isin({"BLND", "HALB", "BASB"}) | ((ptype == "RAWT") & mrp_x0)
+        rm  = (ptype == "ROH")  | ((ptype == "HAWA") & (ibp == "N"))
+        pm  = (ptype == "VERP") | ((ptype == "HIBE") & ((ibp == "") | ibp_x0))
+
+        part_class = pd.Series("", index=part_df.index)
+        part_class[sfg] = "SFG"
+        part_class[rm]  = "RM"
+        part_class[pm]  = "PM"
+        return part_class, ibp, mrp
+
+    # ── NEW: STANDARDPRICE sub-rule (b): non-zero for RM / PM / SFG part class ──
+    def check_standard_price_partclass(self, part_df: pd.DataFrame, type_col) -> dict:
+        if STANDARDPRICE_COL not in part_df.columns:
+            print(f"⚠️   Rule '{STANDARDPRICE_COL}' (b) skipped — column not found in Part extract")
+            return {}
+        if type_col is None:
+            print(f"⚠️   Rule '{STANDARDPRICE_COL}' (b) skipped — none of "
+                  f"{PRODUCT_TYPE_COL_CANDIDATES} found in Part extract")
+            return {}
+
+        part_class, ibp, mrp = self.derive_part_class(part_df, type_col)
+        ptype    = self._clean(part_df[type_col]).str.upper()
+        in_scope = part_class.isin(PART_CLASS_SCOPE)
+
+        raw   = self._clean(part_df[STANDARDPRICE_COL])
+        blank = raw == ""
+        num   = pd.to_numeric(raw, errors="coerce")
+        zero        = num.notna() & (num == 0)
+        non_numeric = (~blank) & num.isna()
+
+        # Blank always fails here: a blank price cannot be non-zero
+        fail = in_scope & (zero | non_numeric | blank)
+
+        result = {}
+        for idx in part_df.index[fail]:
+            ctx = (f"part class {part_class.loc[idx]}: {type_col} '{ptype.loc[idx]}', "
+                   f"{IBPSTATUS_COL} '{ibp.loc[idx]}', {MRPTYPE_COL} '{mrp.loc[idx]}'")
+            if zero.loc[idx]:
+                result[idx] = f"STANDARDPRICE: is 0 for a row with {ctx}"
+            elif blank.loc[idx]:
+                result[idx] = f"STANDARDPRICE: is blank for a row with {ctx}"
+            else:
+                result[idx] = f"STANDARDPRICE: '{raw.loc[idx]}' is not a valid number for a row with {ctx}"
+        return result
+
 
 # ══════════════════════════════════════════════
 #  Validator
@@ -318,7 +452,8 @@ class PartBusinessTableValidator:
         self.product_type_col = None
         self.error_map  = {}   # row_idx -> [failed field names]
         self.reason_map = {}   # row_idx -> {field: reason}
-        self.sub_map    = {}   # row_idx -> {sub_rule_id: reason}   (PROCUREMENTYPE only)
+        # field -> {row_idx: {sub_rule_id: reason}}   (PROCUREMENTTYPE and STANDARDPRICE)
+        self.sub_map    = {f: {} for f in FIELDS_WITH_SUBS}
 
     @staticmethod
     def _read(path: str) -> pd.DataFrame:
@@ -342,35 +477,41 @@ class PartBusinessTableValidator:
             self.error_map[idx].append(field)
         self.reason_map.setdefault(idx, {})[field] = reason
 
-    def validate(self):
-        engine = PartBusinessRuleEngine()
-
-        # ── PROCUREMENTYPE (sub-rules a, b, c) ──
-        a_reasons = engine.check_partsource(self.df, self.ps_df)
-        b_reasons = engine.check_constraint_factor(self.df, self.sc_df)
-        c_reasons = engine.check_partsource_buy(self.df, self.pb_df)
-
-        for sub_id, reasons in ((SUB_A, a_reasons), (SUB_B, b_reasons), (SUB_C, c_reasons)):
+    def _register_subs(self, field: str, sub_results: list):
+        """sub_results: [(sub_id, {row_idx: reason}), ...] -> fills sub_map and error maps."""
+        for sub_id, reasons in sub_results:
             for idx, reason in reasons.items():
-                self.sub_map.setdefault(idx, {})[sub_id] = reason
+                self.sub_map[field].setdefault(idx, {})[sub_id] = reason
 
-        for idx, subs in self.sub_map.items():
+        for idx, subs in self.sub_map[field].items():
             self._add_error(
-                idx, RULE_FIELD,
+                idx, field,
                 " | ".join(f"[{sid}] {txt}" for sid, txt in subs.items()),
             )
 
-        # ── MINIMUMSHELFLIFE  (> 0) ──
-        for idx, reason in engine.check_numeric_field(self.df, MINSHELFLIFE_COL, ">0").items():
+    def validate(self):
+        engine = PartBusinessRuleEngine()
+
+        # ── PROCUREMENTTYPE (sub-rules a, b, c) ──
+        self._register_subs(RULE_FIELD, [
+            (SUB_A, engine.check_partsource(self.df, self.ps_df)),
+            (SUB_B, engine.check_constraint_factor(self.df, self.sc_df)),
+            (SUB_C, engine.check_partsource_buy(self.df, self.pb_df)),
+        ])
+
+        # ── MINREMSHELFLIFE  (> 0 when BATCHMANAGED = 'Y') ──
+        for idx, reason in engine.check_minshelflife_batchmanaged(self.df).items():
             self._add_error(idx, MINSHELFLIFE_COL, reason)
 
-        # ── INTERVALSTOEXPIRY  (>= 0) ──
+        # ── INTERVALSTOEXPIRYDAYS  (>= 0) ──
         for idx, reason in engine.check_numeric_field(self.df, INTERVALSEXPIRY_COL, ">=0").items():
             self._add_error(idx, INTERVALSEXPIRY_COL, reason)
 
-        # ── STANDARDPRICE  (non-zero for non FERT / HAWA) ──
-        for idx, reason in engine.check_standard_price(self.df, self.product_type_col).items():
-            self._add_error(idx, STANDARDPRICE_COL, reason)
+        # ── STANDARDPRICE (a: non FERT/HAWA, b: RM/PM/SFG part class) ──
+        self._register_subs(STANDARDPRICE_COL, [
+            (SUB_A, engine.check_standard_price(self.df, self.product_type_col)),
+            (SUB_B, engine.check_standard_price_partclass(self.df, self.product_type_col)),
+        ])
 
     def get_error_series(self) -> pd.Series:
         result = {}
@@ -392,9 +533,10 @@ class PartBusinessTableValidator:
                 field_errors.setdefault(col, []).append(row_idx)
         return field_errors
 
-    def get_sub_rule_counts(self) -> dict:
-        counts = {sid: 0 for sid in PROCUREMENT_SUBS}
-        for subs in self.sub_map.values():
+    def get_sub_rule_counts(self, field: str = RULE_FIELD) -> dict:
+        sub_ids = FIELDS_WITH_SUBS[field][0]
+        counts  = {sid: 0 for sid in sub_ids}
+        for subs in self.sub_map[field].values():
             for sid in subs:
                 counts[sid] += 1
         return counts
@@ -410,26 +552,33 @@ class PartBusinessReportWriter:
 
     RULES_CONTENT = {
         RULE_FIELD: [
-            "a) If PROCUREMENTYPE is 'E' for a MATERIALNUMBER-PLANT combination in the "
+            "a) If PROCUREMENTTYPE is 'E' for a MATERIALNUMBER-PLANT combination in the "
             "Part extract, that combination must be present in the PartSource (Make) "
             "extract (MATERIAL and PLANT columns).",
-            "b) If PROCUREMENTYPE is 'E' for a MATERIALNUMBER-PLANT combination in the "
+            "b) If PROCUREMENTTYPE is 'E' for a MATERIALNUMBER-PLANT combination in the "
             "Part extract, CONSTRAINTFACTOR must not be '0' for that MATERIAL-PLANT "
             "combination in the Source Constraint extract.",
-            "c) If PROCUREMENTYPE is 'F' for a MATERIALNUMBER-PLANT combination in the "
+            "c) If PROCUREMENTTYPE is 'F' for a MATERIALNUMBER-PLANT combination in the "
             "Part extract, that combination must be present in the PartSource (Buy) "
             "extract (MATERIALNUMBER and PLANT columns).",
         ],
         MINSHELFLIFE_COL: [
-            "MINIMUMSHELFLIFE must be a number greater than 0.",
+            "When BATCHMANAGED = 'Y', MINREMSHELFLIFE must be a number greater than 0 "
+            "(blank, 0, negative or non-numeric values are flagged).",
         ],
         INTERVALSEXPIRY_COL: [
-            "INTERVALSTOEXPIRY must be a number greater than or equal to 0.",
+            "INTERVALSTOEXPIRYDAYS must be a number greater than or equal to 0.",
         ],
         STANDARDPRICE_COL: [
-            "STANDARDPRICE must be non-zero for rows where the product type "
-            "(PRODUCTYPE column) is not FERT or HAWA (e.g. HALB, ROH).",
-            "FERT and HAWA rows are not checked by this rule.",
+            "a) STANDARDPRICE must be non-zero for rows where the product type "
+            "(PRODUCTYPE column) is not FERT or HAWA (e.g. HALB, ROH). "
+            "FERT and HAWA rows are not checked by this sub-rule.",
+            "b) STANDARDPRICE must be non-zero (blank, 0 or non-numeric values are flagged) "
+            "for rows whose part class is RM, PM or SFG. Part class is derived as: "
+            "BLND / HALB / BASB = SFG; HAWA with IBPSTATUS 'N' = RM; ROH = RM; "
+            "HIBE with IBPSTATUS blank or 'X0' = PM; VERP = PM; "
+            "RAWT with MRPTYPE 'X0' = SFG. Other combinations have no part class "
+            "and are not checked by this sub-rule.",
         ],
     }
 
@@ -466,19 +615,28 @@ class PartBusinessReportWriter:
             if fill:
                 cell.fill = fill
 
-    def _highlight_cols_for(self, field_name: str) -> list:
-        """Part columns highlighted red when the given rule fails."""
+    def _highlight_cols_for(self, field_name: str, row_idx) -> list:
+        """Part columns highlighted red for this row when the given rule fails."""
+        v = self.validator
         if field_name == RULE_FIELD:
             return [PROCUREMENT_COL, PART_MATERIAL_COL, PART_PLANT_COL]
+
         if field_name == STANDARDPRICE_COL:
             cols = [STANDARDPRICE_COL]
-            if self.validator.product_type_col:
-                cols.append(self.validator.product_type_col)   # cross-field rule: both involved
+            if v.product_type_col:
+                cols.append(v.product_type_col)               # cross-field rule: both involved
+            # Sub-rule (b) also depends on IBPSTATUS and MRPTYPE
+            if SUB_B in v.sub_map[STANDARDPRICE_COL].get(row_idx, {}):
+                cols.extend([IBPSTATUS_COL, MRPTYPE_COL])
             return cols
+
+        if field_name == MINSHELFLIFE_COL:
+            return [MINSHELFLIFE_COL, BATCHMANAGED_COL]       # cross-field rule: both involved
+
         return [field_name]
 
     # ══════════════════════════════════════════
-    #  Summary sheet  (field row + sub-rows for PROCUREMENTYPE)
+    #  Summary sheet  (field row + sub-rows for fields with sub-rules)
     # ══════════════════════════════════════════
     def _write_summary_sheet_into(self, ws, error_map: dict, total_rows: int):
 
@@ -506,8 +664,6 @@ class PartBusinessReportWriter:
             for col in bad_cols:
                 col_error_counts[col] = col_error_counts.get(col, 0) + 1
 
-        sub_counts = self.validator.get_sub_rule_counts()
-
         row_num   = 3
         field_num = 1
 
@@ -516,9 +672,9 @@ class PartBusinessReportWriter:
             pct_error  = round((count / total_rows) * 100, 2) if total_rows else 0
             pct_health = round(100 - pct_error, 2)
 
-            has_subs = (col_name == RULE_FIELD)
+            has_subs = col_name in FIELDS_WITH_SUBS
             # Fields with sub-rows show their reasons on the sub-rows instead
-            reason   = "" if has_subs else (FIELD_REASON[col_name] if count > 0 else "")
+            reason   = "" if has_subs else (FIELD_REASON.get(col_name, "") if count > 0 else "")
 
             ws.cell(row=row_num, column=1, value=field_num)
             ws.cell(row=row_num, column=2, value=col_name)
@@ -533,9 +689,12 @@ class PartBusinessReportWriter:
             )
             row_num += 1
 
-            # Sub-rule rows (PROCUREMENTYPE only)
+            # Sub-rule rows (PROCUREMENTTYPE and STANDARDPRICE)
             if has_subs:
-                for sid in PROCUREMENT_SUBS:
+                sub_ids, sub_reason_map = FIELDS_WITH_SUBS[col_name]
+                sub_counts = self.validator.get_sub_rule_counts(col_name)
+
+                for sid in sub_ids:
                     s_count = sub_counts.get(sid, 0)
                     s_err   = round((s_count / total_rows) * 100, 2) if total_rows else 0
                     s_hlth  = round(100 - s_err, 2)
@@ -547,7 +706,7 @@ class PartBusinessReportWriter:
                     ws.cell(row=row_num, column=5, value=f"{s_hlth}%")
                     ws.cell(row=row_num, column=6, value=f"{s_err}%")
                     ws.cell(row=row_num, column=7,
-                            value=SUB_RULE_REASON[sid] if s_count > 0 else "")
+                            value=sub_reason_map[sid] if s_count > 0 else "")
                     self._style_summary_data_row(ws, row_num, fill=WHITE_FILL, italic=True)
                     ws.cell(row=row_num, column=2).alignment = Alignment(horizontal="left", vertical="center")
                     ws.cell(row=row_num, column=7).alignment = Alignment(
@@ -634,9 +793,6 @@ class PartBusinessReportWriter:
             self._write_header(ws, subset.columns)
             col_idx_map = {col: i for i, col in enumerate(subset.columns, start=1)}
 
-            # Only the columns involved in THIS sheet's rule are highlighted
-            highlight_cols = self._highlight_cols_for(field_name)
-
             for excel_row, (orig_idx, row_data) in enumerate(subset.iterrows(), start=2):
                 for c_idx, (col, value) in enumerate(zip(subset.columns, row_data), start=1):
                     cell           = ws.cell(row=excel_row, column=c_idx, value=value)
@@ -645,7 +801,8 @@ class PartBusinessReportWriter:
                     cell.fill      = WHITE_FILL
                     cell.border    = THIN_BORDER
 
-                for target_col in highlight_cols:
+                # Only the columns involved in THIS row's failing rule are highlighted
+                for target_col in self._highlight_cols_for(field_name, orig_idx):
                     if target_col in col_idx_map:
                         target_cell      = ws.cell(row=excel_row, column=col_idx_map[target_col])
                         target_cell.fill = RED_FILL
@@ -741,16 +898,19 @@ class PartBusinessReportWriter:
 
         wb.save(self.output_path)
 
-        sub_counts         = v.get_sub_rule_counts()
+        proc_counts        = v.get_sub_rule_counts(RULE_FIELD)
+        price_counts       = v.get_sub_rule_counts(STANDARDPRICE_COL)
         errors_by_field    = v.get_errors_by_field()
         fields_with_errors = [f for f in FIELD_ORDER if f in errors_by_field]
         print(f"\n✅  Output saved  → {self.output_path}")
         print(f"   Total rows    : {len(df)}")
         print(f"   Error rows    : {len(v.error_map)}")
-        print(f"   PROCUREMENTYPE sub-rule (a) : {sub_counts[SUB_A]}")
-        print(f"   PROCUREMENTYPE sub-rule (b) : {sub_counts[SUB_B]}")
-        print(f"   PROCUREMENTYPE sub-rule (c) : {sub_counts[SUB_C]}")
-        for f in (MINSHELFLIFE_COL, INTERVALSEXPIRY_COL, STANDARDPRICE_COL):
+        print(f"   PROCUREMENTTYPE sub-rule (a) : {proc_counts[SUB_A]}")
+        print(f"   PROCUREMENTTYPE sub-rule (b) : {proc_counts[SUB_B]}")
+        print(f"   PROCUREMENTTYPE sub-rule (c) : {proc_counts[SUB_C]}")
+        print(f"   STANDARDPRICE   sub-rule (a) : {price_counts[SUB_A]}")
+        print(f"   STANDARDPRICE   sub-rule (b) : {price_counts[SUB_B]}")
+        for f in (MINSHELFLIFE_COL, INTERVALSEXPIRY_COL):
             print(f"   {f:28s}: {len(errors_by_field.get(f, []))}")
         print(f"   Field sheets  : {fields_with_errors}")
 
