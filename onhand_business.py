@@ -1,5 +1,5 @@
-
 import re
+import traceback
 import pandas as pd
 from openpyxl import Workbook
 from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
@@ -9,14 +9,39 @@ from openpyxl.utils import get_column_letter
 # ─────────────────────────────────────────────
 #  FILE PATHS
 # ─────────────────────────────────────────────
-ONHAND_INPUT_FILE = r"C:\Users\SW526XH\Downloads\Go Live-2\OnHand\New_extract_for_business_onHand.tab"
-OUTPUT_FILE        = r"C:\Users\SW526XH\Downloads\Go Live-2\Onhand\Validated_Onhand_Business2.xlsx"
+ONHAND_INPUT_FILE = r"C:\Users\SW526XH\Downloads\Go Live-2\GL2 Extracts\OnHand.tab"
+PART_INPUT_FILE   = r"C:\Users\SW526XH\Downloads\Go Live-2\GL2 Extracts\Part.tab"   # <-- check this path
+OUTPUT_FILE       = r"C:\Users\SW526XH\Downloads\Go Live-2\Onhand\Validated_Onhand_Business.xlsx"
 
 
 # ─────────────────────────────────────────────
 #  DATE FORMAT
 # ─────────────────────────────────────────────
 DATE_PATTERN = re.compile(r'^\d{4}(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])$')  # YYYYMMDD
+
+
+# ─────────────────────────────────────────────
+#  PART CLASS (FG vs RM/PM/SFG) CONFIGURATION
+#  Onhand has MATERIALNUMBER / MATERIALTYPE but no IBPSTATUS, so IBPSTATUS and
+#  MRPTYPE are looked up in the Part extract on MATERIALNUMBER + PLANT.
+# ─────────────────────────────────────────────
+PART_FG      = "FG"
+PART_RMPMSFG = "RM/PM/SFG"
+
+# Part extract columns used for the lookup
+PART_KEY_COLS    = ["MATERIALNUMBER", "PLANT"]
+PART_LOOKUP_COLS = ["IBPSTATUS", "MRPTYPE"]
+
+# FG
+FG_FERT_HAWA_TYPES  = {"FERT", "HAWA"}          # FG only when IBPSTATUS in FG_IBP_STATUSES
+FG_IBP_STATUSES     = {"IBP", "IBPEXP"}         # normalised (no spaces / underscores)
+FG_ANY_IBP_TYPES    = {"UNBW"}                  # FG for any IBPSTATUS (even if not found in Part)
+
+# RM / PM / SFG
+HAWA_RM_IBP_STATUS  = "N"                       # HAWA with IBPSTATUS N  -> RM/PM/SFG
+MRPTYPE_TYPES       = {"HIBE", "RAWT"}          # RM/PM/SFG only when Part MRPTYPE == "X0"
+MRPTYPE_VALUE       = "X0"
+RMPMSFG_AS_IS_TYPES = {"BLND", "HALB", "ROH", "VERP", "BASB"}   # taken as they are
 
 
 # ─────────────────────────────────────────────
@@ -28,9 +53,9 @@ NETTABLE_COLS  = ["MATERIALTYPE", "TYPE", "SUBTYPE", "STORAGELOCATION"]
 NETTABLE       = "NETTABLE"
 NON_NETTABLE   = "NONNETTABLE"
 
-# Rule 1: MATERIALTYPE FERT / HAWA
 # TYPE -> allowed SUBTYPE values (normalised: upper-case, no spaces/underscores/hyphens)
-TYPE_RULES_FERT_HAWA = {
+# Part FG
+TYPE_RULES_FG = {
     "BLOCKEDSTOCK":                    {NON_NETTABLE},
     "BLOCKEDSTOCKRETURNS":             {NON_NETTABLE},
     "QUALITYINSPECTION":               {NETTABLE, NON_NETTABLE},
@@ -40,26 +65,23 @@ TYPE_RULES_FERT_HAWA = {
     "VENDORSTOCK":                     {NETTABLE},
 }
 
-# Rule 2: MATERIALTYPE ROH / VERP
-TYPE_RULES_ROH_VERP = {
-    "BLOCKEDSTOCK":                 {NON_NETTABLE},
-    "BLOCKEDSTOCKRETURNS":          {NON_NETTABLE},
-    "QUALITYINSPECTION":            {NETTABLE},
-    "SCHEDULEDFORDELIVERY":         {NON_NETTABLE},
-    "VALUATEDUNRESTRICTEDUSESTOCK": {NETTABLE},
-    "VENDORSTOCK":                  {NETTABLE},
+# Part RM / PM / SFG
+TYPE_RULES_RMPMSFG = {
+    "BLOCKEDSTOCK":                    {NON_NETTABLE},
+    "BLOCKEDSTOCKRETURNS":             {NON_NETTABLE},
+    "QUALITYINSPECTION":               {NETTABLE},
+    "SCHEDULEDFORDELIVERY":            {NON_NETTABLE},
+    "VALUATEDUNRESTRICTEDUSESTOCK":    {NETTABLE},
+    "VENDORSTOCK":                     {NETTABLE},
 }
 
-# MATERIALTYPE -> TYPE/SUBTYPE rule set (other material types are not checked)
-MATERIAL_TYPE_RULES = {
-    "FERT": TYPE_RULES_FERT_HAWA,
-    "HAWA": TYPE_RULES_FERT_HAWA,
-    "ROH":  TYPE_RULES_ROH_VERP,
-    "VERP": TYPE_RULES_ROH_VERP,
+PART_CLASS_RULES = {
+    PART_FG:      TYPE_RULES_FG,
+    PART_RMPMSFG: TYPE_RULES_RMPMSFG,
 }
 
-# Nettable STORAGELOCATION sub-rule applies only to these material types (for now)
-LOCATION_CHECK_MATERIAL_TYPES = {"FERT", "HAWA"}
+# Nettable STORAGELOCATION sub-rule applies only to these part classes
+LOCATION_CHECK_PART_CLASSES = {PART_FG}
 
 # Blank location is represented by this token
 BLANK_LOCATION_TOKEN = "BLANK LOCATION"
@@ -69,6 +91,13 @@ NETTABLE_LOCATIONS = {
     "0007", "0003", "0009", "0036", "0037", "0040",
     "1809", "1817", "1879", "FG01",
 }
+
+
+# ─────────────────────────────────────────────
+#  VALUATEDUNRESTRICTEDUSESTOCK (quantity) RULE
+# ─────────────────────────────────────────────
+QTY_FIELD        = "VALUATEDUNRESTRICTEDUSESTOCK"   # rule / field name shown in the report
+QTY_COL_FALLBACKS = ["VALUATEDUNRESTRICTEDUSESTOCK", "QTY"]   # source column names to look for
 
 
 # ─────────────────────────────────────────────
@@ -96,12 +125,13 @@ THIN_BORDER = Border(
 # ─────────────────────────────────────────────
 #  FIELD ORDER  (only fields with business rules)
 # ─────────────────────────────────────────────
-FIELD_ORDER = ["DATEOFLASTGOODSRECEIPT", NETTABLE_FIELD]
+FIELD_ORDER = ["DATEOFLASTGOODSRECEIPT", NETTABLE_FIELD, QTY_FIELD]
 
 # Field(s) that use sub-rows in the summary
 FIELDS_WITH_SUB_ROWS = {"DATEOFLASTGOODSRECEIPT", NETTABLE_FIELD}
 
 # Source columns highlighted red on the error sheet for each rule
+# (QTY_FIELD is resolved at run time to the actual source column name)
 INVOLVED_COLUMNS = {
     "DATEOFLASTGOODSRECEIPT": ["DATEOFLASTGOODSRECEIPT"],
     NETTABLE_FIELD:           NETTABLE_COLS,
@@ -121,13 +151,13 @@ SUB_ROW_DEFS = {
         #  "duplicate value"),
     ],
     NETTABLE_FIELD: [
-        ("  ↳ Unrecognised TYPE for MATERIALTYPE", "unknown_type",
-         "TYPE: Value is not valid for the given MATERIALTYPE",
+        ("  ↳ Unrecognised TYPE for Part Class", "unknown_type",
+         "TYPE: Value is not valid for the given Part Class (FG / RM-PM-SFG)",
          "is not a recognised Onhand TYPE"),
         ("  ↳ Invalid SUBTYPE for TYPE", "bad_subtype",
-         "SUBTYPE: Value not allowed for the given MATERIALTYPE / TYPE (Nettable / Non Nettable)",
+         "SUBTYPE: Value not allowed for the given Part Class / TYPE (Nettable / Non Nettable)",
          "is not an allowed SUBTYPE for TYPE"),
-        ("  ↳ Nettable – Invalid STORAGELOCATION (FERT/HAWA)", "n_location",
+        ("  ↳ Nettable – Invalid STORAGELOCATION (FG)", "n_location",
          "STORAGELOCATION: Not in the allowed Nettable location list",
          "is not a valid Nettable location"),
     ],
@@ -142,8 +172,17 @@ def _is_blank(value) -> bool:
 
 
 def _norm_key(value) -> str:
-    """Upper-case and strip spaces / underscores / hyphens (for TYPE / SUBTYPE matching)."""
+    """Upper-case and strip spaces / underscores / hyphens (for TYPE / SUBTYPE / IBPSTATUS matching)."""
+    if pd.isna(value):
+        return ""
     return re.sub(r"[\s_\-]+", "", str(value)).upper()
+
+
+def _norm_id(value) -> str:
+    """Upper-case + trim (for MATERIALNUMBER / PLANT / MRPTYPE matching)."""
+    if pd.isna(value):
+        return ""
+    return str(value).strip().upper()
 
 
 # ══════════════════════════════════════════════
@@ -157,17 +196,51 @@ class OnhandBusinessRuleEngine:
         b) Field should be in the format YYYYMMDD.
         (Uniqueness check is currently disabled.)
 
-      MATERIALTYPE / TYPE / SUBTYPE / STORAGELOCATION
-        Only MATERIALTYPE FERT, HAWA, ROH, VERP are checked.
-        a) TYPE must be recognised for the MATERIALTYPE.
-        b) SUBTYPE must be allowed for that MATERIALTYPE + TYPE.
-        c) FERT / HAWA only: if SUBTYPE is Nettable, STORAGELOCATION must be in
-           the Nettable location list (blank location is valid).
+      TYPE_SUBTYPE_STORAGELOCATION
+        Part class is derived first (Part extract lookup on MATERIALNUMBER + PLANT):
+          FG        : MATERIALTYPE FERT/HAWA with IBPSTATUS IBP/IBPEXP, or UNBW (any IBPSTATUS)
+          RM/PM/SFG : HAWA with IBPSTATUS N; HIBE/RAWT with MRPTYPE X0;
+                      BLND/HALB/ROH/VERP/BASB as they are
+        Rows that match neither class are not checked.
+        a) TYPE must be recognised for the Part class.
+        b) SUBTYPE must be allowed for that Part class + TYPE.
+        c) FG only: if SUBTYPE is Nettable, STORAGELOCATION must be in the
+           Nettable location list (blank location is valid).
+
+      VALUATEDUNRESTRICTEDUSESTOCK
+        Field should be > 0 (blank values are skipped).
     """
 
-    def __init__(self, value_counts: dict, check_nettable: bool = True):
-        self.value_counts   = value_counts    # normalized value (str) -> occurrence count
-        self.check_nettable = check_nettable  # False if required columns are missing
+    def __init__(self, part_lookup: dict, qty_col, check_nettable: bool = True):
+        self.part_lookup    = part_lookup     # (MATERIALNUMBER, PLANT) -> (IBPSTATUS, MRPTYPE)
+        self.qty_col        = qty_col         # actual source column for the quantity rule (or None)
+        self.check_nettable = check_nettable
+        self.class_counts   = {PART_FG: 0, PART_RMPMSFG: 0, "UNCLASSIFIED": 0}
+
+    # ── Part class derivation ─────────────────
+    def _part_class(self, mat_key: str, mat_num: str, plant: str):
+        if mat_key in FG_ANY_IBP_TYPES:
+            return PART_FG
+
+        if mat_key in RMPMSFG_AS_IS_TYPES:
+            return PART_RMPMSFG
+
+        if mat_key in FG_FERT_HAWA_TYPES or mat_key in MRPTYPE_TYPES:
+            ibp, mrp = self.part_lookup.get((mat_num, plant), ("", ""))
+
+            if mat_key in FG_FERT_HAWA_TYPES:
+                if ibp in FG_IBP_STATUSES:
+                    return PART_FG
+                if mat_key == "HAWA" and ibp == HAWA_RM_IBP_STATUS:
+                    return PART_RMPMSFG
+                return None
+
+            # HIBE / RAWT
+            if mrp == MRPTYPE_VALUE:
+                return PART_RMPMSFG
+            return None
+
+        return None
 
     # ── DATEOFLASTGOODSRECEIPT ────────────────
     def _check_dlgr(self, row, reasons: dict):
@@ -178,7 +251,7 @@ class OnhandBusinessRuleEngine:
             reasons["DATEOFLASTGOODSRECEIPT"] = "DATEOFLASTGOODSRECEIPT: Field is blank"
             return
 
-        val_str = str(val).strip()
+        val_str     = str(val).strip()
         sub_reasons = []
 
         # ── Format check ──
@@ -197,37 +270,62 @@ class OnhandBusinessRuleEngine:
         if sub_reasons:
             reasons["DATEOFLASTGOODSRECEIPT"] = " | ".join(sub_reasons)
 
-    # ── MATERIALTYPE / TYPE / SUBTYPE / STORAGELOCATION ────────
+    # ── VALUATEDUNRESTRICTEDUSESTOCK > 0 ──────
+    def _check_qty(self, row, reasons: dict):
+        if not self.qty_col:
+            return
+
+        val = row.get(self.qty_col, "")
+
+        # Blank values are allowed for this rule
+        if _is_blank(val):
+            return
+
+        try:
+            num = float(str(val).strip().replace(",", ""))
+        except (ValueError, TypeError):
+            return   # non-numeric values are not flagged by this rule
+
+        if num <= 0:
+            reasons[QTY_FIELD] = f"{QTY_FIELD}: '{str(val).strip()}' should be > 0"
+
+    # ── TYPE / SUBTYPE / STORAGELOCATION ──────
     def _check_nettable(self, row, reasons: dict):
         if not self.check_nettable:
             return
 
-        mat_raw     = row.get("MATERIALTYPE", "")
-        type_raw    = row.get("TYPE", "")
-        subtype_raw = row.get("SUBTYPE", "")
-        loc_raw     = row.get("STORAGELOCATION", "")
+        mat_key      = _norm_id(row.get("MATERIALTYPE", ""))
+        mat_num      = _norm_id(row.get("MATERIALNUMBER", ""))
+        plant        = _norm_id(row.get("PLANT", ""))
+        type_raw     = row.get("TYPE", "")
+        subtype_raw  = row.get("SUBTYPE", "")
+        loc_raw      = row.get("STORAGELOCATION", "")
 
-        mat_key      = "" if pd.isna(mat_raw)     else str(mat_raw).strip().upper()
         type_disp    = "" if pd.isna(type_raw)    else str(type_raw).strip()
         subtype_disp = "" if pd.isna(subtype_raw) else str(subtype_raw).strip()
         loc_disp     = "" if pd.isna(loc_raw)     else str(loc_raw).strip()
 
-        # Only FERT / HAWA / ROH / VERP are in scope
-        type_rules = MATERIAL_TYPE_RULES.get(mat_key)
-        if type_rules is None:
+        # ── Step 0: derive Part class; rows that fit neither class are not checked ──
+        part_class = self._part_class(mat_key, mat_num, plant)
+        if part_class is None:
+            self.class_counts["UNCLASSIFIED"] += 1
             return
+        self.class_counts[part_class] += 1
 
-        # ── Sub-rule a: TYPE must be recognised for this MATERIALTYPE ──
-        type_key = _norm_key(type_disp) if type_disp else ""
+        type_rules = PART_CLASS_RULES[part_class]
+
+        # ── Sub-rule a: TYPE must be recognised for this Part class ──
+        type_key = _norm_key(type_disp)
         if type_key not in type_rules:
             shown = type_disp if type_disp else "<blank>"
             reasons[NETTABLE_FIELD] = (
-                f"TYPE: '{shown}' is not a recognised Onhand TYPE for MATERIALTYPE '{mat_key}'"
+                f"TYPE: '{shown}' is not a recognised Onhand TYPE for Part class '{part_class}' "
+                f"(MATERIALTYPE '{mat_key}')"
             )
             return
 
-        # ── Sub-rule b: SUBTYPE must be allowed for this MATERIALTYPE + TYPE ──
-        subtype_key = _norm_key(subtype_disp) if subtype_disp else ""
+        # ── Sub-rule b: SUBTYPE must be allowed for this Part class + TYPE ──
+        subtype_key = _norm_key(subtype_disp)
         allowed     = type_rules[type_key]
         if subtype_key not in allowed:
             shown_sub   = subtype_disp if subtype_disp else "<blank>"
@@ -236,18 +334,18 @@ class OnhandBusinessRuleEngine:
             )
             reasons[NETTABLE_FIELD] = (
                 f"SUBTYPE: '{shown_sub}' is not an allowed SUBTYPE for TYPE '{type_disp}' "
-                f"with MATERIALTYPE '{mat_key}' (allowed: {allowed_txt})"
+                f"with Part class '{part_class}' (MATERIALTYPE '{mat_key}') (allowed: {allowed_txt})"
             )
             return
 
-        # ── Sub-rule c: Nettable stock must sit in a valid Nettable location (FERT/HAWA only) ──
-        if mat_key in LOCATION_CHECK_MATERIAL_TYPES and subtype_key == NETTABLE:
+        # ── Sub-rule c: Nettable stock must sit in a valid Nettable location (FG only) ──
+        if part_class in LOCATION_CHECK_PART_CLASSES and subtype_key == NETTABLE:
             loc_key = loc_disp.upper() if loc_disp else BLANK_LOCATION_TOKEN
             if loc_key not in NETTABLE_LOCATIONS:
                 shown_loc = loc_disp if loc_disp else "<blank>"
                 reasons[NETTABLE_FIELD] = (
                     f"STORAGELOCATION: '{shown_loc}' is not a valid Nettable location "
-                    f"(MATERIALTYPE '{mat_key}', TYPE '{type_disp}')"
+                    f"(Part class '{part_class}', MATERIALTYPE '{mat_key}', TYPE '{type_disp}')"
                 )
 
     # ── Row entry point ──
@@ -255,6 +353,7 @@ class OnhandBusinessRuleEngine:
         reasons = {}
         self._check_dlgr(row, reasons)
         self._check_nettable(row, reasons)
+        self._check_qty(row, reasons)
         return reasons
 
 
@@ -263,35 +362,85 @@ class OnhandBusinessRuleEngine:
 # ══════════════════════════════════════════════
 class OnhandBusinessTableValidator:
 
-    def __init__(self, onhand_path: str):
-        self.onhand_path = onhand_path
-        self.df          = pd.DataFrame()
-        self.error_map   = {}   # row_idx -> [failed field names]
-        self.reason_map  = {}   # row_idx -> {field: reason}
+    def __init__(self, onhand_path: str, part_path: str):
+        self.onhand_path  = onhand_path
+        self.part_path    = part_path
+        self.df           = pd.DataFrame()
+        self.part_lookup  = {}
+        self.qty_col      = None
+        self.class_counts = {}
+        self.error_map    = {}   # row_idx -> [failed field names]
+        self.reason_map   = {}   # row_idx -> {field: reason}
 
     def load(self):
         self.df = pd.read_csv(self.onhand_path, sep="\t", dtype=str)
         self.df.columns = [c.strip().upper() for c in self.df.columns]
 
-    def validate(self):
-        # Uniqueness counts (rule currently disabled)
-        value_counts = {}
+    # ── Part extract lookup: (MATERIALNUMBER, PLANT) -> (IBPSTATUS, MRPTYPE) ──
+    def _load_part_lookup(self):
+        try:
+            part = pd.read_csv(self.part_path, sep="\t", dtype=str)
+        except Exception as exc:
+            print(f"    ⚠️  Could not read Part extract ({self.part_path}): {exc}")
+            return {}, False
 
-        # ── Make sure the columns needed for the Nettable rule exist ──
-        missing = [c for c in NETTABLE_COLS if c not in self.df.columns]
+        part.columns = [c.strip().upper() for c in part.columns]
+        needed  = PART_KEY_COLS + PART_LOOKUP_COLS
+        missing = [c for c in needed if c not in part.columns]
         if missing:
-            print(f"    ⚠️  Nettable/Location rule skipped – missing column(s): {missing}")
-        engine = OnhandBusinessRuleEngine(value_counts, check_nettable=not missing)
+            print(f"    ⚠️  Part extract is missing column(s): {missing}")
+            return {}, False
 
+        lookup = {}
+        for mat, plant, ibp, mrp in zip(
+            part["MATERIALNUMBER"], part["PLANT"], part["IBPSTATUS"], part["MRPTYPE"]
+        ):
+            key = (_norm_id(mat), _norm_id(plant))
+            if key not in lookup:                      # first occurrence wins
+                lookup[key] = (_norm_key(ibp), _norm_id(mrp))
+        print(f"    Part lookup built       : {len(lookup)} MATERIALNUMBER+PLANT keys")
+        return lookup, True
+
+    def validate(self):
+        # Quantity column (VALUATEDUNRESTRICTEDUSESTOCK, falls back to QTY)
+        self.qty_col = next((c for c in QTY_COL_FALLBACKS if c in self.df.columns), None)
+        if self.qty_col is None:
+            print(f"    ⚠️  {QTY_FIELD} rule skipped – none of {QTY_COL_FALLBACKS} found in Onhand")
+        else:
+            print(f"    {QTY_FIELD} rule reads column : {self.qty_col}")
+
+        # Columns needed for the Nettable rule
+        required_onhand = ["MATERIALNUMBER", "PLANT"] + NETTABLE_COLS
+        missing = [c for c in required_onhand if c not in self.df.columns]
+        if missing:
+            print(f"    ⚠️  Nettable/Location rule skipped – missing Onhand column(s): {missing}")
+
+        part_ok = False
+        if not missing:
+            self.part_lookup, part_ok = self._load_part_lookup()
+            if not part_ok:
+                print("    ⚠️  Nettable/Location rule skipped – Part lookup unavailable")
+
+        engine = OnhandBusinessRuleEngine(
+            self.part_lookup, self.qty_col, check_nettable=(not missing and part_ok)
+        )
+
+        first_error_shown = False
         for idx, row in self.df.iterrows():
             try:
                 reasons = engine.validate_row(row)
             except Exception:
                 reasons = {}
+                if not first_error_shown:
+                    first_error_shown = True
+                    print(f"    ⚠️  Row {idx} raised an exception (further ones suppressed):")
+                    traceback.print_exc()
 
             if reasons:
                 self.error_map[idx]  = list(reasons.keys())
                 self.reason_map[idx] = reasons
+
+        self.class_counts = engine.class_counts
 
     def get_error_series(self) -> pd.Series:
         result = {}
@@ -338,20 +487,27 @@ class OnhandBusinessReportWriter:
     RULES_CONTENT = {
         "DATEOFLASTGOODSRECEIPT": [
             "Field must not be blank.",
-            "Values must be unique — no duplicates allowed.",
+            # "Values must be unique — no duplicates allowed.",   # disabled
             "Field must follow the format: YYYYMMDD.",
         ],
         NETTABLE_FIELD: [
-            "MATERIALTYPE FERT / HAWA: TYPE/SUBTYPE must be valid — BLOCKEDSTOCK, BLOCKEDSTOCKRETURNS, "
+            "Part class is derived using the Part extract (lookup on MATERIALNUMBER + PLANT). "
+            "FG: MATERIALTYPE FERT / HAWA with IBPSTATUS IBP or IBPEXP, or UNBW (any IBPSTATUS). "
+            "RM/PM/SFG: HAWA with IBPSTATUS N; HIBE / RAWT with MRPTYPE X0; "
+            "BLND, HALB, ROH, VERP, BASB taken as they are. Other rows are not checked.",
+            "Part FG: TYPE/SUBTYPE must be valid — BLOCKEDSTOCK, BLOCKEDSTOCKRETURNS, "
             "SCHEDULEDFORDELIVERY, TENTATIVEINVENTORYPOSTINGSHIFTS: Non Nettable only; "
             "QUALITYINSPECTION, VALUATEDUNRESTRICTEDUSESTOCK: Nettable or Non Nettable; "
             "VENDORSTOCK: Nettable only.",
-            "MATERIALTYPE FERT / HAWA: If SUBTYPE is Nettable, STORAGELOCATION must be one of: "
+            "Part FG: If SUBTYPE is Nettable, STORAGELOCATION must be one of: "
             + ", ".join(["Blank location"] + sorted(NETTABLE_LOCATIONS - {BLANK_LOCATION_TOKEN})) + ".",
-            "MATERIALTYPE ROH / VERP: TYPE/SUBTYPE must be valid — BLOCKEDSTOCK, BLOCKEDSTOCKRETURNS, "
+            "Part RM/PM/SFG: TYPE/SUBTYPE must be valid — BLOCKEDSTOCK, BLOCKEDSTOCKRETURNS, "
             "SCHEDULEDFORDELIVERY: Non Nettable only; QUALITYINSPECTION, "
             "VALUATEDUNRESTRICTEDUSESTOCK, VENDORSTOCK: Nettable only. "
-            "(TENTATIVEINVENTORYPOSTINGSHIFTS is not valid for these material types.)",
+            "(TENTATIVEINVENTORYPOSTINGSHIFTS is not valid for RM/PM/SFG.)",
+        ],
+        QTY_FIELD: [
+            "Field should be > 0.",
         ],
     }
 
@@ -512,7 +668,7 @@ class OnhandBusinessReportWriter:
             row_num += 1
 
         # ── Column widths ──
-        col_widths = [6, 42, 14, 16, 12, 12, 70]
+        col_widths = [6, 46, 14, 16, 12, 12, 70]
         for c_idx, width in enumerate(col_widths, start=1):
             ws.column_dimensions[get_column_letter(c_idx)].width = width
 
@@ -540,7 +696,10 @@ class OnhandBusinessReportWriter:
             col_idx_map = {col: i for i, col in enumerate(subset.columns, start=1)}
 
             # Columns to highlight red for THIS sheet's rule
-            highlight_cols = INVOLVED_COLUMNS.get(field_name, [field_name])
+            if field_name == QTY_FIELD:
+                highlight_cols = [self.validator.qty_col] if self.validator.qty_col else []
+            else:
+                highlight_cols = INVOLVED_COLUMNS.get(field_name, [field_name])
 
             for excel_row, (orig_idx, row_data) in enumerate(subset.iterrows(), start=2):
                 for c_idx, (col, value) in enumerate(zip(subset.columns, row_data), start=1):
@@ -652,6 +811,7 @@ class OnhandBusinessReportWriter:
         print(f"   Total rows    : {len(df)}")
         print(f"   Error rows    : {len(v.error_map)}")
         print(f"   Field sheets  : {fields_with_errors}")
+        print(f"   Part class split (rows checked by the Nettable rule): {v.class_counts}")
 
 
 # ══════════════════════════════════════════════
@@ -659,8 +819,8 @@ class OnhandBusinessReportWriter:
 # ══════════════════════════════════════════════
 class OnhandBusinessTableProcessor:
 
-    def __init__(self, onhand_path: str, output_path: str):
-        self.validator = OnhandBusinessTableValidator(onhand_path)
+    def __init__(self, onhand_path: str, part_path: str, output_path: str):
+        self.validator = OnhandBusinessTableValidator(onhand_path, part_path)
         self.writer    = OnhandBusinessReportWriter(self.validator, output_path)
 
     def run(self):
@@ -679,6 +839,7 @@ class OnhandBusinessTableProcessor:
 if __name__ == "__main__":
     processor = OnhandBusinessTableProcessor(
         onhand_path = ONHAND_INPUT_FILE,
+        part_path   = PART_INPUT_FILE,
         output_path = OUTPUT_FILE,
     )
     processor.run()
